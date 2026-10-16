@@ -11,6 +11,7 @@ Thumbs.db
 
 # Rust
 target/
+core/target/
 
 # Python (test oracles)
 .venv/
