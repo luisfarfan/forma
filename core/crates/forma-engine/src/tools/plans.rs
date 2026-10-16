@@ -1,14 +1,17 @@
-//! Approval: the gate every call that changes a document or writes a file
-//! passes (`approval_gate`), and the `plan_commit` and `plan_discard`
-//! tools.
+//! Approval: the gate every call that changes a document, writes a file or
+//! discards unsaved changes passes (`approval_gate`), and the `plan_commit`
+//! and `plan_discard` tools.
 //!
 //! # The gate
 //!
-//! A call **needs approval** when it is destructive (it deletes glyphs,
-//! replaces a drawn layer of a glyph that existed before the call, restores
-//! an earlier revision, or overwrites an existing file other than the
-//! document's own) or massive (it touches more than
-//! [`MASS_THRESHOLD`] distinct glyphs). Then, by [`Policy`]:
+//! A call **needs approval** when it is destructive or massive (it touches
+//! more than [`MASS_THRESHOLD`] distinct glyphs). Destructive are: deleting
+//! glyphs; replacing a drawn layer of a glyph that existed before the call;
+//! removing the last contour of a layer that was drawn when the call started;
+//! a singular contour transform; a revert that deletes a glyph or replaces or
+//! empties a drawn layer; restoring an earlier revision; overwriting an
+//! existing file other than the document's own; closing a document with
+//! unsaved changes, discarding them. Then, by [`Policy`]:
 //!
 //! * `prompted` (the default): `APPROVAL_REQUIRED`, with a plan in
 //!   `details.plan`;
@@ -20,6 +23,10 @@
 //! `{rev, plan}`, a committable plan, whether it needs approval or not
 //! (under `strict`, a call that needs approval is refused instead).
 //!
+//! A call that would fail with `REVISION_CONFLICT` gets that error, never a
+//! plan: the document tools check conflicts before they ask the gate (see
+//! `approval_gate` for the order).
+//!
 //! # Committing
 //!
 //! `plan_commit` takes the plan out of the store (single use), then runs the
@@ -30,12 +37,15 @@
 //! runs again. The pass is refused, with `REVISION_CONFLICT`, if the call now
 //! does something the plan did not show: other commands than the planned
 //! ones, or a reason for approval the plan did not have (a save that would
-//! now overwrite a file, say).
+//! now overwrite a file, say). A plan of a call that writes the document to
+//! a file or discards its unsaved changes is pinned to the revision it was
+//! made at: the commit is refused the same way if the document changed
+//! since, so what is written or discarded is what the user approved.
 //!
 //! # For tools that write files
 //!
 //! A tool that may overwrite a file (`document_save`, `export_font`) builds a
-//! `Proposal` with `Change::File`, `destructive` set when the target
+//! `Proposal` with `Change::Snapshot`, `destructive` set when the target
 //! exists and is not the document's own file, and a `label` that is the whole
 //! summary (`"overwrites <path>"`); see `document_save`.
 
@@ -43,7 +53,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
-use forma_edit::{Command, FontDiff};
+use forma_edit::Command;
 use forma_model::{Actor, Font, GlyphId, Rev};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
@@ -52,7 +62,7 @@ use serde_json::{Map, Value, json};
 use crate::engine::{DocHandle, Engine, Policy};
 use crate::errors::{ErrorCode, ToolError};
 use crate::limits::MASS_THRESHOLD;
-use crate::plans::{MAX_AFFECTED_NAMES, NewPlan, Plan, rfc3339, sha256};
+use crate::plans::{BoundedDiff, MAX_AFFECTED_NAMES, NewPlan, Plan, rfc3339, sha256};
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, find, schema_of};
 use crate::tools::json_output;
 use crate::tools::limits::parse_checked;
@@ -227,7 +237,7 @@ pub(crate) struct Proposal<'a> {
     /// Whether the call destroys data (see the module documentation).
     pub destructive: bool,
     /// For a [`Change::Font`], the history label of the change (the summary
-    /// adds the number of glyphs affected); for a [`Change::File`], the whole
+    /// adds the number of glyphs affected); for a [`Change::Snapshot`], the whole
     /// summary, such as `"overwrites <path>"`.
     pub label: String,
     /// What changes.
@@ -251,15 +261,17 @@ pub(crate) enum Change<'a> {
         /// effect a revision or transaction id fixes.
         commands: Option<&'a [Command]>,
     },
-    /// A file written outside the document; the font does not change.
-    File,
+    /// The document as it is now, as a whole, without a change to the font:
+    /// the call writes it to a file (save, export) or discards its unsaved
+    /// changes (close). The plan pins the current revision.
+    Snapshot,
 }
 
 impl Proposal<'_> {
     fn affected_count(&self) -> usize {
         match self.change {
             Change::Font { affected, .. } => affected.len(),
-            Change::File => 0,
+            Change::Snapshot => 0,
         }
     }
 
@@ -279,7 +291,7 @@ impl Proposal<'_> {
                 };
                 format!("{} ({count} {glyphs} affected{destructive})", self.label)
             }
-            Change::File => self.label.clone(),
+            Change::Snapshot => self.label.clone(),
         }
     }
 
@@ -295,7 +307,9 @@ impl Proposal<'_> {
         serde_json::to_vec(commands)
             .map(|bytes| Some(sha256(&bytes)))
             .map_err(|error| {
-                ToolError::invalid_argument(format!("cannot encode the commands: {error}"))
+                ToolError::invalid_argument(format!(
+                    "internal error: cannot encode the commands: {error}"
+                ))
             })
     }
 }
@@ -318,11 +332,22 @@ pub(crate) struct Committing {
     destructive: bool,
     mass: bool,
     fingerprint: Option<[u8; 32]>,
+    pinned_rev: Option<Rev>,
 }
 
-/// The approval gate of every call that changes a document or writes a
-/// file; see the module documentation. Called right before the change is
-/// applied, after every other check of the call.
+/// The approval gate of every call that changes a document, writes a file
+/// or discards unsaved changes; see the module documentation.
+///
+/// Each tool calls it once, after its own checks of the call (arguments,
+/// limits, paths) and right before the change is applied. For changes of the
+/// document, the revision-conflict check comes **before** the gate, so a
+/// call that would conflict gets `REVISION_CONFLICT` and never a plan:
+/// `mutate` runs `Document::check_conflicts` on the entities the measured
+/// commands touch, and `history_revert`/`history_restore` run the change on
+/// a copy of the document first. `Document::execute` (or the real revert or
+/// restore) checks conflicts once more when it applies the change, after the
+/// gate. Tools that write a file or discard changes have no conflict check;
+/// their plans pin the revision instead.
 ///
 /// # Errors
 ///
@@ -345,7 +370,12 @@ pub(crate) fn approval_gate(
         && commit.tool == proposal.tool
         && commit.doc == *proposal.doc
     {
-        let outdated = (destructive && !commit.destructive)
+        let moved = match commit.pinned_rev {
+            Some(pinned) => engine.doc(proposal.doc)?.rev() != pinned,
+            None => false,
+        };
+        let outdated = moved
+            || (destructive && !commit.destructive)
             || (mass && !commit.mass)
             || commit.fingerprint != proposal.fingerprint()?;
         if outdated {
@@ -386,8 +416,9 @@ pub(crate) fn approval_gate(
          the plan_token only after they confirm.",
         plan.summary
     );
-    let plan = serde_json::to_value(&plan)
-        .map_err(|error| ToolError::invalid_argument(format!("cannot encode the plan: {error}")))?;
+    let plan = serde_json::to_value(&plan).map_err(|error| {
+        ToolError::invalid_argument(format!("internal error: cannot encode the plan: {error}"))
+    })?;
     let mut details = Map::new();
     details.insert("plan".into(), plan);
     Err(ToolError::new(ErrorCode::ApprovalRequired, message).with_details(Value::Object(details)))
@@ -403,18 +434,13 @@ fn make_plan(engine: &mut Engine, proposal: &Proposal<'_>) -> Result<Plan, ToolE
             ..
         } => (
             affected_names(before, after, affected),
-            forma_edit::diff(before, after),
+            BoundedDiff::from(forma_edit::diff(before, after)),
         ),
-        Change::File => (
-            Vec::new(),
-            FontDiff {
-                added: Vec::new(),
-                removed: Vec::new(),
-                modified: Vec::new(),
-                info_changed: false,
-                metrics_changed: false,
-            },
-        ),
+        Change::Snapshot => (Vec::new(), BoundedDiff::empty()),
+    };
+    let pinned_rev = match proposal.change {
+        Change::Snapshot => Some(engine.doc(proposal.doc)?.rev()),
+        Change::Font { .. } => None,
     };
     let (plan_token, expires) = engine.plans.create(NewPlan {
         actor: proposal.actor.clone(),
@@ -425,6 +451,7 @@ fn make_plan(engine: &mut Engine, proposal: &Proposal<'_>) -> Result<Plan, ToolE
         destructive: proposal.destructive,
         mass: proposal.mass(),
         fingerprint: proposal.fingerprint()?,
+        pinned_rev,
     })?;
     Ok(Plan {
         plan_token,
@@ -483,7 +510,11 @@ fn plan_commit(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
         .ok_or_else(|| ToolError::invalid_argument(format!("unknown tool '{}'", plan.tool)))?;
     engine.check_available(spec)?;
     let mut call = plan.args;
-    if let Some(object) = call.as_object_mut() {
+    // The planned base revision (tools without `base_rev`, such as
+    // document_close, keep their arguments as they are).
+    if let Some(object) = call.as_object_mut()
+        && object.contains_key("base_rev")
+    {
         object.insert("base_rev".into(), Value::from(plan.base_rev.0));
     }
     engine.committing = Some(Committing {
@@ -492,6 +523,7 @@ fn plan_commit(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
         destructive: plan.destructive,
         mass: plan.mass,
         fingerprint: plan.fingerprint,
+        pinned_rev: plan.pinned_rev,
     });
     let result = (spec.handler)(engine, actor, call);
     // The pass is for this call only, used or not.
@@ -539,7 +571,7 @@ mod tests {
             dry_run,
             destructive: true,
             label: "overwrites x".into(),
-            change: Change::File,
+            change: Change::Snapshot,
         }
     }
 
@@ -551,7 +583,11 @@ mod tests {
             source_path: None,
             dirty: false,
         });
-        let other = DocHandle::from("doc_other");
+        let other = engine.insert_doc(OpenDoc {
+            document: Document::new(Font::new("Other", 1000)),
+            source_path: None,
+            dirty: false,
+        });
         let actor = Actor::Agent("test".into());
         let args = json!({ "doc": doc, "base_rev": 0 });
         let pass = || {
@@ -561,6 +597,7 @@ mod tests {
                 destructive: true,
                 mass: false,
                 fingerprint: None,
+                pinned_rev: Some(Rev(0)),
             })
         };
 
@@ -591,6 +628,14 @@ mod tests {
         );
         let error = approval_gate(&mut engine, &planned).expect_err("spent");
         assert_eq!(error.code, ErrorCode::ApprovalRequired);
+
+        // A pinned plan passes only at the revision it was made at.
+        engine.committing = pass().map(|commit| Committing {
+            pinned_rev: Some(Rev(7)),
+            ..commit
+        });
+        let error = approval_gate(&mut engine, &planned).expect_err("moved");
+        assert_eq!(error.code, ErrorCode::RevisionConflict);
     }
 
     #[test]
@@ -605,7 +650,10 @@ mod tests {
         );
         assert_eq!(schema["properties"]["plan"]["$ref"], json!("#/$defs/Plan"));
         assert!(schema["$defs"]["Plan"]["properties"]["diff"].is_object());
-        assert!(schema["$defs"]["FontDiff"].is_object(), "{schema}");
+        assert!(
+            schema["$defs"]["BoundedDiff"]["properties"]["truncated"].is_object(),
+            "{schema}"
+        );
         // `tx` (nullable) is a property, not a required field.
         assert!(schema["properties"]["tx"].is_object());
         let described = schema["description"].as_str().expect("description");

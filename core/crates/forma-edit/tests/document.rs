@@ -166,6 +166,32 @@ fn stale_base_rev_on_touched_entity_conflicts() {
 }
 
 #[test]
+fn check_conflicts_runs_the_check_of_execute_without_committing() {
+    let mut doc = new_doc();
+    let base = doc.rev();
+    let a = key(&doc, "A");
+    let b = key(&doc, "B");
+    doc.execute(&user(), base, "Widen A", &[advance("A", 650.0)])
+        .expect("applies");
+
+    let info = conflict(
+        doc.check_conflicts(&BTreeSet::from([a, b, EntityKey::GlyphOrder]), base)
+            .unwrap_err(),
+    );
+    assert_eq!(info.current_rev, Rev(1));
+    assert_eq!(info.conflicts, vec![(a, Rev(1), user())]);
+    // The glyph order and untouched entities never conflict.
+    doc.check_conflicts(&BTreeSet::from([b, EntityKey::GlyphOrder]), base)
+        .expect("B unchanged");
+    doc.check_conflicts(&BTreeSet::from([a]), Rev(1))
+        .expect("based on the latest revision");
+    // A base revision newer than the document is refused.
+    let err = doc.check_conflicts(&BTreeSet::new(), Rev(2)).unwrap_err();
+    assert!(matches!(err, EditError::InvalidArgument(_)), "{err:?}");
+    assert_eq!(doc.rev(), Rev(1));
+}
+
+#[test]
 fn stale_base_rev_on_other_entity_applies() {
     let mut doc = new_doc();
     let base = doc.rev();

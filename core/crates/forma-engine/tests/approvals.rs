@@ -185,13 +185,24 @@ fn advance_all(doc: &str, base_rev: u64, count: usize, width: u64) -> Value {
 }
 
 fn empty_diff() -> Value {
-    json!({ "added": [], "removed": [], "modified": [], "info_changed": false,
-            "metrics_changed": false })
+    json!({ "added": [], "added_count": 0, "removed": [], "removed_count": 0,
+            "modified": [], "modified_count": 0, "info_changed": false,
+            "metrics_changed": false, "truncated": false })
+}
+
+/// Commits the plan of a call that needs approval, as an agent does once the
+/// user confirms.
+#[track_caller]
+fn confirmed(engine: &mut Engine, tool: &str, args: Value) -> Value {
+    let error = err(engine, tool, args);
+    let token = token_of(&plan_of(&error));
+    commit(engine, &token).expect("commit")
 }
 
 /// Every tool that changes a document or a file, and so takes `dry_run`.
-const PLANNABLE: [&str; 15] = [
+const PLANNABLE: [&str; 16] = [
     "document_save",
+    "document_close",
     "font_set_info",
     "font_set_vertical_metrics",
     "edit_batch",
@@ -835,7 +846,8 @@ fn plan_removed_when_document_closes() {
         delete(&other, other_rev),
     )));
 
-    ok(
+    // The document is unsaved: discarding it needs a plan too.
+    confirmed(
         &mut engine,
         "document_close",
         json!({ "doc": doc, "discard_changes": true }),
@@ -1081,6 +1093,332 @@ fn commit_refuses_an_overwrite_the_plan_did_not_show() {
     assert_eq!(error.code, ErrorCode::RevisionConflict);
     assert_eq!(std::fs::read(&target).expect("read"), existing);
     assert_eq!(inspect(&mut engine, &doc)["path"], Value::Null);
+}
+
+// ------------------------------------------------------------ fix round 1
+
+/// The size of a value as JSON text.
+fn json_len(value: &Value) -> usize {
+    value.to_string().len()
+}
+
+#[test]
+fn big_changes_give_bounded_plans_and_diffs() {
+    let mut engine = engine();
+    let doc = new_doc(&mut engine);
+    let ops: Vec<Value> = (0..500)
+        .map(|index| {
+            json!({ "tool": "glyph_create",
+                    "args": { "name": format!("g{index:03}"), "advance_width": 500 } })
+        })
+        .collect();
+    let error = err(
+        &mut engine,
+        "edit_batch",
+        json!({ "doc": doc, "base_rev": 0, "ops": ops }),
+    );
+    let plan = plan_of(&error);
+    assert!(
+        json_len(&error.details) < 16_384,
+        "{}",
+        json_len(&error.details)
+    );
+    assert_eq!(plan["affected_count"], json!(500));
+    assert_eq!(plan["affected"].as_array().expect("affected").len(), 100);
+    let diff = &plan["diff"];
+    assert_eq!(diff["added_count"], json!(500));
+    assert_eq!(diff["added"].as_array().expect("added").len(), 100);
+    assert_eq!(diff["added"][0], json!("g000"));
+    assert_eq!(diff["removed_count"], json!(0));
+    assert_eq!(diff["truncated"], json!(true));
+    commit(&mut engine, &token_of(&plan)).expect("commit");
+
+    let items: Vec<Value> = (0..500)
+        .map(|index| json!({ "glyph": format!("g{index:03}"), "advance_width": 600 }))
+        .collect();
+    let error = err(
+        &mut engine,
+        "metrics_set",
+        json!({ "doc": doc, "base_rev": 1, "items": items }),
+    );
+    let plan = plan_of(&error);
+    assert!(
+        json_len(&error.details) < 16_384,
+        "{}",
+        json_len(&error.details)
+    );
+    assert_eq!(plan["diff"]["modified_count"], json!(500));
+    assert_eq!(
+        plan["diff"]["modified"].as_array().expect("modified").len(),
+        100
+    );
+    assert_eq!(plan["diff"]["truncated"], json!(true));
+    commit(&mut engine, &token_of(&plan)).expect("commit");
+
+    let diff = ok(
+        &mut engine,
+        "document_diff",
+        json!({ "doc": doc, "from_rev": 0 }),
+    );
+    assert!(json_len(&diff) < 16_384, "{}", json_len(&diff));
+    assert_eq!(diff["diff"]["added_count"], json!(500));
+    assert_eq!(diff["diff"]["added"].as_array().expect("added").len(), 100);
+    assert_eq!(diff["diff"]["truncated"], json!(true));
+    let diff = ok(
+        &mut engine,
+        "document_diff",
+        json!({ "doc": doc, "from_rev": 1, "to_rev": 2 }),
+    );
+    assert_eq!(diff["diff"]["modified_count"], json!(500));
+    assert_eq!(diff["diff"]["added_count"], json!(0));
+
+    // A small diff is complete.
+    let planned = ok(
+        &mut engine,
+        "glyph_update",
+        json!({ "doc": doc, "base_rev": 2, "glyph": "g000", "export": false,
+                "dry_run": true }),
+    );
+    assert_eq!(planned["plan"]["diff"]["modified_count"], json!(1));
+    assert_eq!(planned["plan"]["diff"]["truncated"], json!(false));
+}
+
+#[test]
+fn closing_a_dirty_document_with_discard_requires_plan() {
+    let mut engine = engine();
+    let doc = new_doc(&mut engine); // in memory: unsaved
+    let close = json!({ "doc": doc, "discard_changes": true });
+    let error = err(&mut engine, "document_close", close.clone());
+    let plan = plan_of(&error);
+    assert_eq!(plan["tool"], json!("document_close"));
+    assert_eq!(
+        plan["summary"],
+        json!(format!("closes {doc} and discards its unsaved changes"))
+    );
+    assert_eq!(plan["diff"], empty_diff());
+    assert_eq!(plan["base_rev"], json!(0));
+    assert_eq!(rev_of(&mut engine, &doc), 0, "still open");
+
+    let mut dry = close.clone();
+    dry["dry_run"] = json!(true);
+    let planned = ok(&mut engine, "document_close", dry);
+    assert_eq!(planned["rev"], json!(0));
+    assert_eq!(rev_of(&mut engine, &doc), 0, "still open");
+
+    let closed = commit(&mut engine, &token_of(&plan)).expect("commit");
+    assert_eq!(closed["closed"], json!(true));
+    assert_eq!(closed["plan_committed"], json!(true));
+    let error = err(&mut engine, "document_inspect", json!({ "doc": doc }));
+    assert_eq!(error.code, ErrorCode::NotFound);
+
+    // A saved document closes at once, with or without `discard_changes`.
+    let root = TempDir::new().expect("tempdir");
+    let mut engine = Engine::new(EngineConfig {
+        allowed_roots: vec![root.path().to_path_buf()],
+        ..EngineConfig::default()
+    });
+    for discard in [false, true] {
+        let path = root.path().join(format!("clean-{discard}.forma"));
+        let created = ok(
+            &mut engine,
+            "document_create",
+            json!({ "family_name": "Clean", "path": text(&path) }),
+        );
+        let closed = ok(
+            &mut engine,
+            "document_close",
+            json!({ "doc": created["doc"], "discard_changes": discard }),
+        );
+        assert_eq!(closed["closed"], json!(true));
+    }
+}
+
+#[test]
+fn file_and_close_plans_pin_the_document_revision() {
+    let root = TempDir::new().expect("tempdir");
+    let mut engine = Engine::new(EngineConfig {
+        allowed_roots: vec![root.path().to_path_buf()],
+        ..EngineConfig::default()
+    });
+    let a = dunce::canonicalize(root.path())
+        .expect("root")
+        .join("a.forma");
+    forma_store::save(&Font::new("A", 1000), &a).expect("fixture");
+    let created = ok(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": "B", "path": text(&a.with_file_name("b.forma")) }),
+    );
+    let doc = created["doc"].as_str().expect("doc").to_owned();
+    let save = json!({ "doc": doc, "base_rev": 0, "path": text(&a) });
+    let token = token_of(&plan_of(&err(&mut engine, "document_save", save)));
+
+    // The document changes after the plan: what would be written is not what
+    // the user approved.
+    ok(
+        &mut engine,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": 0, "name": "x", "advance_width": 1 }),
+    );
+    let before = std::fs::read(&a).expect("read");
+    let error = commit(&mut engine, &token).expect_err("pinned");
+    assert_eq!(error.code, ErrorCode::RevisionConflict);
+    assert_eq!(error.details["current_rev"], json!(1));
+    assert_eq!(std::fs::read(&a).expect("read"), before);
+
+    // A plan made at the current revision writes; a stale `base_rev` is still
+    // accepted by document_save.
+    let save = json!({ "doc": doc, "base_rev": 0, "path": text(&a) });
+    let token = token_of(&plan_of(&err(&mut engine, "document_save", save)));
+    commit(&mut engine, &token).expect("commit");
+    assert_eq!(
+        forma_store::load(&a).expect("load").glyphs.len(),
+        1,
+        "the new glyph is saved"
+    );
+
+    // Discarding unsaved changes is pinned the same way.
+    ok(
+        &mut engine,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": 1, "name": "y", "advance_width": 1 }),
+    );
+    let close = json!({ "doc": doc, "discard_changes": true });
+    let token = token_of(&plan_of(&err(&mut engine, "document_close", close)));
+    ok(
+        &mut engine,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": 2, "name": "z", "advance_width": 1 }),
+    );
+    let error = commit(&mut engine, &token).expect_err("pinned");
+    assert_eq!(error.code, ErrorCode::RevisionConflict);
+    assert_eq!(rev_of(&mut engine, &doc), 3, "still open");
+}
+
+#[test]
+fn no_plan_for_a_call_that_would_conflict() {
+    let mut engine = engine();
+    let (doc, rev) = doc_with_glyphs(&mut engine, 2);
+    ok_as(
+        &mut engine,
+        &Actor::User,
+        "metrics_set",
+        json!({ "doc": doc, "base_rev": rev, "items": [{ "glyph": "g00", "advance_width": 9 }] }),
+    );
+    for dry_run in [false, true] {
+        let error = err(
+            &mut engine,
+            "glyph_delete",
+            json!({ "doc": doc, "base_rev": rev, "glyphs": ["g00"], "dry_run": dry_run }),
+        );
+        assert_eq!(error.code, ErrorCode::RevisionConflict, "dry_run {dry_run}");
+        assert_eq!(error.details["current_rev"], json!(rev + 1));
+        assert_eq!(error.details["conflicts"][0]["actor"], json!("user"));
+    }
+    // Based on the latest revision, the plan is offered.
+    let error = err(
+        &mut engine,
+        "glyph_delete",
+        json!({ "doc": doc, "base_rev": rev + 1, "glyphs": ["g00"] }),
+    );
+    assert_eq!(error.code, ErrorCode::ApprovalRequired);
+}
+
+#[test]
+fn emptying_a_drawn_layer_or_collapsing_a_contour_requires_plan() {
+    let mut engine = engine();
+    let (doc, rev) = doc_with_glyphs(&mut engine, 1);
+    let delete_contour = json!({ "glyph": "g00", "action": { "type": "delete", "path_id": 0 } });
+
+    // Deleting the last contour of a drawn layer.
+    let mut args = delete_contour.clone();
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(rev);
+    let plan = plan_of(&err(&mut engine, "contour_edit", args));
+    assert!(
+        plan["summary"]
+            .as_str()
+            .expect("summary")
+            .ends_with("destructive)"),
+        "{plan}"
+    );
+    // ... also when a later operation of the batch draws the layer again.
+    let error = err(
+        &mut engine,
+        "edit_batch",
+        json!({ "doc": doc, "base_rev": rev, "ops": [
+            { "tool": "contour_edit", "args": delete_contour },
+            { "tool": "glyph_set_outline", "args": { "glyph": "g00", "svg_path": SQUARE } }
+        ] }),
+    );
+    assert_eq!(error.code, ErrorCode::ApprovalRequired);
+
+    // A singular transform collapses the contour.
+    for affine in [
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [2.0, 4.0, 1.0, 2.0, 5.0, 5.0],
+    ] {
+        let error = err(
+            &mut engine,
+            "contour_edit",
+            json!({ "doc": doc, "base_rev": rev, "glyph": "g00",
+                    "action": { "type": "transform", "path_id": 0, "affine": affine } }),
+        );
+        assert_eq!(error.code, ErrorCode::ApprovalRequired, "{affine:?}");
+    }
+    assert_eq!(rev_of(&mut engine, &doc), rev);
+
+    // Deleting one of two contours, or an invertible transform, applies.
+    let applied = ok(
+        &mut engine,
+        "contour_edit",
+        json!({ "doc": doc, "base_rev": rev, "glyph": "g00",
+                "action": { "type": "transform", "path_id": 0,
+                            "affine": [1.0, 0.0, 0.0, 1.0, 10.0, 0.0] } }),
+    );
+    assert_eq!(applied["rev"], json!(rev + 1));
+    ok(
+        &mut engine,
+        "contour_edit",
+        json!({ "doc": doc, "base_rev": rev + 1, "glyph": "g00",
+                "action": { "type": "add", "svg_path": "M200 0 L300 0 L300 100 Z" } }),
+    );
+    let applied = ok(
+        &mut engine,
+        "contour_edit",
+        json!({ "doc": doc, "base_rev": rev + 2, "glyph": "g00",
+                "action": { "type": "delete", "path_id": 0 } }),
+    );
+    assert_eq!(applied["rev"], json!(rev + 3));
+}
+
+#[test]
+fn descriptions_do_not_promise_approval_unconditionally() {
+    for spec in registry() {
+        assert!(
+            !spec.description.contains("answers APPROVAL_REQUIRED"),
+            "{}: {}",
+            spec.name,
+            spec.description
+        );
+    }
+    for name in [
+        "document_save",
+        "document_close",
+        "glyph_delete",
+        "glyph_set_outline",
+        "contour_edit",
+        "history_revert",
+        "history_restore",
+    ] {
+        let spec = forma_engine::find(name).expect("registered");
+        assert!(
+            spec.description
+                .contains("may require approval depending on the server policy"),
+            "{name}: {}",
+            spec.description
+        );
+    }
 }
 
 fn text(path: &Path) -> String {

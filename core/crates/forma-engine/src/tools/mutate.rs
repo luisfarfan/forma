@@ -14,12 +14,13 @@
 //!    records what that command does to the state it meets, so the effects
 //!    of a call (destructive or not, distinct glyphs affected) are measured
 //!    step by step, the way the transaction will run.
-//! 3. `mutate` asks the approval gate (`tools::plans`), which may answer
-//!    instead (a dry run returns a plan, a destructive or massive call needs
-//!    one), and runs the commands as one transaction with
-//!    [`Document::execute`], marking the document dirty. Conflicts become
-//!    `REVISION_CONFLICT` with the details of
-//!    [`conflict_details`](crate::errors::conflict_details).
+//! 3. `mutate` checks the touched entities for revision conflicts, asks the
+//!    approval gate (`tools::plans`), which may answer instead (a dry run
+//!    returns a plan, a destructive or massive call needs one), and runs the
+//!    commands as one transaction with [`Document::execute`], marking the
+//!    document dirty. Conflicts become `REVISION_CONFLICT` with the details of
+//!    [`conflict_details`](crate::errors::conflict_details), before any plan
+//!    is made.
 //!
 //! [`Document::execute`]: forma_edit::Document::execute
 
@@ -35,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::engine::{DocHandle, Engine};
-use crate::errors::{ToolError, from_args_error};
+use crate::errors::{ToolError, from_args_error, from_edit_error};
 use crate::registry::ToolOutput;
 use crate::tools::json_output;
 use crate::tools::limits::check_raw_args;
@@ -222,13 +223,16 @@ pub(crate) struct Edit<'a> {
 ///
 /// 1. a call without commands that is not a dry run is answered without
 ///    changing anything (`tx: null`);
-/// 2. the approval gate decides on the call, measured by `edit.steps`
+/// 2. the entities the commands touch are checked for revision conflicts
+///    ([`Document::check_conflicts`](forma_edit::Document::check_conflicts)),
+///    so that no plan is offered for a call that cannot succeed;
+/// 3. the approval gate decides on the call, measured by `edit.steps`
 ///    (destructive or not, distinct glyphs affected, the font before and
 ///    after); it may answer instead (a dry run returns `{rev, plan}`) or
 ///    refuse (`APPROVAL_REQUIRED` with a plan, `UNSUPPORTED` under the
 ///    `strict` policy);
-/// 3. the commands run as one transaction, marking the document dirty;
-/// 4. `finish` turns the [`MutationResult`] into the tool's result (adding
+/// 4. the commands run as one transaction, marking the document dirty;
+/// 5. `finish` turns the [`MutationResult`] into the tool's result (adding
 ///    tool-specific fields, such as the new glyph of `glyph_create`);
 ///    [`plain`] keeps it as it is.
 ///
@@ -241,6 +245,8 @@ pub(crate) struct Edit<'a> {
 /// * `NOT_FOUND` for an unknown document handle;
 /// * `INVALID_ARGUMENT` if `base_rev` is newer than the current revision, or
 ///   if the steps were not measured on the current state;
+/// * `REVISION_CONFLICT` if an entity the commands touch changed after
+///   `base_rev`;
 /// * the errors of the approval gate;
 /// * the mapped error of [`Document::execute`](forma_edit::Document::execute),
 ///   including `REVISION_CONFLICT`;
@@ -274,6 +280,9 @@ pub(crate) fn mutate<R: Serialize>(
         };
         return json_output(&finish(engine, unchanged)?);
     }
+    open.document
+        .check_conflicts(&edit.steps.touched, edit.base_rev)
+        .map_err(from_edit_error)?;
 
     let proposal = Proposal {
         actor,

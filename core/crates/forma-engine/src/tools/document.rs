@@ -59,8 +59,10 @@ pub(crate) const SAVE: CommandSpec = CommandSpec {
                   as `base_rev`: a `base_rev` newer than the current revision is rejected, \
                   while an older one is accepted and the current state is saved. A document \
                   created without a path needs `path`. Overwriting an existing file other \
-                  than the document's own answers APPROVAL_REQUIRED with a plan to confirm; \
-                  with `dry_run: true` the call only returns the plan.",
+                  than the document's own is destructive and may require approval depending on \
+                  the server policy (APPROVAL_REQUIRED with a plan to confirm, which is \
+                  refused if the document changes before it is committed); with \
+                  `dry_run: true` the call only returns the plan.",
     toolset: Toolset::Core,
     effects: Effects::WRITE,
     output: OutputKind::Json,
@@ -74,13 +76,15 @@ pub(crate) const CLOSE: CommandSpec = CommandSpec {
     name: "document_close",
     title: "Close document",
     description: "Close the document `doc`; its handle stops being valid. A document with \
-                  unsaved changes is only closed with `discard_changes: true`; otherwise save \
-                  it first with document_save.",
+                  unsaved changes is only closed with `discard_changes: true`, which discards \
+                  them: that is destructive and may require approval depending on the server \
+                  policy (APPROVAL_REQUIRED with a plan to confirm; with `dry_run: true` the \
+                  call only returns the plan). Otherwise save it first with document_save.",
     toolset: Toolset::Core,
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<DocumentCloseArgs>,
-    output_schema: Some(schema_of::<DocumentCloseResult>),
+    output_schema: Some(schema_of::<OrPlan<DocumentCloseResult>>),
     handler: document_close,
 };
 
@@ -205,6 +209,11 @@ pub struct DocumentCloseArgs {
     /// Close even if there are unsaved changes, losing them.
     #[serde(default)]
     pub discard_changes: bool,
+    /// Only plan the call: change nothing and return `{rev, plan}`, the plan
+    /// of what the call would do, with a `plan_token` that plan_commit can
+    /// run once the user confirms.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// Result of `document_close`.
@@ -392,7 +401,7 @@ fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<Tool
         dry_run: call.dry_run,
         destructive: overwrites,
         label,
-        change: Change::File,
+        change: Change::Snapshot,
     };
     if let Gate::Answer(answer) = approval_gate(engine, &proposal)? {
         return Ok(answer);
@@ -411,21 +420,41 @@ fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<Tool
 
 fn document_close(
     engine: &mut Engine,
-    _actor: &Actor,
+    actor: &Actor,
     args: Value,
 ) -> Result<ToolOutput, ToolError> {
-    let args: DocumentCloseArgs = parse_args(args)?;
-    let open = engine.doc(&args.doc)?;
-    if open.dirty && !args.discard_changes {
+    let call: DocumentCloseArgs = parse_args_ref(&args)?;
+    let open = engine.doc(&call.doc)?;
+    if open.dirty && !call.discard_changes {
         return Err(ToolError::invalid_argument(
             "unsaved changes; save first or pass discard_changes: true",
         ));
     }
-    let rev = open.rev().0;
-    engine.remove_doc(&args.doc);
+    let rev = open.rev();
+    let discards = open.dirty;
+    let label = if discards {
+        format!("closes {} and discards its unsaved changes", call.doc)
+    } else {
+        format!("closes {}", call.doc)
+    };
+    let proposal = Proposal {
+        actor,
+        tool: CLOSE.name,
+        args: &args,
+        doc: &call.doc,
+        base_rev: rev,
+        dry_run: call.dry_run,
+        destructive: discards,
+        label,
+        change: Change::Snapshot,
+    };
+    if let Gate::Answer(answer) = approval_gate(engine, &proposal)? {
+        return Ok(answer);
+    }
+    engine.remove_doc(&call.doc);
     json_output(&DocumentCloseResult {
-        doc: args.doc,
-        rev,
+        doc: call.doc,
+        rev: rev.0,
         closed: true,
     })
 }

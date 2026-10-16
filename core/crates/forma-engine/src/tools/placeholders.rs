@@ -61,8 +61,8 @@ placeholder!(
     Json,
     concat!(
         "Compile `doc` to TTF or WOFF2, or export it as UFO, to `path` inside the allowed \
-         roots. Overwriting an existing file answers APPROVAL_REQUIRED with a plan to \
-         confirm.",
+         roots. Overwriting an existing file is destructive and may require approval \
+         depending on the server policy (APPROVAL_REQUIRED with a plan to confirm).",
         base_rev_note!()
     )
 );

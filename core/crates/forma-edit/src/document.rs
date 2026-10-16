@@ -194,10 +194,7 @@ impl Document {
             touched.extend(keys);
         }
 
-        let conflicts = self.changed_since(&touched, |rev| rev > base_rev);
-        if !conflicts.is_empty() {
-            return Err(self.conflict(conflicts));
-        }
+        self.check_conflicts(&touched, base_rev)?;
 
         let label = if label.trim().is_empty() {
             DEFAULT_LABEL.to_owned()
@@ -205,6 +202,32 @@ impl Document {
             label.to_owned()
         };
         Ok(self.push_undoable(actor, EntryKind::Commit, label, touched, Arc::new(font)))
+    }
+
+    /// The concurrency check of [`execute`](Self::execute), on its own: the
+    /// entities in `touched`, other than the glyph order, must not have
+    /// changed after `base_rev`. Callers that measure a transaction before
+    /// committing it (on a scratch copy of the font) use it to report a
+    /// conflict early; `execute` runs it again.
+    ///
+    /// # Errors
+    ///
+    /// * [`EditError::InvalidArgument`] if `base_rev` is newer than the
+    ///   current revision.
+    /// * [`EditError::Conflict`] listing every such entity, as in
+    ///   [`execute`](Self::execute).
+    pub fn check_conflicts(
+        &self,
+        touched: &BTreeSet<EntityKey>,
+        base_rev: Rev,
+    ) -> Result<(), EditError> {
+        self.check_base_rev(base_rev)?;
+        let conflicts = self.changed_since(touched, |rev| rev > base_rev);
+        if conflicts.is_empty() {
+            Ok(())
+        } else {
+            Err(self.conflict(conflicts))
+        }
     }
 
     /// Undoes the last undoable change (a commit, revert or restore) of the

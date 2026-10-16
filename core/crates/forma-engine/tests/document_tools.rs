@@ -969,11 +969,16 @@ fn close_dirty_requires_discard() {
     );
     assert_eq!(engine.open_docs().len(), 1, "still open");
 
-    let closed = ok(
+    // Discarding unsaved changes is destructive: it needs a confirmed plan.
+    let error = err(
         &mut engine,
         "document_close",
         json!({ "doc": doc, "discard_changes": true }),
     );
+    assert_eq!(error.code, ErrorCode::ApprovalRequired);
+    assert_eq!(engine.open_docs().len(), 1, "still open");
+    let token = error.details["plan"]["plan_token"].clone();
+    let closed = ok(&mut engine, "plan_commit", json!({ "plan_token": token }));
     assert_eq!(closed["closed"], json!(true));
     assert!(engine.open_docs().is_empty());
     let error = err(&mut engine, "document_inspect", json!({ "doc": doc }));

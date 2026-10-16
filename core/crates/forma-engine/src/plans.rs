@@ -18,8 +18,14 @@
 //! the keys of every object sorted. A plan expires [`PLAN_TTL_SECS`] seconds
 //! after it is made, is used up by its first commit (even a failed one) or
 //! discard, belongs to the actor that made the call, and is dropped when its
-//! document closes. At most [`MAX_PENDING_PLANS`] plans are kept; the oldest
-//! goes first.
+//! document closes. At most [`MAX_PENDING_PLANS`] plans, holding at most
+//! [`MAX_PENDING_PLAN_BYTES`] of arguments in all, are kept; the oldest go
+//! first.
+//!
+//! A plan shows at most [`MAX_AFFECTED_NAMES`] glyph names and, in its
+//! [`BoundedDiff`], at most [`MAX_DIFF_ENTRIES`] entries per list, with the
+//! full counts, so that it fits the response budget of agents whatever the
+//! size of the change.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,7 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use forma_edit::FontDiff;
+use forma_edit::{FontDiff, GlyphDiff};
 use forma_model::{Actor, Rev};
 use hmac::{Hmac, KeyInit, Mac};
 use schemars::JsonSchema;
@@ -38,11 +44,17 @@ use sha2::{Digest, Sha256};
 use crate::engine::DocHandle;
 use crate::errors::ToolError;
 use crate::limits::PLAN_TTL_SECS;
+use crate::tools::limits::limit_exceeded;
 
 /// The most plans kept at once; making another drops the oldest.
 pub const MAX_PENDING_PLANS: usize = 1000;
+/// The most argument bytes (canonical JSON) the pending plans keep in all;
+/// making another plan drops the oldest ones until it fits.
+pub const MAX_PENDING_PLAN_BYTES: usize = 64 * 1024 * 1024;
 /// The most glyph names a [`Plan`] lists in `affected`.
 pub const MAX_AFFECTED_NAMES: usize = 100;
+/// The most entries each list of a [`BoundedDiff`] holds.
+pub const MAX_DIFF_ENTRIES: usize = 100;
 
 /// The length of a plan id, in bytes.
 const PLAN_ID_LEN: usize = 16;
@@ -91,8 +103,82 @@ pub struct Plan {
     pub affected: Vec<String>,
     /// How many glyphs the call touches.
     pub affected_count: usize,
-    /// How the font changes; empty for calls that write files.
-    pub diff: FontDiff,
+    /// How the font changes; empty for calls that write a file or discard
+    /// unsaved changes.
+    pub diff: BoundedDiff,
+}
+
+/// How a font changes between two states, with each list cut to its first
+/// 100 entries; the counts are always complete.
+///
+/// Glyphs are matched by their stable id, so a renamed glyph is modified,
+/// not removed and added again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BoundedDiff {
+    /// Names of the glyphs added, in glyph order (the first 100).
+    pub added: Vec<String>,
+    /// How many glyphs were added.
+    pub added_count: usize,
+    /// Names of the glyphs removed, in their former glyph order (the first
+    /// 100).
+    pub removed: Vec<String>,
+    /// How many glyphs were removed.
+    pub removed_count: usize,
+    /// The glyphs that changed, in glyph order (the first 100).
+    pub modified: Vec<GlyphDiff>,
+    /// How many glyphs changed.
+    pub modified_count: usize,
+    /// Whether the font info or the units per em changed.
+    pub info_changed: bool,
+    /// Whether the vertical metrics of any master changed.
+    pub metrics_changed: bool,
+    /// Whether any list was cut to its first 100 entries.
+    pub truncated: bool,
+}
+
+impl BoundedDiff {
+    /// A diff without any change.
+    #[must_use]
+    pub fn empty() -> BoundedDiff {
+        BoundedDiff::from(FontDiff {
+            added: Vec::new(),
+            removed: Vec::new(),
+            modified: Vec::new(),
+            info_changed: false,
+            metrics_changed: false,
+        })
+    }
+}
+
+impl From<FontDiff> for BoundedDiff {
+    fn from(diff: FontDiff) -> BoundedDiff {
+        let FontDiff {
+            mut added,
+            mut removed,
+            mut modified,
+            info_changed,
+            metrics_changed,
+        } = diff;
+        let (added_count, removed_count, modified_count) =
+            (added.len(), removed.len(), modified.len());
+        let truncated = [added_count, removed_count, modified_count]
+            .into_iter()
+            .any(|count| count > MAX_DIFF_ENTRIES);
+        added.truncate(MAX_DIFF_ENTRIES);
+        removed.truncate(MAX_DIFF_ENTRIES);
+        modified.truncate(MAX_DIFF_ENTRIES);
+        BoundedDiff {
+            added,
+            added_count,
+            removed,
+            removed_count,
+            modified,
+            modified_count,
+            info_changed,
+            metrics_changed,
+            truncated,
+        }
+    }
 }
 
 /// A call kept by the engine, waiting to be committed.
@@ -117,8 +203,13 @@ pub(crate) struct StoredPlan {
     /// The SHA-256 of the commands the call translated into, for calls that
     /// edit the font with commands.
     pub fingerprint: Option<[u8; 32]>,
+    /// For a call that writes the document to a file or discards its unsaved
+    /// changes: the revision it was planned at, which the commit requires.
+    pub pinned_rev: Option<Rev>,
     /// The order in which plans were made, for eviction.
     seq: u64,
+    /// The size of the canonical arguments, for the byte budget.
+    bytes: usize,
 }
 
 /// A call to keep as a plan: [`PlanStore::create`].
@@ -140,6 +231,8 @@ pub(crate) struct NewPlan {
     pub mass: bool,
     /// The SHA-256 of the call's commands, if it has any.
     pub fingerprint: Option<[u8; 32]>,
+    /// The revision the commit requires, if any.
+    pub pinned_rev: Option<Rev>,
 }
 
 /// The pending plans of an engine, with the key that signs their tokens.
@@ -150,6 +243,12 @@ pub(crate) struct PlanStore {
     clock: Box<dyn Clock + Send>,
     plans: BTreeMap<PlanId, StoredPlan>,
     next_seq: u64,
+    /// The argument bytes of the pending plans.
+    bytes: usize,
+    /// [`MAX_PENDING_PLANS`] (smaller in tests).
+    max_plans: usize,
+    /// [`MAX_PENDING_PLAN_BYTES`] (smaller in tests).
+    max_bytes: usize,
 }
 
 impl fmt::Debug for PlanStore {
@@ -157,6 +256,7 @@ impl fmt::Debug for PlanStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PlanStore")
             .field("pending", &self.plans.len())
+            .field("bytes", &self.bytes)
             .field("key_available", &self.key.is_ok())
             .finish_non_exhaustive()
     }
@@ -181,6 +281,9 @@ impl PlanStore {
             clock,
             plans: BTreeMap::new(),
             next_seq: 0,
+            bytes: 0,
+            max_plans: MAX_PENDING_PLANS,
+            max_bytes: MAX_PENDING_PLAN_BYTES,
         }
     }
 
@@ -197,23 +300,40 @@ impl PlanStore {
 
     /// Keeps `plan` and returns its token and expiry (seconds since the Unix
     /// epoch). Expired plans are dropped first, then the oldest ones while
-    /// the store is full.
+    /// the store is full (by count or by argument bytes).
     ///
     /// # Errors
     ///
-    /// `IO_ERROR` if the system has no secure random source.
+    /// * `LIMIT_EXCEEDED` with `details = {limit, actual}` if the arguments
+    ///   alone exceed the byte budget;
+    /// * `IO_ERROR` if the system has no secure random source.
     pub(crate) fn create(&mut self, plan: NewPlan) -> Result<(String, i64), ToolError> {
         let key = self.key()?;
+        let args = without_dry_run(plan.args);
+        let bytes = canonical_json(&args).len();
+        if bytes > self.max_bytes {
+            return Err(limit_exceeded(
+                format!(
+                    "the arguments of the call ({bytes} bytes) are too large to keep as a plan; \
+                     the limit is {} bytes: split the work into several calls",
+                    self.max_bytes
+                ),
+                self.max_bytes,
+                bytes,
+            ));
+        }
         let now = self.now_unix();
         self.purge_expired(now);
-        while self.plans.len() >= MAX_PENDING_PLANS {
+        while self.plans.len() >= self.max_plans
+            || self.bytes.saturating_add(bytes) > self.max_bytes
+        {
             let oldest = self
                 .plans
                 .iter()
                 .min_by_key(|(_, stored)| stored.seq)
                 .map(|(id, _)| *id);
             match oldest {
-                Some(id) => self.plans.remove(&id),
+                Some(id) => self.remove(&id),
                 None => break,
             };
         }
@@ -226,7 +346,7 @@ impl PlanStore {
         }
         let expires = now.saturating_add(i64::try_from(PLAN_TTL_SECS).unwrap_or(i64::MAX));
         let stored = StoredPlan {
-            args: without_dry_run(plan.args),
+            args,
             actor: plan.actor,
             tool: plan.tool,
             doc: plan.doc,
@@ -235,9 +355,12 @@ impl PlanStore {
             destructive: plan.destructive,
             mass: plan.mass,
             fingerprint: plan.fingerprint,
+            pinned_rev: plan.pinned_rev,
             seq: self.next_seq,
+            bytes,
         };
         self.next_seq += 1;
+        self.bytes += bytes;
         let signature = sign(&key, &id, &stored)?.finalize().into_bytes();
         let mut token = Vec::with_capacity(TOKEN_LEN);
         token.extend_from_slice(&id);
@@ -259,7 +382,6 @@ impl PlanStore {
         let now = self.now_unix();
         let result = self.verify(token, actor).and_then(|id| {
             let plan = self
-                .plans
                 .remove(&id)
                 .ok_or_else(|| ToolError::invalid_argument(UNKNOWN_PLAN))?;
             if now > plan.expires {
@@ -279,7 +401,7 @@ impl PlanStore {
     pub(crate) fn discard(&mut self, token: &str, actor: &Actor) -> Result<(), ToolError> {
         let now = self.now_unix();
         let result = self.verify(token, actor).map(|id| {
-            self.plans.remove(&id);
+            self.remove(&id);
         });
         self.purge_expired(now);
         result
@@ -288,6 +410,18 @@ impl PlanStore {
     /// Drops every plan of the document `doc`.
     pub(crate) fn remove_doc(&mut self, doc: &DocHandle) {
         self.plans.retain(|_, plan| plan.doc != *doc);
+        self.recount_bytes();
+    }
+
+    /// Takes the plan `id` out of the store.
+    fn remove(&mut self, id: &PlanId) -> Option<StoredPlan> {
+        let plan = self.plans.remove(id)?;
+        self.bytes = self.bytes.saturating_sub(plan.bytes);
+        Some(plan)
+    }
+
+    fn recount_bytes(&mut self) {
+        self.bytes = self.plans.values().map(|plan| plan.bytes).sum();
     }
 
     /// Checks `token` against the stored plan it names, in constant time, and
@@ -320,6 +454,7 @@ impl PlanStore {
     /// Drops the plans that expired before `now`.
     fn purge_expired(&mut self, now: i64) {
         self.plans.retain(|_, plan| now <= plan.expires);
+        self.recount_bytes();
     }
 }
 
@@ -335,8 +470,9 @@ fn no_randomness(error: &str) -> ToolError {
 /// tool, the digest of the canonical arguments, the base revision and the
 /// expiry.
 fn sign(key: &[u8; 32], id: &PlanId, plan: &StoredPlan) -> Result<HmacSha256, ToolError> {
+    // HMAC takes keys of any length: this cannot fail.
     let mut mac = HmacSha256::new_from_slice(key)
-        .map_err(|_| ToolError::invalid_argument("cannot sign approval plans"))?;
+        .map_err(|_| ToolError::invalid_argument("internal error: cannot sign approval plans"))?;
     mac.update(id);
     mac.update(plan.actor.to_string().as_bytes());
     mac.update(&[0]);
@@ -486,6 +622,7 @@ mod tests {
             destructive: true,
             mass: false,
             fingerprint: Some([7; 32]),
+            pinned_rev: None,
         }
     }
 
@@ -630,6 +767,85 @@ mod tests {
         store.verify(&tokens[2], &alice).expect("other document");
         let error = store.verify(&tokens[1], &alice).expect_err("closed");
         assert_eq!(error.message, UNKNOWN_PLAN);
+    }
+
+    #[test]
+    fn the_oldest_plans_are_evicted_past_the_byte_budget() {
+        let mut store = PlanStore::new(Box::new(FixedClock::at(1_000)));
+        let alice = agent("alice");
+        let plan_bytes = canonical_json(&without_dry_run(new_plan(&alice, "doc_1").args)).len();
+        store.max_bytes = 3 * plan_bytes;
+        let tokens: Vec<String> = (0..4)
+            .map(|_| store.create(new_plan(&alice, "doc_1")).expect("create").0)
+            .collect();
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.bytes, 3 * plan_bytes);
+        let error = store.verify(&tokens[0], &alice).expect_err("evicted");
+        assert_eq!(error.message, UNKNOWN_PLAN);
+        store.take(&tokens[1], &alice).expect("kept");
+        assert_eq!(store.bytes, 2 * plan_bytes);
+        store.remove_doc(&DocHandle::from("doc_1"));
+        assert_eq!((store.len(), store.bytes), (0, 0));
+
+        // Arguments larger than the whole budget are refused.
+        store.max_bytes = plan_bytes - 1;
+        let error = store
+            .create(new_plan(&alice, "doc_1"))
+            .expect_err("too large");
+        assert_eq!(error.code, ErrorCode::LimitExceeded);
+        assert_eq!(error.details["limit"], json!(plan_bytes - 1));
+        assert_eq!(error.details["actual"], json!(plan_bytes));
+        assert_eq!(store.len(), 0);
+        assert_eq!(MAX_PENDING_PLAN_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn bounded_diffs_keep_the_first_entries_and_full_counts() {
+        let names = |prefix: &str, count: usize| -> Vec<String> {
+            (0..count).map(|index| format!("{prefix}{index}")).collect()
+        };
+        let modified = |count: usize| -> Vec<GlyphDiff> {
+            names("m", count)
+                .into_iter()
+                .map(|name| GlyphDiff {
+                    name,
+                    outline_changed: true,
+                    advance_changed: false,
+                    unicodes_changed: false,
+                })
+                .collect()
+        };
+        let diff = BoundedDiff::from(FontDiff {
+            added: names("a", 250),
+            removed: names("r", 100),
+            modified: modified(101),
+            info_changed: true,
+            metrics_changed: false,
+        });
+        assert_eq!(
+            (diff.added.len(), diff.added_count),
+            (MAX_DIFF_ENTRIES, 250)
+        );
+        assert_eq!(diff.added[99], "a99");
+        assert_eq!((diff.removed.len(), diff.removed_count), (100, 100));
+        assert_eq!((diff.modified.len(), diff.modified_count), (100, 101));
+        assert!(diff.truncated && diff.info_changed && !diff.metrics_changed);
+
+        let small = BoundedDiff::from(FontDiff {
+            added: names("a", 100),
+            removed: Vec::new(),
+            modified: modified(3),
+            info_changed: false,
+            metrics_changed: true,
+        });
+        assert!(!small.truncated);
+        assert_eq!(small.modified_count, 3);
+        let empty = BoundedDiff::empty();
+        assert_eq!(
+            (empty.added_count, empty.removed_count, empty.modified_count),
+            (0, 0, 0)
+        );
+        assert!(!empty.truncated && !empty.info_changed);
     }
 
     #[test]

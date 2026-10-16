@@ -140,12 +140,14 @@ fn undo_other_actor_not_allowed_suggests_revert() {
     assert!(error.message.contains("user"), "{}", error.message);
     assert_eq!(rev_of(&mut engine, &doc), 1);
 
-    // history_revert takes the change back instead.
-    let reverted = ok(
+    // history_revert takes the change back instead (deleting the user's
+    // drawn glyph is destructive: it needs a plan).
+    let reverted = approved(
         &mut engine,
         "history_revert",
         json!({ "doc": doc, "base_rev": 1, "tx": 1 }),
     );
+    assert_eq!(reverted["plan_committed"], json!(true));
     assert_eq!(reverted["rev"], json!(2));
     assert_eq!(reverted["tx"], json!(2));
     assert!(
@@ -259,8 +261,9 @@ fn diff_between_revisions() {
     assert_eq!(diff["rev"], json!(3));
     assert_eq!(
         diff["diff"],
-        json!({ "added": ["A"], "removed": [], "modified": [], "info_changed": false,
-                "metrics_changed": false })
+        json!({ "added": ["A"], "added_count": 1, "removed": [], "removed_count": 0,
+                "modified": [], "modified_count": 0, "info_changed": false,
+                "metrics_changed": false, "truncated": false })
     );
 
     let diff = ok(
@@ -439,13 +442,27 @@ fn revert_of_mass_change_requires_plan() {
     let mut engine = engine();
     let doc = new_doc(&mut engine);
     approved(&mut engine, "edit_batch", create_many(&doc, 0, 25)); // tx 1
-    create_glyph(&mut engine, &agent(), &doc, "Z"); // tx 2
-    assert_eq!(glyph_names(&mut engine, &doc).len(), 26);
+    let items: Vec<Value> = (0..25)
+        .map(|index| json!({ "glyph": format!("n{index:02}"), "advance_width": 99 }))
+        .collect();
+    approved(
+        &mut engine,
+        "edit_batch",
+        json!({ "doc": doc, "base_rev": 1, "label": "Widen many", "ops": [
+            { "tool": "metrics_set", "args": { "items": items } }
+        ] }),
+    ); // tx 2
+    let width = |engine: &mut Engine| {
+        ok(engine, "glyph_get", json!({ "doc": doc, "glyph": "n24" }))["glyph"]["advance_width"]
+            .clone()
+    };
+    assert_eq!(width(&mut engine), json!(99.0));
 
+    // Massive, not destructive.
     let error = err(
         &mut engine,
         "history_revert",
-        json!({ "doc": doc, "base_rev": 2, "tx": 1 }),
+        json!({ "doc": doc, "base_rev": 2, "tx": 2 }),
     );
     assert_eq!(error.code, ErrorCode::ApprovalRequired);
     let plan = &error.details["plan"];
@@ -453,51 +470,140 @@ fn revert_of_mass_change_requires_plan() {
     assert_eq!(plan["affected_count"], json!(25));
     assert_eq!(
         plan["summary"],
-        json!("Revert tx 1: Create many (25 glyphs affected)")
+        json!("Revert tx 2: Widen many (25 glyphs affected)")
     );
-    assert_eq!(
-        plan["diff"]["removed"].as_array().expect("removed").len(),
-        25
-    );
+    assert_eq!(plan["diff"]["modified_count"], json!(25));
     assert_eq!(rev_of(&mut engine, &doc), 2);
-
     let committed = ok(
         &mut engine,
         "plan_commit",
         json!({ "plan_token": plan["plan_token"] }),
     );
     assert_eq!(committed["rev"], json!(3));
-    assert_eq!(glyph_names(&mut engine, &doc), ["Z"]);
+    assert_eq!(width(&mut engine), json!(10.0));
 
-    // A small revert applies at once; a dry run only plans.
-    let planned = ok(
+    // Taking back tx 1 would delete glyphs that changed since (tx 2 and 3):
+    // it conflicts, and no plan is offered, not even for a dry run.
+    let error = err(
         &mut engine,
         "history_revert",
-        json!({ "doc": doc, "base_rev": 3, "tx": 2, "dry_run": true }),
+        json!({ "doc": doc, "base_rev": 3, "tx": 1, "dry_run": true }),
     );
-    assert_eq!(planned["plan"]["affected"], json!(["Z"]));
-    assert_eq!(glyph_names(&mut engine, &doc), ["Z"]);
+    assert_eq!(error.code, ErrorCode::RevisionConflict);
+
+    // A small revert that destroys nothing applies at once.
+    ok(
+        &mut engine,
+        "metrics_set",
+        json!({ "doc": doc, "base_rev": 3, "items": [{ "glyph": "n00", "advance_width": 50 }] }),
+    ); // tx 4
     let reverted = ok(
         &mut engine,
         "history_revert",
-        json!({ "doc": doc, "base_rev": 3, "tx": 2 }),
+        json!({ "doc": doc, "base_rev": 4, "tx": 4 }),
     );
-    assert_eq!(reverted["rev"], json!(4));
-    assert!(glyph_names(&mut engine, &doc).is_empty());
+    assert_eq!(reverted["rev"], json!(5));
+    assert!(reverted.get("plan_committed").is_none());
 
     // A base revision newer than the document, an unknown transaction.
     let error = err(
         &mut engine,
         "history_revert",
-        json!({ "doc": doc, "base_rev": 5, "tx": 2 }),
+        json!({ "doc": doc, "base_rev": 6, "tx": 2 }),
     );
     assert_eq!(error.code, ErrorCode::InvalidArgument);
     let error = err(
         &mut engine,
         "history_revert",
-        json!({ "doc": doc, "base_rev": 4, "tx": 99 }),
+        json!({ "doc": doc, "base_rev": 5, "tx": 99 }),
     );
     assert_eq!(error.code, ErrorCode::NotFound);
+}
+
+#[test]
+fn revert_that_destroys_requires_plan() {
+    let mut engine = engine();
+    let doc = new_doc(&mut engine);
+    create_glyph(&mut engine, &Actor::User, &doc, "A"); // tx 1: drawn
+    ok_as(
+        &mut engine,
+        &Actor::User,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": 1, "name": "E", "advance_width": 10 }),
+    ); // tx 2: empty
+    ok_as(
+        &mut engine,
+        &Actor::User,
+        "glyph_set_outline",
+        json!({ "doc": doc, "base_rev": 2, "glyph": "E", "svg_path": SQUARE }),
+    ); // tx 3: draws the empty layer
+    ok_as(
+        &mut engine,
+        &Actor::User,
+        "metrics_set",
+        json!({ "doc": doc, "base_rev": 3, "items": [{ "glyph": "A", "advance_width": 70 }] }),
+    ); // tx 4: a width
+
+    // Reverting tx 3 empties a drawn layer.
+    let error = err(
+        &mut engine,
+        "history_revert",
+        json!({ "doc": doc, "base_rev": 4, "tx": 3 }),
+    );
+    assert_eq!(error.code, ErrorCode::ApprovalRequired);
+    assert_eq!(
+        error.details["plan"]["summary"],
+        json!("Revert tx 3: Set outline of 'E' (1 glyph affected, destructive)")
+    );
+    // Reverting tx 4 only restores a width.
+    let reverted = ok(
+        &mut engine,
+        "history_revert",
+        json!({ "doc": doc, "base_rev": 4, "tx": 4 }),
+    );
+    assert_eq!(reverted["rev"], json!(5));
+    // Taking back tx 1 or tx 2 would delete `A` or `E`, which changed since:
+    // they conflict.
+    let error = err(
+        &mut engine,
+        "history_revert",
+        json!({ "doc": doc, "base_rev": 5, "tx": 1 }),
+    );
+    assert_eq!(error.code, ErrorCode::RevisionConflict);
+    let error = err(
+        &mut engine,
+        "history_revert",
+        json!({ "doc": doc, "base_rev": 5, "tx": 2 }),
+    );
+    assert_eq!(error.code, ErrorCode::RevisionConflict, "E changed in tx 3");
+
+    // Deleting a glyph and reverting the deletion: the revert brings it back
+    // and destroys nothing.
+    approved(
+        &mut engine,
+        "glyph_delete",
+        json!({ "doc": doc, "base_rev": 5, "glyphs": ["E"] }),
+    ); // tx 6
+    let reverted = ok(
+        &mut engine,
+        "history_revert",
+        json!({ "doc": doc, "base_rev": 6, "tx": 6 }),
+    );
+    assert_eq!(reverted["rev"], json!(7));
+    assert_eq!(glyph_names(&mut engine, &doc), ["A", "E"]);
+
+    // A drawn glyph created by another actor and untouched since: reverting
+    // its creation deletes it.
+    create_glyph(&mut engine, &Actor::User, &doc, "B"); // tx 8
+    let error = err(
+        &mut engine,
+        "history_revert",
+        json!({ "doc": doc, "base_rev": 8, "tx": 8 }),
+    );
+    let plan = &error.details["plan"];
+    assert_eq!(error.code, ErrorCode::ApprovalRequired);
+    assert_eq!(plan["diff"]["removed"], json!(["B"]));
+    assert_eq!(glyph_names(&mut engine, &doc), ["A", "E", "B"]);
 }
 
 #[test]

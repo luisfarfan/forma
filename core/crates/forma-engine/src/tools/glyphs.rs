@@ -110,8 +110,9 @@ pub(crate) const DELETE: CommandSpec = CommandSpec {
     name: "glyph_delete",
     title: "Delete glyphs",
     description: concat!(
-        "Delete glyphs from `doc` (names or ids). Destructive: answers APPROVAL_REQUIRED with \
-         a plan to confirm.",
+        "Delete glyphs from `doc` (names or ids). Destructive: may require approval depending \
+         on the server policy (APPROVAL_REQUIRED with a plan to confirm; with `dry_run: true` \
+         the call only returns the plan).",
         base_rev_note!()
     ),
     toolset: Toolset::Glyphs,

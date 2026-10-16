@@ -4,12 +4,16 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use forma_edit::{Command, apply};
+use forma_edit::{Command, ContourAction, apply};
 use forma_model::{EntityKey, Font, GlyphId};
 
 use crate::errors::{ToolError, from_edit_error};
 use crate::registry::Effects;
 use crate::tools::limits::{check_nodes, command_nodes};
+
+/// The absolute determinant below which a contour transform is singular: it
+/// collapses the contour onto a line or a point.
+const SINGULAR_DETERMINANT: f64 = 1e-9;
 
 /// The commands of one call, applied in order to a scratch copy of the
 /// document's font as they are added.
@@ -32,8 +36,14 @@ pub(crate) struct Steps {
     /// The distinct glyphs the commands touch, by their id in `after`
     /// (deleted glyphs by their id in `before`).
     pub affected: BTreeSet<GlyphId>,
-    /// Whether some command, at its turn, deletes glyphs or replaces the
-    /// non-empty layer of a glyph that existed before the call.
+    /// Every entity the commands touch (glyphs the call creates by their
+    /// scratch id, which no revision has seen), for the conflict check.
+    pub touched: BTreeSet<EntityKey>,
+    /// Whether some command, at its turn, destroys data that existed before
+    /// the call: it deletes glyphs, replaces the non-empty layer of a glyph
+    /// that existed before the call, removes the last contour of a layer that
+    /// had contours when the call started, or applies a singular transform to
+    /// a contour.
     pub destructive: bool,
     /// The outline nodes the commands bring so far.
     nodes: usize,
@@ -48,6 +58,7 @@ impl Steps {
             after: Font::clone(font),
             cmds: Vec::new(),
             affected: BTreeSet::new(),
+            touched: BTreeSet::new(),
             destructive: false,
             nodes: 0,
         }
@@ -79,11 +90,13 @@ impl Steps {
         check_nodes(nodes)?;
         let destructive = self.destroys(&cmd);
         let (after, touched) = apply(&self.after, &cmd).map_err(from_edit_error)?;
+        let destructive = destructive || self.empties_drawn_layer(&after, &touched);
         self.affected
-            .extend(touched.into_iter().filter_map(|key| match key {
-                EntityKey::Glyph(id) => Some(id),
+            .extend(touched.iter().filter_map(|key| match key {
+                EntityKey::Glyph(id) => Some(*id),
                 _ => None,
             }));
+        self.touched.extend(touched);
         self.destructive |= destructive;
         self.nodes = nodes;
         self.after = after;
@@ -105,10 +118,21 @@ impl Steps {
     /// Whether `cmd`, applied to the current scratch state, destroys data
     /// that existed before the call: deleting glyphs always does; replacing
     /// a layer does when the layer has contours and its glyph existed before
-    /// the call (a glyph the call created holds nothing older than the call).
+    /// the call (a glyph the call created holds nothing older than the call);
+    /// a transform with a singular matrix (`|a·d − b·c| < 1e-9`) always does,
+    /// since it collapses the contour.
     fn destroys(&self, cmd: &Command) -> bool {
         match cmd {
             Command::DeleteGlyphs { .. } => true,
+            Command::ContourEdit {
+                action: ContourAction::Transform { affine, .. },
+                ..
+            } => {
+                let [a, b, c, d, _, _] = *affine;
+                let determinant = (a * d - b * c).abs();
+                // A NaN determinant counts as singular too.
+                determinant.is_nan() || determinant < SINGULAR_DETERMINANT
+            }
             Command::SetOutline { glyph, master, .. } => {
                 let font = &self.after;
                 let Some(id) = glyph.resolve(font) else {
@@ -127,11 +151,37 @@ impl Steps {
             _ => false,
         }
     }
+
+    /// Whether going from the current scratch state to `next` (the touched
+    /// entities being `touched`) leaves without contours a layer that had
+    /// contours both when the call started and right before this step, in a
+    /// glyph that existed before the call. Deleting the glyph counts too.
+    fn empties_drawn_layer(&self, next: &Font, touched: &BTreeSet<EntityKey>) -> bool {
+        let drawn = |font: &Font, id: &GlyphId, master| {
+            font.glyphs
+                .get(id)
+                .and_then(|glyph| glyph.layers.get(master))
+                .is_some_and(|layer| !layer.paths.is_empty())
+        };
+        touched.iter().any(|key| {
+            let EntityKey::Glyph(id) = key else {
+                return false;
+            };
+            let Some(start) = self.before.glyphs.get(id) else {
+                return false;
+            };
+            start
+                .layers
+                .iter()
+                .filter(|(_, layer)| !layer.paths.is_empty())
+                .any(|(master, _)| drawn(&self.after, id, master) && !drawn(next, id, master))
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use forma_edit::GlyphRef;
+    use forma_edit::{ContourAction, GlyphRef};
     use forma_model::{Node, NodeKind, Path, PathId};
 
     use super::*;
@@ -244,6 +294,101 @@ mod tests {
             effects(&drawn, vec![delete, create("a", Vec::new())]),
             Effects::DESTRUCTIVE
         );
+    }
+
+    fn contour(glyph: &str, action: ContourAction) -> Command {
+        Command::ContourEdit {
+            glyph: by_name(glyph),
+            master: None,
+            action,
+        }
+    }
+
+    fn delete_contour(glyph: &str, id: u32) -> Command {
+        contour(
+            glyph,
+            ContourAction::Delete {
+                path_id: PathId(id),
+            },
+        )
+    }
+
+    fn transform(glyph: &str, affine: [f64; 6]) -> Command {
+        contour(
+            glyph,
+            ContourAction::Transform {
+                path_id: PathId(0),
+                affine,
+            },
+        )
+    }
+
+    #[test]
+    fn removing_the_last_contour_of_a_drawn_layer_is_destructive() {
+        let drawn = font_with("a", vec![triangle()]);
+        assert_eq!(
+            effects(&drawn, vec![delete_contour("a", 0)]),
+            Effects::DESTRUCTIVE
+        );
+        // Drawing the layer again later in the call does not hide it.
+        assert_eq!(
+            effects(&drawn, vec![delete_contour("a", 0), set_outline("a")]),
+            Effects::DESTRUCTIVE
+        );
+        // Removing one of two contours is not; removing the second is.
+        let mut second = triangle();
+        second.id = PathId(1);
+        let two = font_with("a", vec![triangle(), second]);
+        assert_eq!(effects(&two, vec![delete_contour("a", 0)]), Effects::WRITE);
+        assert_eq!(
+            effects(&two, vec![delete_contour("a", 0), delete_contour("a", 1)]),
+            Effects::DESTRUCTIVE
+        );
+        // A glyph the call created holds nothing older than the call.
+        let empty = Arc::new(Font::new("Test", 1000));
+        assert_eq!(
+            effects(
+                &empty,
+                vec![create("b", vec![triangle()]), delete_contour("b", 0)]
+            ),
+            Effects::WRITE
+        );
+    }
+
+    #[test]
+    fn a_singular_transform_is_destructive() {
+        let drawn = font_with("a", vec![triangle()]);
+        for affine in [
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [2.0, 4.0, 1.0, 2.0, 5.0, 5.0],
+            [1e-6, 0.0, 0.0, 1e-6, 0.0, 0.0],
+            [0.0; 6],
+        ] {
+            assert_eq!(
+                effects(&drawn, vec![transform("a", affine)]),
+                Effects::DESTRUCTIVE,
+                "{affine:?}"
+            );
+        }
+        for affine in [
+            [1.0, 0.0, 0.0, 1.0, 10.0, 0.0],
+            [0.0, 1.0, -1.0, 0.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        ] {
+            assert_eq!(
+                effects(&drawn, vec![transform("a", affine)]),
+                Effects::WRITE,
+                "{affine:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn touched_entities_are_recorded() {
+        let drawn = font_with("a", vec![triangle()]);
+        let a = drawn.glyph_by_name("a").expect("a").id;
+        let steps = Steps::of(&drawn, vec![advance("a", 200.0), rename("a", "b")]).expect("valid");
+        assert_eq!(steps.touched, BTreeSet::from([EntityKey::Glyph(a)]));
     }
 
     #[test]

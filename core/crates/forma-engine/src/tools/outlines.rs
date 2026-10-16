@@ -22,7 +22,8 @@ pub(crate) const SET_OUTLINE: CommandSpec = CommandSpec {
          default master when `master` is omitted) with a new outline, given either as \
          `svg_path` (SVG path data) or as `paths` (structured contours, such as those of \
          glyph_get), not both; `paths: []` clears the layer. `coordinate_system` works as in \
-         glyph_create. Destructive when the layer is not empty.",
+         glyph_create. Destructive when the layer is not empty, and then may require approval \
+         depending on the server policy (APPROVAL_REQUIRED with a plan to confirm).",
         base_rev_note!()
     ),
     toolset: Toolset::Glyphs,
@@ -43,7 +44,9 @@ pub(crate) const CONTOUR_EDIT: CommandSpec = CommandSpec {
          \"path\", \"coordinate_system\"?} (an SVG path with several subpaths adds one contour \
          each), {\"type\": \"delete\", \"path_id\"}, {\"type\": \"reverse\", \"path_id\"} or \
          {\"type\": \"transform\", \"path_id\", \"affine\": [a, b, c, d, e, f]}, which maps (x, \
-         y) to (a*x + c*y + e, b*x + d*y + f). Contour ids come from glyph_get.",
+         y) to (a*x + c*y + e, b*x + d*y + f). Contour ids come from glyph_get. Deleting the \
+         last contour of a drawn layer, or a transform that collapses the contour (a*d - b*c \
+         = 0), is destructive and may require approval depending on the server policy.",
         base_rev_note!()
     ),
     toolset: Toolset::Glyphs,
