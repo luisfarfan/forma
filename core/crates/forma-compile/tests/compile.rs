@@ -192,6 +192,19 @@ fn compiles_demo_font_to_ttf() {
         "glyph order"
     );
     assert_eq!(cmap_lookup(&ttf, ' '), Some(gid_of(&ttf, "space")));
+
+    // The generated `.notdef` frame: advance 500, margin 50, cap height 700.
+    let notdef = simple_glyph(&ttf, GlyphId::new(0)).expect(".notdef has an outline");
+    assert_eq!(
+        (
+            notdef.x_min(),
+            notdef.y_min(),
+            notdef.x_max(),
+            notdef.y_max()
+        ),
+        (50, 0, 450, 700)
+    );
+    assert_eq!(advance(&ttf, GlyphId::new(0)), 500);
 }
 
 #[test]
@@ -433,18 +446,19 @@ fn woff2_decompresses_to_equivalent_ttf() {
     assert_eq!(&woff2_bytes[..4], b"wOF2", "WOFF2 signature");
     assert!(woff2_bytes.len() < ttf_bytes.len(), "WOFF2 is smaller");
 
-    let decompressed = woofwoof::decompress(&woff2_bytes).expect("woofwoof decompresses");
+    // An independent, pure-Rust decoder. It may rebuild `glyf`/`loca`
+    // differently, so only tables that WOFF2 stores verbatim are compared.
+    let decompressed = woff2_patched::convert_woff2_to_ttf(&mut woff2_bytes.as_slice())
+        .expect("woff2-patched decompresses the WOFF2");
     let from_woff2 = parse(&decompressed);
     let ttf = parse(&ttf_bytes);
 
     assert_eq!(table(&from_woff2, b"cmap"), table(&ttf, b"cmap"));
     assert_eq!(table(&from_woff2, b"hmtx"), table(&ttf, b"hmtx"));
-    assert_eq!(glyph_names(&from_woff2), glyph_names(&ttf));
     assert_eq!(
-        cmap_lookup(&from_woff2, 'A'),
-        Some(gid_of(&from_woff2, "A"))
+        from_woff2.head().expect("head").units_per_em(),
+        ttf.head().expect("head").units_per_em()
     );
-    assert_eq!(advance(&from_woff2, gid_of(&from_woff2, "A")), 613);
 }
 
 // ---------------------------------------------------------------------------

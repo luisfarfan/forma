@@ -3,7 +3,7 @@
 
 use std::any::Any;
 use std::io;
-use std::panic::{self, AssertUnwindSafe};
+use std::panic;
 use std::path::Path;
 
 use fontc::{Input, Options};
@@ -63,10 +63,10 @@ fn run_fontc(ufo: &Path) -> Result<Vec<u8>, CompileError> {
     };
     // A panic inside fontc must not take the caller (an editor, a server)
     // down with it; it becomes an error like any other compiler failure.
-    let compiled = panic::catch_unwind(AssertUnwindSafe(|| {
+    let compiled = panic::catch_unwind(|| {
         let source = Input::new(ufo)?.create_source()?;
         fontc::generate_font(source, options)
-    }));
+    });
     match compiled {
         Ok(result) => result.map_err(|error| CompileError::Fontc(error.to_string())),
         Err(payload) => Err(CompileError::Fontc(format!(

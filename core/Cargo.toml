@@ -19,7 +19,8 @@ schemars = { version = "1.2.3", features = ["uuid1"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.154"
 tokio = { version = "1.53.3", features = ["full"] }
-woofwoof = "1.0.2"
+ttf2woff2 = { version = "0.14.0", default-features = false }
+woff2-patched = "0.4.0"
 read-fonts = "0.43.3"
 thiserror = "2.0.21"
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
