@@ -1,0 +1,31 @@
+[package]
+name = "forma-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The `forma` command-line tool: a thin facade over the FORMA command registry, plus the MCP server (`forma mcp`)"
+
+[[bin]]
+name = "forma"
+path = "src/main.rs"
+
+[dependencies]
+forma-engine = { path = "../forma-engine" }
+forma-mcp = { path = "../forma-mcp" }
+forma-model = { path = "../forma-model" }
+# `pack` and `unpack` are pure format conversions with no registry tool.
+forma-store = { path = "../forma-store" }
+clap = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+directories = { workspace = true }
+# The runtime of `forma mcp` (multi-thread: the engine runs on blocking threads).
+tokio = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
