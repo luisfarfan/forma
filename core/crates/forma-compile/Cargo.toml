@@ -1,0 +1,19 @@
+[package]
+name = "forma-compile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA font compilation: TTF and WOFF2 through fontc, with a preflight"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+forma-geometry = { path = "../forma-geometry" }
+forma-interop = { path = "../forma-interop" }
+fontc = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+woofwoof = { workspace = true }
+
+[dev-dependencies]
+read-fonts = { workspace = true }
