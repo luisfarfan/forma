@@ -1,0 +1,13 @@
+[package]
+name = "forma-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA deterministic CPU previews: glyph and text images (PNG) and glyph SVG"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+forma-geometry = { path = "../forma-geometry" }
+vello_cpu = { workspace = true }
+thiserror = { workspace = true }

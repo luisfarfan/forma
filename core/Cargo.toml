@@ -13,7 +13,7 @@ fontc = "1.0.0"
 rmcp = "3.5.1"
 norad = "0.19.2"
 kurbo = "0.13.1"
-vello_cpu = "0.3.0"
+vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "png", "u8_pipeline"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 schemars = { version = "1.2.3", features = ["uuid1"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
