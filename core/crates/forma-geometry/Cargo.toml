@@ -4,9 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "FORMA outline geometry: Bezier conversion, SVG import, direction and nesting"
+description = "FORMA outline geometry: Bezier conversion, SVG import, direction, nesting and checks"
 
 [dependencies]
 forma-model = { path = "../forma-model" }
 kurbo = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

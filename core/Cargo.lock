@@ -47,6 +47,9 @@ version = "0.0.1"
 dependencies = [
  "forma-model",
  "kurbo",
+ "schemars",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

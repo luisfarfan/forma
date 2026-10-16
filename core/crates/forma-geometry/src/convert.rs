@@ -15,6 +15,8 @@ pub(crate) struct Segment<'a> {
     pub kind: NodeKind,
     pub controls: Vec<&'a Node>,
     pub end: &'a Node,
+    /// Index of `end` in the node list of the contour.
+    pub end_index: usize,
 }
 
 /// A validated contour split into its start point and its segments.
@@ -27,7 +29,7 @@ pub(crate) struct Outline<'a> {
     pub segments: Vec<Segment<'a>>,
 }
 
-fn point(node: &Node) -> Point {
+pub(crate) fn point(node: &Node) -> Point {
     Point::new(node.x, node.y)
 }
 
@@ -130,6 +132,7 @@ fn split_segments<'a>(
             kind: node.kind,
             controls: std::mem::take(&mut pending),
             end: node,
+            end_index: index,
         });
     }
     if !pending.is_empty() {

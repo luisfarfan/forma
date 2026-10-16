@@ -1,8 +1,9 @@
 //! Outline geometry for FORMA.
 //!
 //! Converts model contours to and from [`kurbo`] Bezier paths, imports SVG
-//! path data, and computes signed area, bounding boxes, contour nesting and
-//! contour direction.
+//! path data, computes signed area, bounding boxes, contour nesting and
+//! contour direction, and checks contours for common outline problems with
+//! safe automatic fixes ([`check_paths`], [`fix_paths`]).
 //!
 //! # Contour convention
 //!
@@ -31,10 +32,12 @@
 
 #![forbid(unsafe_code)]
 
+mod checks;
 mod convert;
 mod direction;
 mod svg;
 
+pub use checks::{GeometryIssue, IssueKind, check_paths, fix_paths};
 pub use convert::{bbox, from_bezpath, to_bezpath};
 pub use direction::{contour_depths, normalize_direction, signed_area};
 pub use svg::{CoordinateSystem, path_to_svg, paths_from_svg};

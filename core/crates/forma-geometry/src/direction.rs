@@ -112,7 +112,7 @@ pub fn contour_depths(paths: &[Path]) -> Vec<usize> {
 /// every segment are reversed with it. The first on-curve node stays first;
 /// for a closed contour the off-curve nodes of the closing segment end up at
 /// the end of the list.
-fn reversed_nodes(path: &Path) -> Result<Vec<Node>, GeometryError> {
+pub(crate) fn reversed_nodes(path: &Path) -> Result<Vec<Node>, GeometryError> {
     let outline = outline(path)?;
     let segments = &outline.segments;
     let mut nodes = Vec::with_capacity(path.nodes.len());
