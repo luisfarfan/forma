@@ -155,24 +155,9 @@ pub fn affected_glyph_count(font: &Font, cmd: &Command) -> usize {
 
 // ------------------------------------------------------------- resolution
 
-/// Finds the glyph a reference points at.
-///
-/// An id is looked up first; when no glyph has it, a glyph whose name is the
-/// same UUID is used. A name is only ever matched against glyph names.
+/// Finds the glyph a reference points at; see [`GlyphRef::resolve`].
 fn find_glyph(font: &Font, glyph: &GlyphRef) -> Option<GlyphId> {
-    match glyph {
-        GlyphRef::Id(id) => {
-            if font.glyphs.contains_key(id) {
-                Some(*id)
-            } else {
-                font.glyphs
-                    .values()
-                    .find(|candidate| candidate.name.parse::<GlyphId>().ok() == Some(*id))
-                    .map(|candidate| candidate.id)
-            }
-        }
-        GlyphRef::Name(name) => font.glyph_by_name(name).map(|candidate| candidate.id),
-    }
+    glyph.resolve(font)
 }
 
 fn resolve_glyph(font: &Font, glyph: &GlyphRef) -> Result<GlyphId, EditError> {

@@ -15,7 +15,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use forma_geometry::IssueKind;
-use forma_model::{GlyphId, MasterId, Path, PathId};
+use forma_model::{Font, GlyphId, MasterId, Path, PathId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,30 @@ impl fmt::Display for GlyphRef {
         match self {
             Self::Id(id) => fmt::Display::fmt(id, f),
             Self::Name(name) => f.write_str(name),
+        }
+    }
+}
+
+impl GlyphRef {
+    /// The id of the glyph this reference points at in `font`, if any.
+    ///
+    /// An id is looked up first; when no glyph has it, a glyph whose name is
+    /// the same UUID text is used. A name is only ever matched against glyph
+    /// names. Every command resolves its references this way.
+    #[must_use]
+    pub fn resolve(&self, font: &Font) -> Option<GlyphId> {
+        match self {
+            Self::Id(id) => {
+                if font.glyphs.contains_key(id) {
+                    Some(*id)
+                } else {
+                    font.glyphs
+                        .values()
+                        .find(|candidate| candidate.name.parse::<GlyphId>().ok() == Some(*id))
+                        .map(|candidate| candidate.id)
+                }
+            }
+            Self::Name(name) => font.glyph_by_name(name).map(|candidate| candidate.id),
         }
     }
 }

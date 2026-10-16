@@ -864,8 +864,10 @@ dependencies = [
 name = "forma-engine"
 version = "0.0.1"
 dependencies = [
+ "base64 0.23.1",
  "dunce",
  "forma-edit",
+ "forma-geometry",
  "forma-model",
  "forma-store",
  "rusqlite",

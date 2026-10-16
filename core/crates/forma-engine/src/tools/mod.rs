@@ -12,6 +12,15 @@ use crate::registry::ToolOutput;
 
 pub mod capabilities;
 pub mod document;
+pub mod edit_batch;
+pub mod font;
+pub mod geometry;
+pub mod glyphs;
+pub mod inputs;
+pub(crate) mod limits;
+pub mod metrics;
+pub mod mutate;
+pub mod outlines;
 pub(crate) mod placeholders;
 
 /// Deserializes the arguments of a tool; a mismatch (missing, mistyped or

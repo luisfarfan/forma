@@ -12,7 +12,9 @@ use forma_model::Actor;
 
 use crate::engine::Engine;
 use crate::errors::ToolError;
-use crate::tools::{capabilities, document, placeholders};
+use crate::tools::{
+    capabilities, document, edit_batch, font, geometry, glyphs, metrics, outlines, placeholders,
+};
 
 /// A group of related tools that a facade can enable or disable together.
 /// Serialized in `snake_case` (for example `"core"`).
@@ -163,26 +165,26 @@ static REGISTRY: [CommandSpec; 35] = [
     document::CLOSE,
     document::LIST,
     document::INSPECT,
-    placeholders::FONT_SET_INFO,
-    placeholders::FONT_SET_VERTICAL_METRICS,
-    placeholders::EDIT_BATCH,
+    font::SET_INFO,
+    font::SET_VERTICAL_METRICS,
+    edit_batch::SPEC,
     placeholders::PLAN_COMMIT,
     placeholders::PLAN_DISCARD,
     // glyphs
-    placeholders::GLYPH_LIST,
-    placeholders::GLYPH_GET,
-    placeholders::GLYPH_CREATE,
-    placeholders::GLYPH_UPDATE,
-    placeholders::GLYPH_DELETE,
-    placeholders::GLYPH_SET_OUTLINE,
-    placeholders::CONTOUR_EDIT,
-    placeholders::NODES_EDIT,
+    glyphs::LIST,
+    glyphs::GET,
+    glyphs::CREATE,
+    glyphs::UPDATE,
+    glyphs::DELETE,
+    outlines::SET_OUTLINE,
+    outlines::CONTOUR_EDIT,
+    outlines::NODES_EDIT,
     // geometry
-    placeholders::GEOMETRY_CHECK,
-    placeholders::GEOMETRY_FIX,
+    geometry::CHECK,
+    geometry::FIX,
     // spacing
-    placeholders::METRICS_GET,
-    placeholders::METRICS_SET,
+    metrics::GET,
+    metrics::SET,
     // quality
     placeholders::VALIDATE,
     // export

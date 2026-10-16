@@ -63,24 +63,9 @@ fn write_font(path: &Path, family: &str) {
     forma_store::save(&Font::new(family, 1000), path).expect("save fixture");
 }
 
-const PLACEHOLDERS: [&str; 28] = [
-    "font_set_info",
-    "font_set_vertical_metrics",
-    "edit_batch",
+const PLACEHOLDERS: [&str; 13] = [
     "plan_commit",
     "plan_discard",
-    "glyph_list",
-    "glyph_get",
-    "glyph_create",
-    "glyph_update",
-    "glyph_delete",
-    "glyph_set_outline",
-    "contour_edit",
-    "nodes_edit",
-    "geometry_check",
-    "geometry_fix",
-    "metrics_get",
-    "metrics_set",
     "validate",
     "export_font",
     "preview_glyph",
@@ -181,6 +166,21 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "document_close",
         "document_list",
         "document_inspect",
+        "font_set_info",
+        "font_set_vertical_metrics",
+        "edit_batch",
+        "glyph_list",
+        "glyph_get",
+        "glyph_create",
+        "glyph_update",
+        "glyph_delete",
+        "glyph_set_outline",
+        "contour_edit",
+        "nodes_edit",
+        "geometry_check",
+        "geometry_fix",
+        "metrics_get",
+        "metrics_set",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");

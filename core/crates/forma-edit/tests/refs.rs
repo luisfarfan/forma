@@ -91,6 +91,22 @@ fn glyph_ref_name_never_matches_an_id() {
 }
 
 #[test]
+fn glyph_ref_resolve_follows_the_command_rules() {
+    let mut font = base_font();
+    let a = id_of(&font, "A");
+    assert_eq!(GlyphRef::Id(a).resolve(&font), Some(a));
+    assert_eq!(by_name("A").resolve(&font), Some(a));
+    assert_eq!(GlyphRef::Name(a.to_string()).resolve(&font), None);
+    assert_eq!(by_name("Zed").resolve(&font), None);
+
+    let uuid_text = "a1b2c3d4-0000-4000-8000-000000000001";
+    let odd = add_glyph(&mut font, uuid_text, &[], 300.0, vec![]);
+    let reference: GlyphRef = uuid_text.parse().expect("infallible");
+    assert_eq!(reference.resolve(&font), Some(odd));
+    assert_eq!(GlyphRef::Id(GlyphId::new()).resolve(&font), None);
+}
+
+#[test]
 fn unknown_glyph_is_not_found_and_names_the_reference() {
     let font = base_font();
     let err = fails(&font, set_advance(by_name("Zed")));

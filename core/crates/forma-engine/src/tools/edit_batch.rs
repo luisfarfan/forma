@@ -1,0 +1,269 @@
+//! `edit_batch`: several mutating operations as one transaction.
+//!
+//! Each operation names a mutating tool and carries that tool's own
+//! arguments (its `…OpArgs`, without `doc` and `base_rev`), translated by the
+//! same function the tool itself uses. The operations are first applied one
+//! by one to a scratch copy of the font with [`forma_edit::apply`], each
+//! translated against the state the previous ones left, so that a failure
+//! names its operation (`details.op_index`); then every command is committed
+//! at once with a single `Document::execute`, so the whole batch is one
+//! undoable transaction and one new revision, or nothing at all.
+
+use std::sync::Arc;
+
+use forma_edit::{Command, apply};
+use forma_model::{Actor, Font, Rev};
+use schemars::JsonSchema;
+use serde::de::{DeserializeOwned, IgnoredAny};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+
+use crate::engine::Engine;
+use crate::errors::{ToolError, from_args_error, from_edit_error};
+use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
+use crate::tools::limits::{check_batch_ops, check_nodes, command_nodes};
+use crate::tools::mutate::{Edit, Mutation, MutationResult, Translate, Translation, mutate, plain};
+use crate::tools::{font, geometry, glyphs, metrics, outlines};
+
+/// `edit_batch`.
+pub(crate) const SPEC: CommandSpec = CommandSpec {
+    name: "edit_batch",
+    title: "Edit in batch",
+    description: concat!(
+        "Apply several operations to `doc` atomically, as one undoable transaction with a \
+         single new `rev`: either every operation applies or none does. Each item of `ops` is \
+         {\"tool\", \"args\"}: `tool` is font_set_info, font_set_vertical_metrics, \
+         glyph_create, glyph_update, glyph_delete, glyph_set_outline, contour_edit, \
+         nodes_edit, metrics_set or geometry_fix, and `args` are that tool's arguments without \
+         `doc` and `base_rev`. Operations run in order, each on the result of the previous \
+         ones. A failing operation is named by `details.op_index` (from 0). At most 2000 \
+         operations.",
+        base_rev_note!()
+    ),
+    toolset: Toolset::Core,
+    effects: Effects::WRITE,
+    output: OutputKind::Json,
+    input_schema: schema_of::<EditBatchArgs>,
+    output_schema: Some(schema_of::<MutationResult>),
+    handler: edit_batch,
+};
+
+/// Arguments of `edit_batch`.
+pub type EditBatchArgs = Mutation<EditBatchOpArgs>;
+
+/// Arguments of `edit_batch`, besides `doc` and `base_rev`.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditBatchOpArgs {
+    /// The label of the transaction in the history; "Batch (N operations)"
+    /// when omitted.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// The operations, applied in order: from 1 to 2000.
+    #[schemars(with = "Vec<BatchOp>", length(min = 1, max = 2000))]
+    pub ops: Vec<IgnoredAny>,
+}
+
+/// One operation of a batch.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchOp {
+    /// The mutating tool to run.
+    pub tool: BatchTool,
+    /// The arguments of `tool`, without `doc` and `base_rev`.
+    #[serde(default)]
+    #[schemars(with = "Map<String, Value>")]
+    pub args: IgnoredAny,
+}
+
+/// The tools an `edit_batch` operation can run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchTool {
+    /// `font_set_info`.
+    FontSetInfo,
+    /// `font_set_vertical_metrics`.
+    FontSetVerticalMetrics,
+    /// `glyph_create`.
+    GlyphCreate,
+    /// `glyph_update`.
+    GlyphUpdate,
+    /// `glyph_delete`.
+    GlyphDelete,
+    /// `glyph_set_outline`.
+    GlyphSetOutline,
+    /// `contour_edit`.
+    ContourEdit,
+    /// `nodes_edit`.
+    NodesEdit,
+    /// `metrics_set`.
+    MetricsSet,
+    /// `geometry_fix`.
+    GeometryFix,
+}
+
+/// Parses `args` into a tool's own arguments and translates them.
+fn translate_with<Op: DeserializeOwned>(
+    font: &Font,
+    args: &Value,
+    translate: Translate<Op>,
+) -> Result<Translation, ToolError> {
+    let op = Op::deserialize(args).map_err(|error| from_args_error(&error))?;
+    translate(font, op)
+}
+
+/// Translates the arguments of one operation with its tool's translation.
+fn translate(tool: BatchTool, font: &Font, args: &Value) -> Result<Translation, ToolError> {
+    match tool {
+        BatchTool::FontSetInfo => translate_with(font, args, font::font_set_info_commands),
+        BatchTool::FontSetVerticalMetrics => {
+            translate_with(font, args, font::font_set_vertical_metrics_commands)
+        }
+        BatchTool::GlyphCreate => translate_with(font, args, glyphs::glyph_create_commands),
+        BatchTool::GlyphUpdate => translate_with(font, args, glyphs::glyph_update_commands),
+        BatchTool::GlyphDelete => translate_with(font, args, glyphs::glyph_delete_commands),
+        BatchTool::GlyphSetOutline => {
+            translate_with(font, args, outlines::glyph_set_outline_commands)
+        }
+        BatchTool::ContourEdit => translate_with(font, args, outlines::contour_edit_commands),
+        BatchTool::NodesEdit => translate_with(font, args, outlines::nodes_edit_commands),
+        BatchTool::MetricsSet => translate_with(font, args, metrics::metrics_set_commands),
+        BatchTool::GeometryFix => translate_with(font, args, geometry::geometry_fix_commands),
+    }
+}
+
+/// The commands of one operation (`{tool, args}`), translated against
+/// `font`.
+fn op_commands(font: &Font, op: &Value) -> Result<Vec<Command>, ToolError> {
+    if op.get("tool").and_then(Value::as_str) == Some(SPEC.name) {
+        return Err(ToolError::invalid_argument(
+            "edit_batch cannot contain edit_batch: list every operation in one batch",
+        ));
+    }
+    let header = BatchOp::deserialize(op).map_err(|error| from_args_error(&error))?;
+    let empty = Value::Object(Map::new());
+    let args = match op.get("args") {
+        None | Some(Value::Null) => &empty,
+        Some(args) => args,
+    };
+    translate(header.tool, font, args).map(|(_, cmds)| cmds)
+}
+
+/// `error`, as the error of operation `index`: the message names the
+/// operation and `details.op_index` is merged into its details.
+fn at_op(index: usize, mut error: ToolError) -> ToolError {
+    error.message = format!("operation {index}: {}", error.message);
+    error.details = match error.details {
+        Value::Object(mut details) => {
+            details.insert("op_index".into(), json!(index));
+            Value::Object(details)
+        }
+        Value::Null => json!({ "op_index": index }),
+        other => json!({ "op_index": index, "details": other }),
+    };
+    error
+}
+
+/// Translates every operation and applies it to a scratch copy of `font`,
+/// stopping at the first that fails; returns all the commands, in order.
+fn batch_commands(font: &Font, ops: &[Value]) -> Result<Vec<Command>, ToolError> {
+    let mut scratch = font.clone();
+    let mut cmds = Vec::new();
+    let mut nodes = 0_usize;
+    for (index, op) in ops.iter().enumerate() {
+        let op_cmds = op_commands(&scratch, op).map_err(|error| at_op(index, error))?;
+        nodes = nodes.saturating_add(op_cmds.iter().map(command_nodes).sum());
+        check_nodes(nodes).map_err(|error| at_op(index, error))?;
+        for cmd in &op_cmds {
+            scratch = apply(&scratch, cmd)
+                .map_err(|error| at_op(index, from_edit_error(error)))?
+                .0;
+        }
+        cmds.extend(op_cmds);
+    }
+    Ok(cmds)
+}
+
+fn edit_batch(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
+    // Counted before anything is parsed.
+    let ops = args
+        .get("ops")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    check_batch_ops(ops.len())?;
+    let call = Mutation::<EditBatchOpArgs>::parse(&args)?;
+    if ops.is_empty() {
+        return Err(ToolError::invalid_argument("`ops` must not be empty"));
+    }
+    let font = Arc::clone(engine.doc(&call.doc)?.font());
+    let cmds = batch_commands(&font, ops)?;
+    let label = call
+        .op
+        .label
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or_else(|| format!("Batch ({} operations)", ops.len()));
+    let edit = Edit {
+        tool: SPEC.name,
+        args: &args,
+        doc: &call.doc,
+        base_rev: Rev(call.base_rev),
+        label,
+        cmds,
+    };
+    mutate(engine, actor, edit, plain)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::errors::ErrorCode;
+
+    use super::*;
+
+    #[test]
+    fn op_errors_name_the_operation_and_keep_their_details() {
+        let bare = at_op(3, ToolError::invalid_argument("bad"));
+        assert_eq!(bare.message, "operation 3: bad");
+        assert_eq!(bare.details, json!({ "op_index": 3 }));
+
+        let detailed = at_op(
+            1,
+            ToolError::new(ErrorCode::LimitExceeded, "big")
+                .with_details(json!({ "limit": 1, "actual": 2 })),
+        );
+        assert_eq!(
+            detailed.details,
+            json!({ "limit": 1, "actual": 2, "op_index": 1 })
+        );
+
+        let odd = at_op(0, ToolError::invalid_argument("x").with_details(json!([1])));
+        assert_eq!(odd.details, json!({ "op_index": 0, "details": [1] }));
+    }
+
+    #[test]
+    fn every_batch_tool_is_a_registered_mutating_tool() {
+        let tools: Vec<BatchTool> = serde_json::from_value(json!([
+            "font_set_info",
+            "font_set_vertical_metrics",
+            "glyph_create",
+            "glyph_update",
+            "glyph_delete",
+            "glyph_set_outline",
+            "contour_edit",
+            "nodes_edit",
+            "metrics_set",
+            "geometry_fix"
+        ]))
+        .expect("tool names");
+        for tool in tools {
+            let name = serde_json::to_value(tool).expect("name");
+            let spec = crate::registry::find(name.as_str().expect("text")).expect("registered");
+            assert!(!spec.effects.read_only, "{}", spec.name);
+            let schema = (spec.input_schema)();
+            assert!(
+                schema["properties"].get("base_rev").is_some(),
+                "{}",
+                spec.name
+            );
+        }
+    }
+}

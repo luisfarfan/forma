@@ -9,7 +9,10 @@ description = "FORMA command registry, document lifecycle and path sandbox share
 [dependencies]
 forma-model = { path = "../forma-model" }
 forma-edit = { path = "../forma-edit" }
+forma-geometry = { path = "../forma-geometry" }
 forma-store = { path = "../forma-store" }
+# Opaque pagination cursors (and, from Task 15, plan tokens).
+base64 = { workspace = true }
 # Canonical paths without Windows `\\?\` prefixes, for the allowed-roots sandbox.
 dunce = { workspace = true }
 schemars = { workspace = true }
