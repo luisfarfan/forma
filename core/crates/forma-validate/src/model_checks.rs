@@ -1,0 +1,179 @@
+//! Checks on the font document itself: geometry, Unicode coverage and
+//! vertical metrics. They run on a font that satisfies the model invariants.
+
+use forma_geometry::{IssueKind, check_paths};
+use forma_model::{Font, Glyph, MasterId};
+
+use crate::{Finding, Severity};
+
+/// The grid, in font units, that coordinates are expected to sit on.
+const GRID: f64 = 1.0;
+
+/// The glyph that is allowed to have no code point.
+const NOTDEF: &str = ".notdef";
+
+/// Runs every model check.
+pub(crate) fn check_model(font: &Font) -> Vec<Finding> {
+    let mut findings = check_geometry(font);
+    findings.extend(check_unicode(font));
+    findings.extend(check_vertical_metrics(font));
+    findings
+}
+
+/// The glyphs marked for export, in glyph order. The rest are left out of the
+/// binary and are therefore not checked.
+pub(crate) fn exported_glyphs(font: &Font) -> impl Iterator<Item = &Glyph> {
+    font.glyph_order
+        .iter()
+        .filter_map(|id| font.glyphs.get(id))
+        .map(|glyph| &**glyph)
+        .filter(|glyph| glyph.export)
+}
+
+/// The check id of a geometry issue kind.
+///
+/// These strings are a contract with whoever reads the report, so they are
+/// spelled out instead of derived. A kind added to `forma-geometry` later is
+/// reported as `geometry.other` until it is added here.
+fn geometry_check_id(kind: IssueKind) -> &'static str {
+    match kind {
+        IssueKind::OpenContour => "geometry.open_contour",
+        IssueKind::WrongDirection => "geometry.wrong_direction",
+        IssueKind::DuplicatePoints => "geometry.duplicate_points",
+        IssueKind::TinySegment => "geometry.tiny_segment",
+        IssueKind::OffGrid => "geometry.off_grid",
+        IssueKind::MissingExtrema => "geometry.missing_extrema",
+        IssueKind::InvalidContour => "geometry.invalid_contour",
+        _ => "geometry.other",
+    }
+}
+
+/// Contours that are open, run the wrong way or cannot be read make the font
+/// wrong; everything else is a quality remark.
+fn geometry_severity(kind: IssueKind) -> Severity {
+    match kind {
+        IssueKind::OpenContour | IssueKind::WrongDirection | IssueKind::InvalidContour => {
+            Severity::Error
+        }
+        _ => Severity::Warning,
+    }
+}
+
+/// Geometry of every master layer of every exported glyph.
+fn check_geometry(font: &Font) -> Vec<Finding> {
+    let several_masters = font.masters.len() > 1;
+    let mut findings = Vec::new();
+    for glyph in exported_glyphs(font) {
+        for (master, layer) in &glyph.layers {
+            let prefix = if several_masters {
+                format!("master {:?}: ", master_name(font, *master))
+            } else {
+                String::new()
+            };
+            for issue in check_paths(&layer.paths, GRID) {
+                findings.push(Finding::new(
+                    geometry_check_id(issue.kind),
+                    geometry_severity(issue.kind),
+                    Some(&glyph.name),
+                    format!("{prefix}contour {}: {}", issue.path.0, issue.message),
+                ));
+            }
+        }
+    }
+    findings
+}
+
+/// The name of a master, or its id if the font does not have it.
+fn master_name(font: &Font, id: MasterId) -> String {
+    font.masters
+        .iter()
+        .find(|master| master.id == id)
+        .map_or_else(|| id.to_string(), |master| master.name.clone())
+}
+
+/// Exported glyphs that no code point leads to. That is normal for alternates
+/// and ligatures, so it is only information.
+fn check_unicode(font: &Font) -> Vec<Finding> {
+    exported_glyphs(font)
+        .filter(|glyph| glyph.name != NOTDEF && glyph.unicodes.is_empty())
+        .map(|glyph| {
+            Finding::new(
+                "unicode.missing",
+                Severity::Info,
+                Some(&glyph.name),
+                "the glyph has no Unicode code point",
+            )
+        })
+        .collect()
+}
+
+/// Masters whose ascender is not above their descender.
+fn check_vertical_metrics(font: &Font) -> Vec<Finding> {
+    let several_masters = font.masters.len() > 1;
+    font.masters
+        .iter()
+        .filter(|master| master.metrics.ascender <= master.metrics.descender)
+        .map(|master| {
+            let prefix = if several_masters {
+                format!("master {:?}: ", master.name)
+            } else {
+                String::new()
+            };
+            Finding::new(
+                "metrics.vertical",
+                Severity::Error,
+                None,
+                format!(
+                    "{prefix}the ascender {} must be above the descender {}",
+                    master.metrics.ascender, master.metrics.descender
+                ),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_ids_and_severities_are_stable() {
+        let expected = [
+            (
+                IssueKind::OpenContour,
+                "geometry.open_contour",
+                Severity::Error,
+            ),
+            (
+                IssueKind::WrongDirection,
+                "geometry.wrong_direction",
+                Severity::Error,
+            ),
+            (
+                IssueKind::DuplicatePoints,
+                "geometry.duplicate_points",
+                Severity::Warning,
+            ),
+            (
+                IssueKind::TinySegment,
+                "geometry.tiny_segment",
+                Severity::Warning,
+            ),
+            (IssueKind::OffGrid, "geometry.off_grid", Severity::Warning),
+            (
+                IssueKind::MissingExtrema,
+                "geometry.missing_extrema",
+                Severity::Warning,
+            ),
+            (
+                IssueKind::InvalidContour,
+                "geometry.invalid_contour",
+                Severity::Error,
+            ),
+        ];
+        for (kind, id, severity) in expected {
+            assert_eq!(geometry_check_id(kind), id);
+            assert_eq!(geometry_severity(kind), severity, "{id}");
+        }
+    }
+}
