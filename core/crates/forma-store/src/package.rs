@@ -146,6 +146,55 @@ fn ensure_version_is_supported(version: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Whether an error means that a path, or a folder on the way to it, does not
+/// exist.
+fn is_missing(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
+/// Refuses `path` if it is a symbolic link (on Windows, also a junction).
+/// A path that does not exist is fine.
+fn refuse_link(path: &Path) -> Result<(), StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(StoreError::SymlinkInPackage(path.to_path_buf()))
+        }
+        Ok(_) => Ok(()),
+        Err(err) if is_missing(&err) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Refuses the package in `dir` if `manifest.json`, `font.json`, the `glyphs`
+/// folder or any entry of `glyphs/` is a symbolic link, so that neither a load
+/// nor a save ever reads, writes or deletes anything through a link: a link
+/// could point outside the package (and outside the folders a caller allowed).
+/// Parts that do not exist are fine.
+///
+/// The check runs before anything is read or written; a link created by
+/// another process while the load or save is under way is not detected.
+fn ensure_no_links(dir: &Path) -> Result<(), StoreError> {
+    for name in [MANIFEST, FONT, GLYPHS] {
+        refuse_link(&dir.join(name))?;
+    }
+    let entries = match fs::read_dir(dir.join(GLYPHS)) {
+        Ok(entries) => entries,
+        Err(err) if is_missing(&err) => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        // `DirEntry::file_type` does not follow links.
+        if entry.file_type()?.is_symlink() {
+            return Err(StoreError::SymlinkInPackage(entry.path()));
+        }
+    }
+    Ok(())
+}
+
 /// The temporary files in a folder that holds nothing but the debris of a
 /// first save that was interrupted before any file became visible: temporary
 /// files, and a `glyphs` folder that holds nothing but temporary files.
@@ -406,6 +455,7 @@ fn save_with(font: &Font, dir: &Path, files: &mut impl Files) -> Result<(), Stor
     }
     wanted.push((dir.join(FONT), font_json.into_bytes()));
 
+    ensure_no_links(dir)?;
     let created_dir = prepare_directory(dir)?;
     let created_glyphs_dir = !glyphs_dir.exists();
     let result = fs::create_dir_all(&glyphs_dir)
@@ -457,6 +507,7 @@ pub(crate) fn load(dir: &Path) -> Result<Font, StoreError> {
     if !fs::metadata(dir)?.is_dir() {
         return Err(StoreError::NotAFormaPackage(dir.to_path_buf()));
     }
+    ensure_no_links(dir)?;
     let manifest = read_manifest(dir)?;
     let version = manifest_version(&manifest)
         .filter(|&version| version > 0)

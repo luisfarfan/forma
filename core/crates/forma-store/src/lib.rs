@@ -16,7 +16,8 @@
 //! * nothing that could not be loaded back is written, and [`load`] checks
 //!   every font with [`Font::validate_invariants`] before returning it;
 //! * saving a package never writes into a folder that is not already a
-//!   package (or empty);
+//!   package (or empty), and neither saving nor loading follows a symbolic
+//!   link inside a package ([`StoreError::SymlinkInPackage`]);
 //! * the JSON is canonical ([`to_canonical_json`]): saving the same font twice
 //!   gives identical bytes.
 //!
@@ -73,6 +74,41 @@ pub enum StoreError {
     /// A file system operation failed.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// A part of a `.formapackage` (`manifest.json`, `font.json`, the
+    /// `glyphs` folder or an entry in it) is a symbolic link (on Windows, also
+    /// a junction). Links are never followed: one could make a load read, or
+    /// a save write or delete, files outside the package.
+    #[error("{}: symbolic links are not allowed inside a package", .0.display())]
+    SymlinkInPackage(PathBuf),
+}
+
+impl StoreError {
+    /// Whether the error comes from the environment (the file system, the
+    /// disk, permissions, locks) rather than from the document itself:
+    /// [`StoreError::Io`], and SQLite failures for a full disk (`SQLITE_FULL`),
+    /// an I/O error (`SQLITE_IOERR*`), a file that cannot be opened
+    /// (`SQLITE_CANTOPEN`), a read-only database (`SQLITE_READONLY`), a denied
+    /// permission (`SQLITE_PERM`) or a busy or locked database (`SQLITE_BUSY`,
+    /// `SQLITE_LOCKED`). A file that is not a database (`SQLITE_NOTADB`) is a
+    /// problem of the document, not of the environment.
+    #[must_use]
+    pub fn is_io_failure(&self) -> bool {
+        use rusqlite::ErrorCode as Code;
+        match self {
+            Self::Io(_) => true,
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _)) => matches!(
+                error.code,
+                Code::DiskFull
+                    | Code::SystemIoFailure
+                    | Code::CannotOpen
+                    | Code::ReadOnly
+                    | Code::PermissionDenied
+                    | Code::DatabaseBusy
+                    | Code::DatabaseLocked
+            ),
+            _ => false,
+        }
+    }
 }
 
 /// The two document formats.
@@ -116,6 +152,8 @@ fn format_of(path: &Path) -> Result<Format, StoreError> {
 ///   is not a package;
 /// * [`StoreError::UnsupportedVersion`] if the target is a package written by
 ///   a newer FORMA;
+/// * [`StoreError::SymlinkInPackage`] if a part of the target package is a
+///   symbolic link (nothing is written or deleted);
 /// * [`StoreError::Io`] and [`StoreError::Sqlite`] if writing fails; the
 ///   previous document is then intact (see above for packages).
 pub fn save(font: &Font, path: &Path) -> Result<(), StoreError> {
@@ -138,6 +176,8 @@ pub fn save(font: &Font, path: &Path) -> Result<(), StoreError> {
 ///   file or folder is not a FORMA document;
 /// * [`StoreError::UnsupportedVersion`] if it was written by a newer FORMA;
 /// * [`StoreError::Invalid`] if it is damaged or breaks a data model rule;
+/// * [`StoreError::SymlinkInPackage`] if a part of a package is a symbolic
+///   link (nothing is read through it);
 /// * [`StoreError::Json`], [`StoreError::Sqlite`] and [`StoreError::Io`] if it
 ///   cannot be read.
 pub fn load(path: &Path) -> Result<Font, StoreError> {
@@ -180,4 +220,45 @@ fn convert(src: &Path, dst: &Path) -> Result<(), StoreError> {
     format_of(dst)?;
     let font = load(src)?;
     save(&font, dst)
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::ffi;
+
+    use super::*;
+
+    fn sqlite(code: std::os::raw::c_int) -> StoreError {
+        StoreError::Sqlite(rusqlite::Error::SqliteFailure(ffi::Error::new(code), None))
+    }
+
+    #[test]
+    fn io_failures_are_told_apart_from_document_problems() {
+        for code in [
+            ffi::SQLITE_FULL,
+            ffi::SQLITE_IOERR,
+            ffi::SQLITE_IOERR_WRITE,
+            ffi::SQLITE_IOERR_FSYNC,
+            ffi::SQLITE_CANTOPEN,
+            ffi::SQLITE_READONLY,
+            ffi::SQLITE_PERM,
+            ffi::SQLITE_BUSY,
+            ffi::SQLITE_LOCKED,
+        ] {
+            assert!(sqlite(code).is_io_failure(), "code {code}");
+        }
+        assert!(StoreError::Io(std::io::Error::other("disk")).is_io_failure());
+
+        for code in [
+            ffi::SQLITE_NOTADB,
+            ffi::SQLITE_CORRUPT,
+            ffi::SQLITE_CONSTRAINT,
+        ] {
+            assert!(!sqlite(code).is_io_failure(), "code {code}");
+        }
+        assert!(!StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows).is_io_failure());
+        assert!(!StoreError::Invalid("broken".into()).is_io_failure());
+        assert!(!StoreError::SymlinkInPackage(PathBuf::from("glyphs")).is_io_failure());
+        assert!(!StoreError::UnknownFormat(PathBuf::from("a.txt")).is_io_failure());
+    }
 }
