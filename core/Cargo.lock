@@ -868,6 +868,7 @@ dependencies = [
  "forma-edit",
  "forma-model",
  "forma-store",
+ "rusqlite",
  "schemars",
  "serde",
  "serde_json",

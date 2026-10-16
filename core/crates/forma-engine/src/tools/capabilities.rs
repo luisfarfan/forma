@@ -66,7 +66,7 @@ fn forma_capabilities(
     json_output(&CapabilitiesResult {
         api_version: API_VERSION.to_owned(),
         server_version: env!("CARGO_PKG_VERSION").to_owned(),
-        toolsets: Toolset::ALL.to_vec(),
+        toolsets: engine.enabled_toolsets(),
         limits: Limits::CURRENT,
         formats: FORMATS.iter().map(|format| (*format).to_owned()).collect(),
         policy: engine.config().policy,

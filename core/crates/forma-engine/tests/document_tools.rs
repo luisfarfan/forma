@@ -460,6 +460,122 @@ fn read_only_mode_blocks_mutations() {
 }
 
 #[test]
+fn read_only_mode_allows_closing_documents() {
+    let root = TempDir::new().expect("tempdir");
+    let existing = root.path().join("existing.forma");
+    write_font(&existing, "Existing");
+    let mut engine = Engine::new(EngineConfig {
+        allowed_roots: vec![root.path().to_path_buf()],
+        read_only: true,
+        ..EngineConfig::default()
+    });
+    let doc = doc_of(&ok(
+        &mut engine,
+        "document_open",
+        json!({ "path": text(&existing) }),
+    ));
+    let closed = ok(&mut engine, "document_close", json!({ "doc": doc }));
+    assert_eq!(closed["closed"], json!(true));
+    assert!(engine.open_docs().is_empty());
+
+    // Its annotation still says it is not read-only.
+    let close = forma_engine::find("document_close").expect("registered");
+    assert!(!close.effects.read_only);
+
+    // A read-only engine lists exactly the tools it accepts.
+    let listed: Vec<&str> = engine
+        .enabled_specs()
+        .iter()
+        .map(|spec| spec.name)
+        .collect();
+    let expected: Vec<&str> = registry()
+        .iter()
+        .filter(|spec| spec.effects.read_only || spec.name == "document_close")
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(listed, expected);
+    assert!(listed.contains(&"document_close") && !listed.contains(&"document_create"));
+}
+
+#[test]
+fn toolsets_can_be_disabled() {
+    let root = TempDir::new().expect("tempdir");
+    let all = engine_with(&[root.path()]);
+    assert_eq!(all.enabled_specs().len(), 35);
+    assert_eq!(all.enabled_toolsets(), Toolset::ALL.to_vec());
+
+    let mut engine = Engine::new(EngineConfig {
+        allowed_roots: vec![root.path().to_path_buf()],
+        toolsets: Some(vec![Toolset::History, Toolset::Core]),
+        ..EngineConfig::default()
+    });
+    let caps = ok(&mut engine, "forma_capabilities", json!({}));
+    assert_eq!(caps["toolsets"], json!(["core", "history"]));
+
+    for (tool, toolset) in [
+        ("glyph_list", "glyphs"),
+        ("geometry_check", "geometry"),
+        ("metrics_set", "spacing"),
+        ("validate", "quality"),
+        ("export_font", "export"),
+        ("preview_glyph", "preview"),
+    ] {
+        let error = err(&mut engine, tool, json!({}));
+        assert_eq!(error.code, ErrorCode::Unsupported, "{tool}");
+        assert_eq!(
+            error.message,
+            format!("toolset '{toolset}' is disabled"),
+            "{tool}"
+        );
+    }
+    // The enabled toolsets work as usual.
+    let doc = doc_of(&ok(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": "X" }),
+    ));
+    ok(&mut engine, "document_inspect", json!({ "doc": doc }));
+
+    // The facade lists the enabled tools in registry order.
+    let listed: Vec<&str> = engine
+        .enabled_specs()
+        .iter()
+        .map(|spec| spec.name)
+        .collect();
+    let expected: Vec<&str> = registry()
+        .iter()
+        .filter(|spec| matches!(spec.toolset, Toolset::Core | Toolset::History))
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(listed, expected);
+    assert_eq!(listed.len(), 18);
+    assert_eq!(listed.first(), Some(&"forma_capabilities"));
+    assert_eq!(listed.last(), Some(&"document_diff"));
+
+    // Combined with read-only mode.
+    let read_only = Engine::new(EngineConfig {
+        toolsets: Some(vec![Toolset::Core]),
+        read_only: true,
+        ..EngineConfig::default()
+    });
+    let listed: Vec<&str> = read_only
+        .enabled_specs()
+        .iter()
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "forma_capabilities",
+            "document_open",
+            "document_close",
+            "document_list",
+            "document_inspect"
+        ]
+    );
+}
+
+#[test]
 fn unknown_handle_is_not_found() {
     let mut engine = engine_with(&[]);
     for (tool, args) in [
@@ -1064,5 +1180,121 @@ fn symlink_escape_is_rejected() {
             json!({ "path": text(&inner_link) }),
         );
         assert_eq!(opened["path"], json!(text(&canon(&inner))));
+    }
+}
+
+#[test]
+#[cfg_attr(windows, ignore)]
+fn package_links_cannot_escape_the_roots() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().expect("tempdir");
+        let outside = TempDir::new().expect("tempdir");
+        let important = outside.path().join("important.json");
+        std::fs::write(&important, b"{\"keep\": true}").expect("write");
+        let mut engine = engine_with(&[root.path()]);
+
+        // A package whose `glyphs` folder links outside cannot be opened:
+        // nothing is read through the link.
+        let linked = root.path().join("linked.formapackage");
+        write_font(&linked, "Linked");
+        std::fs::remove_dir(linked.join("glyphs")).expect("rmdir");
+        symlink(outside.path(), linked.join("glyphs")).expect("symlink");
+        let error = err(
+            &mut engine,
+            "document_open",
+            json!({ "path": text(&linked) }),
+        );
+        assert_eq!(error.code, ErrorCode::PathNotAllowed, "{}", error.message);
+        assert!(engine.open_docs().is_empty());
+
+        // A link introduced after opening stops the save: the outside file
+        // is neither deleted as a stale glyph file nor written next to.
+        let package = root.path().join("package.formapackage");
+        write_font(&package, "Package");
+        let doc = doc_of(&ok(
+            &mut engine,
+            "document_open",
+            json!({ "path": text(&package) }),
+        ));
+        std::fs::remove_dir(package.join("glyphs")).expect("rmdir");
+        symlink(outside.path(), package.join("glyphs")).expect("symlink");
+        let error = err(
+            &mut engine,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 0 }),
+        );
+        assert_eq!(error.code, ErrorCode::PathNotAllowed, "{}", error.message);
+        assert_eq!(
+            std::fs::read(&important).expect("kept"),
+            b"{\"keep\": true}"
+        );
+        let names: Vec<_> = std::fs::read_dir(outside.path())
+            .expect("read_dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(names, ["important.json"]);
+    }
+}
+
+#[test]
+#[cfg_attr(windows, ignore)]
+fn save_rechecks_the_document_path() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().expect("tempdir");
+        let outside = TempDir::new().expect("tempdir");
+        let sub = root.path().join("sub");
+        let other = root.path().join("other");
+        std::fs::create_dir(&sub).expect("mkdir");
+        std::fs::create_dir(&other).expect("mkdir");
+        let mut engine = engine_with(&[root.path()]);
+        let doc = doc_of(&ok(
+            &mut engine,
+            "document_create",
+            json!({ "family_name": "Moved", "path": text(&sub.join("font.forma")) }),
+        ));
+
+        // The folder is swapped for a link to outside the roots.
+        let moved = root.path().join("sub-moved");
+        std::fs::rename(&sub, &moved).expect("rename");
+        symlink(outside.path(), &sub).expect("symlink");
+        let error = err(
+            &mut engine,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 0 }),
+        );
+        assert_eq!(error.code, ErrorCode::PathNotAllowed, "{}", error.message);
+        assert!(!outside.path().join("font.forma").exists());
+
+        // ... or for a link to another folder inside the roots: the save is
+        // not redirected there either.
+        std::fs::remove_file(&sub).expect("unlink");
+        symlink(&other, &sub).expect("symlink");
+        let error = err(
+            &mut engine,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 0 }),
+        );
+        assert_eq!(error.code, ErrorCode::PathNotAllowed, "{}", error.message);
+        assert!(
+            error.message.contains("save with an explicit `path`"),
+            "{}",
+            error.message
+        );
+        assert!(!other.join("font.forma").exists());
+
+        // Once the folder is back, saving works again.
+        std::fs::remove_file(&sub).expect("unlink");
+        std::fs::rename(&moved, &sub).expect("rename");
+        ok(
+            &mut engine,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 0 }),
+        );
     }
 }

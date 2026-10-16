@@ -14,7 +14,12 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::errors::{ToolError, from_edit_error};
-use crate::registry::{ToolOutput, find};
+use crate::registry::{CommandSpec, ToolOutput, Toolset, find, registry};
+
+/// Tools that are not read-only but stay callable in read-only mode, because
+/// they only change the engine's in-memory state. Their effects (and so their
+/// annotations) still say they are not read-only.
+const ALLOWED_IN_READ_ONLY: [&str; 1] = ["document_close"];
 
 /// How destructive or massive operations are approved.
 ///
@@ -57,8 +62,12 @@ pub struct EngineConfig {
     pub audit_log: Option<PathBuf>,
     /// Where to keep crash-recovery journals (wired in Task 16).
     pub journal_dir: Option<PathBuf>,
-    /// Refuse every tool that is not read-only.
+    /// Refuse every tool that is not read-only (except `document_close`,
+    /// which only changes the engine's in-memory state).
     pub read_only: bool,
+    /// The enabled toolsets; `None` enables all of them. The tools of a
+    /// disabled toolset are refused and not listed.
+    pub toolsets: Option<Vec<Toolset>>,
 }
 
 /// The handle of an open document: `"doc_<32 hex digits>"`, random, valid
@@ -236,6 +245,53 @@ impl Engine {
         &self.roots
     }
 
+    /// Whether the tools of `toolset` are enabled.
+    #[must_use]
+    pub fn is_toolset_enabled(&self, toolset: Toolset) -> bool {
+        self.cfg
+            .toolsets
+            .as_ref()
+            .is_none_or(|enabled| enabled.contains(&toolset))
+    }
+
+    /// The enabled toolsets, in [`Toolset::ALL`] order.
+    #[must_use]
+    pub fn enabled_toolsets(&self) -> Vec<Toolset> {
+        Toolset::ALL
+            .into_iter()
+            .filter(|toolset| self.is_toolset_enabled(*toolset))
+            .collect()
+    }
+
+    /// The commands this engine accepts, in registry order: those of the
+    /// enabled toolsets, minus, in read-only mode, those refused there. This
+    /// is the list a facade exposes.
+    #[must_use]
+    pub fn enabled_specs(&self) -> Vec<&'static CommandSpec> {
+        registry()
+            .iter()
+            .filter(|spec| self.check_available(spec).is_ok())
+            .collect()
+    }
+
+    /// Refuses a command of a disabled toolset, or one that is not read-only
+    /// in read-only mode (save the exemptions of [`ALLOWED_IN_READ_ONLY`]).
+    fn check_available(&self, spec: &CommandSpec) -> Result<(), ToolError> {
+        if !self.is_toolset_enabled(spec.toolset) {
+            return Err(ToolError::unsupported(format!(
+                "toolset '{}' is disabled",
+                spec.toolset.as_str()
+            )));
+        }
+        if self.cfg.read_only
+            && !spec.effects.read_only
+            && !ALLOWED_IN_READ_ONLY.contains(&spec.name)
+        {
+            return Err(ToolError::unsupported("server is in read-only mode"));
+        }
+        Ok(())
+    }
+
     /// Runs the tool `tool` with `args` on behalf of `actor`.
     ///
     /// `args` must be a JSON object; `null` is treated as `{}`.
@@ -244,8 +300,9 @@ impl Engine {
     ///
     /// * `INVALID_ARGUMENT` for an unknown tool, or arguments that are not an
     ///   object or do not match the tool's schema (including unknown fields);
-    /// * `UNSUPPORTED` for a tool that is not read-only when the engine is in
-    ///   read-only mode;
+    /// * `UNSUPPORTED` for a tool of a disabled toolset, or for a tool that is
+    ///   not read-only when the engine is in read-only mode (`document_close`
+    ///   excepted);
     /// * any error of the tool itself.
     pub fn call(
         &mut self,
@@ -255,9 +312,7 @@ impl Engine {
     ) -> Result<ToolOutput, ToolError> {
         let spec = find(tool)
             .ok_or_else(|| ToolError::invalid_argument(format!("unknown tool '{tool}'")))?;
-        if self.cfg.read_only && !spec.effects.read_only {
-            return Err(ToolError::unsupported("server is in read-only mode"));
-        }
+        self.check_available(spec)?;
         let args = match args {
             Value::Null => Value::Object(serde_json::Map::new()),
             Value::Object(_) => args,

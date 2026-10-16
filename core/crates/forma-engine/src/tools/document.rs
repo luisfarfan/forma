@@ -363,9 +363,25 @@ fn document_save(
             }
             resolved
         }
-        None => open.source_path.clone().ok_or_else(|| {
-            ToolError::invalid_argument("path required: the document has no file yet; pass `path`")
-        })?,
+        None => {
+            let source = open.source_path.clone().ok_or_else(|| {
+                ToolError::invalid_argument(
+                    "path required: the document has no file yet; pass `path`",
+                )
+            })?;
+            // The file system may have changed since the document was opened
+            // (a folder swapped for a link, say): check again, and never let
+            // that redirect the save.
+            let resolved = engine.check_document_path(&source, false)?;
+            if resolved != source {
+                return Err(ToolError::path_not_allowed(format!(
+                    "the document's file '{}' now resolves to '{}'; save with an explicit `path`",
+                    path_text(&source),
+                    path_text(&resolved)
+                )));
+            }
+            source
+        }
     };
 
     forma_store::save(open.font(), &target).map_err(from_store_error)?;

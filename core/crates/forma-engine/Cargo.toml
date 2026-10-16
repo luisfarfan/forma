@@ -20,4 +20,6 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# Only to construct SQLite errors in the error-mapping tests.
+rusqlite = { workspace = true }
 tempfile = { workspace = true }

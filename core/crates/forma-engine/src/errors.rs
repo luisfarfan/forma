@@ -190,15 +190,25 @@ pub fn conflict_details(info: &ConflictInfo) -> Value {
     json!({ "current_rev": info.current_rev.0, "conflicts": conflicts })
 }
 
-/// Maps a [`StoreError`] onto a [`ToolError`]: I/O failures are `IO_ERROR`,
-/// everything else (unknown format, not a FORMA document, unsupported
-/// version, invalid content, JSON or SQLite errors) is `INVALID_ARGUMENT`.
-/// The message is the error text.
+/// Maps a [`StoreError`] onto a [`ToolError`]; the message is the error text.
+///
+/// * A symbolic link inside a package ([`StoreError::SymlinkInPackage`]) is
+///   `PATH_NOT_ALLOWED`: it could lead outside the allowed roots.
+/// * Failures of the environment ([`StoreError::is_io_failure`]: file system
+///   errors, and SQLite reporting a full disk, an I/O error, a file it cannot
+///   open, a read-only, busy or locked database or a denied permission) are
+///   `IO_ERROR`.
+/// * Everything else (unknown format, not a FORMA document, unsupported
+///   version, invalid or damaged content, other SQLite errors such as "not a
+///   database") is `INVALID_ARGUMENT`.
 #[must_use]
 pub fn from_store_error(error: StoreError) -> ToolError {
-    match error {
-        StoreError::Io(_) => ToolError::io(error.to_string()),
-        _ => ToolError::invalid_argument(error.to_string()),
+    if matches!(error, StoreError::SymlinkInPackage(_)) {
+        ToolError::path_not_allowed(error.to_string())
+    } else if error.is_io_failure() {
+        ToolError::io(error.to_string())
+    } else {
+        ToolError::invalid_argument(error.to_string())
     }
 }
 
@@ -309,6 +319,13 @@ mod tests {
         );
     }
 
+    fn sqlite(code: std::os::raw::c_int) -> StoreError {
+        StoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            Some("detail".into()),
+        ))
+    }
+
     #[test]
     fn store_errors_map_io_and_the_rest() {
         let io = from_store_error(StoreError::Io(std::io::Error::other("disk full")));
@@ -316,5 +333,46 @@ mod tests {
         let invalid = from_store_error(StoreError::Invalid("broken".into()));
         assert_eq!(invalid.code, ErrorCode::InvalidArgument);
         assert_eq!(invalid.message, "invalid document: broken");
+        let link = from_store_error(StoreError::SymlinkInPackage("pkg/glyphs".into()));
+        assert_eq!(link.code, ErrorCode::PathNotAllowed);
+        assert!(link.message.contains("pkg/glyphs"), "{}", link.message);
+    }
+
+    #[test]
+    fn sqlite_environment_failures_are_io_errors() {
+        use rusqlite::ffi;
+        for code in [
+            ffi::SQLITE_FULL,
+            ffi::SQLITE_IOERR,
+            ffi::SQLITE_IOERR_READ,
+            ffi::SQLITE_IOERR_WRITE,
+            ffi::SQLITE_IOERR_FSYNC,
+            ffi::SQLITE_CANTOPEN,
+            ffi::SQLITE_READONLY,
+            ffi::SQLITE_PERM,
+            ffi::SQLITE_BUSY,
+            ffi::SQLITE_LOCKED,
+        ] {
+            assert_eq!(
+                from_store_error(sqlite(code)).code,
+                ErrorCode::IoError,
+                "code {code}"
+            );
+        }
+        for code in [
+            ffi::SQLITE_NOTADB,
+            ffi::SQLITE_CORRUPT,
+            ffi::SQLITE_CONSTRAINT,
+        ] {
+            assert_eq!(
+                from_store_error(sqlite(code)).code,
+                ErrorCode::InvalidArgument,
+                "code {code}"
+            );
+        }
+        assert_eq!(
+            from_store_error(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows)).code,
+            ErrorCode::InvalidArgument
+        );
     }
 }
