@@ -32,13 +32,18 @@ fn hex(rgb: [u8; 3]) -> String {
 /// and a single `<path fill="black">` holding all the contours, with a
 /// `scale(1,-1)` transform turning the y-up font coordinates into SVG's y-down
 /// ones. `show_metrics` and `show_nodes` add the guides and nodes of the PNG
-/// preview as `<g id="metrics">` and `<g id="nodes">` groups.
+/// preview as `<g id="metrics">` and `<g id="nodes">` groups. If the master's
+/// ascender and descender are unusable (not finite, or the ascender is not
+/// above the descender), proportional metrics are used instead: ascender 80%
+/// and descender -20% of the units per em.
 ///
 /// # Errors
 ///
 /// * [`RenderError::InvalidSize`] if `opts.size` is outside `16..=1024`;
 /// * [`RenderError::MissingLayer`] if the glyph has no layer for `master`;
-/// * [`RenderError::Geometry`] if a contour cannot be converted to a curve.
+/// * [`RenderError::Geometry`] if a contour cannot be converted to a curve, or
+///   if the box cannot be framed ("degenerate framing", as for
+///   [`glyph_png`](crate::glyph_png)).
 pub fn glyph_svg(
     font: &Font,
     glyph: &Glyph,
@@ -52,10 +57,10 @@ pub fn glyph_svg(
     outline(&glyph.name, layer)?;
 
     let metrics = metrics_of(font, Some(master));
-    let frame = Frame::new(&metrics, layer.advance_width);
+    let frame = Frame::new(&metrics, layer.advance_width, size)?;
     let half = frame.side / 2.0;
     // Font units per pixel: the stroke width of a 1 px line.
-    let pixel = frame.side / f64::from(size);
+    let pixel = frame.side / frame.size;
     let left = frame.cx - half;
     let (bottom, top) = (frame.cy - half, frame.cy + half);
     let side = num(frame.side);

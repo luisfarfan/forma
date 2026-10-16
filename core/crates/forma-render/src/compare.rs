@@ -21,7 +21,10 @@ const AFTER_COLOR: Color = Color::from_rgba8(0, 0, 0, 153);
 /// framing of [`glyph_png`](crate::glyph_png) taken from `after` (from
 /// `before` when `after` has no such glyph). A glyph present in one font only
 /// is drawn alone. `show_metrics` adds the guides and `show_nodes` the nodes
-/// of the glyph that sets the framing.
+/// of the glyph that sets the framing. If the master's ascender and descender
+/// are unusable (not finite, or the ascender is not above the descender),
+/// proportional metrics are used instead: ascender 80% and descender -20% of
+/// the units per em.
 ///
 /// # Errors
 ///
@@ -29,7 +32,9 @@ const AFTER_COLOR: Color = Color::from_rgba8(0, 0, 0, 153);
 /// * [`RenderError::GlyphNotFound`] if neither font has the glyph;
 /// * [`RenderError::MissingLayer`] if the glyph exists but has no layer for
 ///   `master` in either font;
-/// * [`RenderError::Geometry`] if a contour cannot be converted to a curve.
+/// * [`RenderError::Geometry`] if a contour cannot be converted to a curve, or
+///   if the box cannot be framed ("degenerate framing", as for
+///   [`glyph_png`](crate::glyph_png)).
 pub fn compare_png(
     before: &Font,
     after: &Font,
@@ -59,19 +64,12 @@ pub fn compare_png(
     let after_path = after_layer.map(|l| outline(glyph, l)).transpose()?;
 
     let metrics = metrics_of(frame_font, Some(master));
-    let frame = Frame::new(&metrics, frame_layer.advance_width);
-    let size_px = f64::from(size);
-    let to_px = frame.to_pixels(size_px);
+    let frame = Frame::new(&metrics, frame_layer.advance_width, size)?;
+    let to_px = frame.to_pixels();
 
     let mut canvas = Canvas::new(size, size);
     if opts.show_metrics {
-        draw_metrics(
-            &mut canvas,
-            &frame,
-            size_px,
-            &metrics,
-            frame_layer.advance_width,
-        );
+        draw_metrics(&mut canvas, &frame, &metrics, frame_layer.advance_width);
     }
     if let Some(path) = &after_path {
         canvas.fill(path, to_px, AFTER_COLOR);

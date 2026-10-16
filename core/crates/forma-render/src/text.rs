@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use forma_model::{Font, Glyph, MasterId};
 use vello_cpu::kurbo::{Affine, BezPath, Point};
 
-use crate::draw::{BLACK, Canvas, check_size, metrics_of, outline};
+use crate::draw::{BLACK, Canvas, check_scale, check_size, degenerate, metrics_of, outline};
 use crate::{MAX_TEXT_WIDTH, RenderError};
 
 /// The blank space at each end of the line, as a fraction of its height.
@@ -34,22 +34,42 @@ struct Placed {
 /// margin of 10% of the height at each end, capped at 2048 px: whatever does
 /// not fit is clipped, not an error. At most 4096 characters are laid out.
 ///
+/// If the default master's ascender and descender are unusable (not finite,
+/// or the ascender is not above the descender), proportional metrics are used
+/// instead: ascender 80% and descender -20% of the units per em.
+///
 /// # Errors
 ///
 /// * [`RenderError::InvalidSize`] if `height` is outside `16..=1024`;
 /// * [`RenderError::InvalidText`] if `text` is empty;
 /// * [`RenderError::Geometry`] if a contour of a used glyph cannot be
-///   converted to a curve.
+///   converted to a curve, or if the line cannot be framed ("degenerate
+///   framing": 0 units per em, or a descender-to-ascender extent that is
+///   zero, overflows, or maps `height` to fewer than 1e-6 or more than 1e6
+///   pixels per font unit).
 pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderError> {
     let height_px = check_size(height)?;
     if text.is_empty() {
         return Err(RenderError::InvalidText);
     }
 
+    if font.units_per_em == 0 {
+        return Err(degenerate("the font has 0 units per em"));
+    }
     let master = font.masters.first().map(|m| m.id);
     let metrics = metrics_of(font, master);
-    let scale = f64::from(height) / (metrics.ascender - metrics.descender);
+    let span = metrics.ascender - metrics.descender;
+    if !(span.is_finite() && span > 0.0) {
+        return Err(degenerate(&format!(
+            "the extent from descender {} to ascender {} is {span}",
+            metrics.descender, metrics.ascender
+        )));
+    }
+    let scale = check_scale(f64::from(height) / span, "the line height")?;
     let baseline = metrics.ascender * scale;
+    if !baseline.is_finite() {
+        return Err(degenerate("the baseline position is not finite"));
+    }
     let margin = f64::from(height) * SIDE_MARGIN;
     let max_width = f64::from(MAX_TEXT_WIDTH);
 
@@ -88,10 +108,16 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
         pen += placed[index].advance * scale;
     }
 
-    // The epsilon keeps floating-point noise from adding a column.
-    let width = (pen + margin - 1e-9).ceil().clamp(1.0, max_width);
-    // `width` is within 1..=2048.
-    let mut canvas = Canvas::new(width as u16, height_px);
+    // The epsilon keeps floating-point noise from adding a column; an
+    // infinite pen (huge advances) just means "wider than the cap".
+    let wanted = (pen + margin - 1e-9).ceil();
+    if wanted.is_nan() {
+        return Err(degenerate("the line width is not a number"));
+    }
+    // Clamped to 1..=2048, so the conversions cannot fail.
+    let width = u16::try_from(wanted.clamp(1.0, max_width) as u32)
+        .map_err(|_| degenerate("the line width does not fit an image"))?;
+    let mut canvas = Canvas::new(width, height_px);
     for (index, x) in items {
         let to_px = Affine::new([scale, 0.0, 0.0, -scale, x, baseline]);
         canvas.fill(&placed[index].path, to_px, BLACK);

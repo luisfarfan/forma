@@ -36,6 +36,30 @@ pub(crate) const NODE_SIDE_PX: f64 = 4.0;
 /// larger dimension.
 const MARGIN: f64 = 0.1;
 
+/// The smallest number of pixels per font unit a preview accepts.
+const MIN_SCALE: f64 = 1e-6;
+/// The largest number of pixels per font unit a preview accepts.
+const MAX_SCALE: f64 = 1e6;
+
+/// The error for metrics or advances that cannot be framed: the image would
+/// be blank, collapsed or not finite.
+pub(crate) fn degenerate(detail: &str) -> RenderError {
+    RenderError::Geometry(format!("degenerate framing: {detail}"))
+}
+
+/// Accepts a scale in pixels per font unit if it is finite and within
+/// [`MIN_SCALE`]`..=`[`MAX_SCALE`]; this also catches overflow to infinity and
+/// underflow to zero.
+pub(crate) fn check_scale(scale: f64, what: &str) -> Result<f64, RenderError> {
+    if scale.is_finite() && (MIN_SCALE..=MAX_SCALE).contains(&scale) {
+        Ok(scale)
+    } else {
+        Err(degenerate(&format!(
+            "{what} maps to {scale:e} pixels per font unit, outside {MIN_SCALE:e}..={MAX_SCALE:e}"
+        )))
+    }
+}
+
 pub(crate) fn color(rgb: [u8; 3]) -> Color {
     Color::from_rgb8(rgb[0], rgb[1], rgb[2])
 }
@@ -106,15 +130,19 @@ pub(crate) fn metrics_of(font: &Font, master: Option<MasterId>) -> VerticalMetri
 }
 
 /// The part of the font plane a glyph preview shows: a square, in font units,
-/// centred on the glyph box with a margin around it.
+/// centred on the glyph box with a margin around it, on a square canvas.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Frame {
-    /// Horizontal centre.
+    /// Horizontal centre, in font units.
     pub cx: f64,
-    /// Vertical centre.
+    /// Vertical centre, in font units.
     pub cy: f64,
-    /// Side of the square.
+    /// Side of the square, in font units.
     pub side: f64,
+    /// Side of the canvas, in pixels.
+    pub size: f64,
+    /// Pixels per font unit.
+    scale: f64,
 }
 
 impl Frame {
@@ -122,36 +150,67 @@ impl Frame {
     /// to `advance` horizontally. A glyph without advance gets a box as wide
     /// as it is tall, centred on x = 0. `metrics` must be as returned by
     /// [`metrics_of`].
-    pub(crate) fn new(metrics: &VerticalMetrics, advance: f64) -> Frame {
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Geometry`] ("degenerate framing") if the vertical
+    /// extent or the box cannot be mapped to the canvas: not finite, zero, or
+    /// scaled outside `1e-6..=1e6` pixels per font unit (which also covers
+    /// overflow and underflow).
+    pub(crate) fn new(
+        metrics: &VerticalMetrics,
+        advance: f64,
+        size: u16,
+    ) -> Result<Frame, RenderError> {
+        let size = f64::from(size);
         let height = metrics.ascender - metrics.descender;
+        if !(height.is_finite() && height > 0.0) {
+            return Err(degenerate(&format!(
+                "the extent from descender {} to ascender {} is {height}",
+                metrics.descender, metrics.ascender
+            )));
+        }
         let (width, cx) = if advance.is_finite() && advance > 0.0 {
             (advance, advance / 2.0)
         } else {
             (height, 0.0)
         };
-        Frame {
-            cx,
-            cy: (metrics.ascender + metrics.descender) / 2.0,
-            side: width.max(height) * (1.0 + 2.0 * MARGIN),
+        let expand = 1.0 + 2.0 * MARGIN;
+        let side = width.max(height) * expand;
+        if !side.is_finite() {
+            return Err(degenerate(&format!(
+                "the glyph box ({width} wide, {height} tall) overflows"
+            )));
         }
-    }
+        let cy = (metrics.ascender + metrics.descender) / 2.0;
+        let scale = check_scale(size / side, "the glyph box")?;
+        check_scale(size / (height * expand), "the descender-to-ascender extent")?;
 
-    /// Pixels per font unit on a square canvas of `size` pixels.
-    fn scale(self, size: f64) -> f64 {
-        size / self.side
+        let frame = Frame {
+            cx,
+            cy,
+            side,
+            size,
+            scale,
+        };
+        let [.., tx, ty] = frame.to_pixels().as_coeffs();
+        if ![cy, tx, ty].iter().all(|v| v.is_finite()) {
+            return Err(degenerate("the frame centre is not finite"));
+        }
+        Ok(frame)
     }
 
     /// Maps font coordinates (y up) to canvas pixels (y down), centring the
-    /// frame on a square canvas of `size` pixels.
-    pub(crate) fn to_pixels(self, size: f64) -> Affine {
-        let s = self.scale(size);
+    /// frame on the canvas.
+    pub(crate) fn to_pixels(self) -> Affine {
+        let s = self.scale;
         Affine::new([
             s,
             0.0,
             0.0,
             -s,
-            size / 2.0 - s * self.cx,
-            size / 2.0 + s * self.cy,
+            self.size / 2.0 - s * self.cx,
+            self.size / 2.0 + s * self.cy,
         ])
     }
 }
@@ -242,11 +301,11 @@ impl Canvas {
 pub(crate) fn draw_metrics(
     canvas: &mut Canvas,
     frame: &Frame,
-    size: f64,
     metrics: &VerticalMetrics,
     advance: f64,
 ) {
-    let to_px = frame.to_pixels(size);
+    let size = frame.size;
+    let to_px = frame.to_pixels();
     let guide = color(METRICS_RGB);
 
     let heights = [

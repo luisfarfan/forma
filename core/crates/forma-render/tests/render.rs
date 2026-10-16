@@ -616,3 +616,157 @@ fn zero_advance_glyph_is_centered_on_the_origin() {
     assert_eq!(pixel(&png, 300, 350), (0, 0, 0, 255));
     assert_eq!(pixel(&png, 300, 200), (255, 255, 255, 255));
 }
+
+// ------------------------------------------------- degenerate framing (fix 1)
+
+/// A font whose default master has the given ascender and descender, with a
+/// 200 x 200 square glyph "a" (U+0061) of the given advance.
+fn framed_font(
+    upm: u16,
+    ascender: f64,
+    descender: f64,
+    advance: f64,
+) -> (Font, Arc<Glyph>, MasterId) {
+    let mut font = Font::new("Test", upm);
+    font.masters[0].metrics.ascender = ascender;
+    font.masters[0].metrics.descender = descender;
+    let g = glyph(
+        &font,
+        "a",
+        &[0x61],
+        advance,
+        vec![rect(0, 0.0, 0.0, 200.0, 200.0, true)],
+    );
+    let g = add(&mut font, g);
+    let m = master(&font);
+    (font, g, m)
+}
+
+fn assert_degenerate(result: Result<impl std::fmt::Debug, RenderError>, what: &str) {
+    match result {
+        Err(RenderError::Geometry(message)) => assert!(
+            message.starts_with("degenerate framing: "),
+            "{what}: unexpected message {message:?}"
+        ),
+        other => panic!("{what}: expected a degenerate framing error, got {other:?}"),
+    }
+}
+
+/// All four previews of the glyph "a" of `font`.
+fn assert_all_degenerate(font: &Font, g: &Glyph, m: MasterId, what: &str, text: bool) {
+    let o = opts(128);
+    assert_degenerate(glyph_png(font, g, m, &o), &format!("{what}: glyph_png"));
+    assert_degenerate(glyph_svg(font, g, m, &o), &format!("{what}: glyph_svg"));
+    assert_degenerate(
+        compare_png(font, font, "a", m, &o),
+        &format!("{what}: compare_png"),
+    );
+    if text {
+        assert_degenerate(text_png(font, "a", 64), &format!("{what}: text_png"));
+    }
+}
+
+#[test]
+fn huge_advance_is_a_degenerate_framing_error() {
+    for advance in [f64::MAX, 1e300, 1e12] {
+        let (font, g, m) = framed_font(1000, 800.0, -200.0, advance);
+        // text_png lays out and clips by advance, so it is not framed by it.
+        assert_all_degenerate(&font, &g, m, &format!("advance {advance:e}"), false);
+    }
+}
+
+#[test]
+fn overflowing_metrics_are_a_degenerate_framing_error() {
+    // Both are finite, but the extent between them overflows to infinity.
+    let (font, g, m) = framed_font(1000, 1e308, -1e308, 600.0);
+    assert_all_degenerate(&font, &g, m, "metrics +-1e308", true);
+
+    // Finite extent, far too large to show anything.
+    let (font, g, m) = framed_font(1000, 1e300, -1e300, 600.0);
+    assert_all_degenerate(&font, &g, m, "metrics +-1e300", true);
+}
+
+#[test]
+fn near_zero_extent_is_a_degenerate_framing_error() {
+    // Subnormal extent: the scale would overflow to infinity.
+    let (font, g, m) = framed_font(1000, 1e-310, 0.0, 0.0);
+    assert_all_degenerate(&font, &g, m, "extent 1e-310, no advance", true);
+
+    // Tiny but normal extent: the scale would be ~1e300, which shows nothing.
+    let (font, g, m) = framed_font(1000, 1e-300, 0.0, 0.0);
+    assert_all_degenerate(&font, &g, m, "extent 1e-300, no advance", true);
+
+    // The vertical extent alone is enough, even with a sane advance.
+    let (font, g, m) = framed_font(1000, 1e-300, 0.0, 600.0);
+    assert_all_degenerate(&font, &g, m, "extent 1e-300, advance 600", true);
+}
+
+#[test]
+fn zero_units_per_em_text_is_a_degenerate_framing_error() {
+    // Font::new derives zero metrics from zero units per em.
+    let (font, _, _) = framed_font(0, 0.0, 0.0, 600.0);
+    assert_degenerate(text_png(&font, "a", 64), "upm 0, zero metrics");
+
+    // Even with usable metrics, a missing-glyph box could not be sized.
+    let (mut font, _, _) = framed_font(0, 800.0, -200.0, 600.0);
+    assert_degenerate(text_png(&font, "b", 64), "upm 0, usable metrics");
+
+    // Valid text of a valid font is unaffected by the check.
+    font.units_per_em = 1000;
+    assert!(text_png(&font, "b", 64).is_ok());
+}
+
+#[test]
+fn unusable_metrics_fall_back_to_proportional_ones() {
+    // The documented fallback: ascender not above the descender, or not
+    // finite, means 80% / -20% of the units per em, i.e. the metrics
+    // Font::new gives. The preview is identical to that of a regular font.
+    let (reference, ref_glyph, ref_master) = framed_font(1000, 800.0, -200.0, 600.0);
+    let expected = glyph_png(&reference, &ref_glyph, ref_master, &opts(128)).expect("renders");
+    let expected_text = text_png(&reference, "a", 64).expect("renders");
+
+    for (ascender, descender) in [
+        (0.0, 0.0),
+        (-100.0, 100.0),
+        (f64::NAN, -200.0),
+        (800.0, f64::NEG_INFINITY),
+    ] {
+        let (font, g, m) = framed_font(1000, ascender, descender, 600.0);
+        let png = glyph_png(&font, &g, m, &opts(128)).expect("falls back, not an error");
+        assert_eq!(png, expected, "metrics {ascender}/{descender}");
+        let text = text_png(&font, "a", 64).expect("falls back, not an error");
+        assert_eq!(text, expected_text, "text, metrics {ascender}/{descender}");
+        glyph_svg(&font, &g, m, &opts(128)).expect("falls back, not an error");
+    }
+}
+
+#[test]
+fn normal_fonts_still_render() {
+    // Units per em from the OpenType minimum to its maximum, with large and
+    // small advances, at the smallest and largest sizes.
+    for (upm, advance) in [(16, 8.0), (1000, 600.0), (2048, 1200.0), (16384, 30000.0)] {
+        let u = f64::from(upm);
+        let (mut font, g, m) = framed_font(upm, u * 0.8, -u * 0.2, advance);
+        // A glyph that is a fifth of the em, so it is visible at any scale.
+        let big = glyph(
+            &font,
+            "b",
+            &[0x62],
+            advance,
+            vec![rect(0, 0.0, 0.0, u / 5.0, u / 5.0, true)],
+        );
+        add(&mut font, big);
+        for size in [16, 512, 1024] {
+            let png = glyph_png(&font, &g, m, &opts(size)).expect("renders");
+            assert_eq!(png_size(&png), (size, size), "upm {upm}, size {size}");
+            let svg = glyph_svg(&font, &g, m, &opts(size)).expect("renders");
+            assert!(svg.contains("<path"), "upm {upm}");
+            compare_png(&font, &font, "a", m, &opts(size)).expect("renders");
+        }
+        let png = glyph_png(&font, &g, m, &opts(256)).expect("renders");
+        assert!(dark_fraction(&png) > 0.0, "upm {upm}: something is drawn");
+        let text = text_png(&font, "ab", 64).expect("renders");
+        assert_eq!(png_size(&text).1, 64);
+        assert!(dark_fraction(&text) > 0.0, "upm {upm}: text is drawn");
+    }
+}
