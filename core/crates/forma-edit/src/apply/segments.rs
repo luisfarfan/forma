@@ -67,12 +67,16 @@ impl Layout {
     pub fn segment(&self, k: usize) -> Option<Span> {
         let m = self.on_curve.len();
         let (start, end) = if self.closed {
-            (
-                *self.on_curve.get((k + m.checked_sub(1)?) % m)?,
-                *self.on_curve.get(k)?,
-            )
+            // `k` comes from untrusted input: range-check it before any
+            // arithmetic.
+            if k >= m {
+                return None;
+            }
+            let previous = if k == 0 { m - 1 } else { k - 1 };
+            (*self.on_curve.get(previous)?, *self.on_curve.get(k)?)
         } else {
-            (*self.on_curve.get(k)?, *self.on_curve.get(k + 1)?)
+            let next = k.checked_add(1)?;
+            (*self.on_curve.get(k)?, *self.on_curve.get(next)?)
         };
         let mut controls = Vec::new();
         let mut index = (start + 1) % self.node_count;

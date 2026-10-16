@@ -1027,3 +1027,97 @@ fn edits_never_change_direction() {
 fn insert_into(path_id: u32, segment_index: usize, t: f64) -> Command {
     nodes(path_id, NodeAction::Insert { segment_index, t })
 }
+
+// ------------------------------------------------- untrusted numeric input
+
+#[test]
+fn insert_rejects_huge_segment_indices_without_overflowing() {
+    // Agent JSON is untrusted: indices near `usize::MAX` must be a clean
+    // error on closed and open contours alike, never an arithmetic overflow.
+    let open_path = open(
+        0,
+        vec![
+            line(0.0, 0.0),
+            line(100.0, 0.0),
+            off(150.0, 50.0),
+            off(150.0, 100.0),
+            curve(100.0, 150.0),
+        ],
+    );
+    for path in [mixed(0), circle(0, 0.0, 0.0, 100.0), open_path] {
+        let font = glyph_font(vec![path]);
+        for segment_index in [usize::MAX, usize::MAX - 1, usize::MAX / 2, 1 << 40] {
+            let err = fails(&font, insert(segment_index, 0.5));
+            assert!(
+                matches!(err, EditError::InvalidArgument(_)),
+                "{segment_index}: {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn other_huge_indices_are_rejected_cleanly_too() {
+    let font = glyph_font(vec![mixed(0)]);
+    for index in [usize::MAX, usize::MAX - 1] {
+        for action in [
+            NodeAction::Delete { index },
+            NodeAction::SetSmooth {
+                index,
+                smooth: true,
+            },
+            NodeAction::Move {
+                indices: vec![index],
+                dx: 1.0,
+                dy: 1.0,
+            },
+        ] {
+            let err = fails(&font, nodes(0, action));
+            assert!(
+                matches!(err, EditError::InvalidArgument(_)),
+                "{index}: {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn apply_geometry_fixes_rejects_a_grid_too_small_to_be_real() {
+    // 1e-320 is finite and positive, but dividing a coordinate by it overflows
+    // to infinity: the fix used to write infinite coordinates into the font.
+    let font = glyph_font(vec![square(0, 0.0, 0.0, 100.0, 100.0, true)]);
+    for grid in [1e-320, f64::MIN_POSITIVE, 1e-9, 9.9e-7] {
+        let err = fails(&font, fix(vec![], vec![IssueKind::OffGrid], grid));
+        assert!(
+            matches!(err, EditError::InvalidArgument(_)),
+            "{grid}: {err:?}"
+        );
+    }
+    // The smallest accepted grid, and no grid at all, are fine.
+    run(&font, fix(vec![], vec![IssueKind::OffGrid], 1e-6));
+    run(&font, fix(vec![], vec![IssueKind::OffGrid], 0.0));
+}
+
+#[test]
+fn apply_geometry_fixes_validates_the_contours_it_writes() {
+    // A valid grid can still overflow on huge coordinates: 1e305 / 1e-6 is
+    // infinite. The fixed contour must be rejected, not stored.
+    let huge = closed(
+        0,
+        vec![line(1.5e305, 0.5), line(1.5e305, 1.5), line(-1.5e305, 1.5)],
+    );
+    let font = glyph_font(vec![huge]);
+    let err = fails(&font, fix(vec![], vec![IssueKind::OffGrid], 1e-6));
+    assert!(matches!(err, EditError::InvalidGeometry(_)), "{err:?}");
+}
+
+#[test]
+fn apply_geometry_fixes_ignores_contours_that_were_already_malformed() {
+    // A contour that was already malformed is left alone by the fixes and must
+    // not block fixing the other contours of the glyph.
+    let font = glyph_font(vec![clockwise(), closed(1, vec![line(0.0, 0.0)])]);
+    let (next, touched) = run(&font, fix(vec![], vec![IssueKind::WrongDirection], 0.0));
+    assert!(signed_area(&layer(&next, "G").paths[0]) > 0.0);
+    assert_eq!(layer(&next, "G").paths[1], layer(&font, "G").paths[1]);
+    assert_eq!(touched, keys([EntityKey::Glyph(id_of(&font, "G"))]));
+}

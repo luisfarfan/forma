@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use forma_geometry::{IssueKind, bbox, fix_paths};
+use forma_geometry::{IssueKind, bbox, fix_paths, to_bezpath};
 use forma_model::{EntityKey, Font, GlyphId, Layer, MasterId, Node, Path, PathId};
 use kurbo::{Affine, Point};
 
@@ -208,6 +208,10 @@ fn shifted(paths: &[Path], dx: f64) -> Vec<Path> {
 /// The new contours of the layers of one glyph that a fix changed.
 type LayerFixes = Vec<(MasterId, Vec<Path>)>;
 
+/// The smallest positive grid accepted. A smaller one cannot be a real design
+/// grid, and dividing coordinates by it overflows to infinity.
+const MIN_GRID: f64 = 1e-6;
+
 pub(super) fn apply_geometry_fixes(
     font: &mut Font,
     glyphs: &[GlyphRef],
@@ -217,6 +221,11 @@ pub(super) fn apply_geometry_fixes(
     if !(grid.is_finite() && grid >= 0.0) {
         return Err(EditError::InvalidArgument(format!(
             "the grid must be finite and not negative, got {grid}"
+        )));
+    }
+    if grid > 0.0 && grid < MIN_GRID {
+        return Err(EditError::InvalidArgument(format!(
+            "the grid must be 0 (no grid) or at least {MIN_GRID}, got {grid}"
         )));
     }
     let targets: BTreeSet<GlyphId> = if glyphs.is_empty() {
@@ -235,14 +244,25 @@ pub(super) fn apply_geometry_fixes(
         let Some(glyph) = font.glyphs.get(&id) else {
             continue;
         };
-        let changed: LayerFixes = glyph
-            .layers
-            .iter()
-            .filter_map(|(&master, layer)| {
-                let fixed = fix_paths(&layer.paths, kinds, grid);
-                (fixed != layer.paths).then_some((master, fixed))
-            })
-            .collect();
+        let mut changed = LayerFixes::new();
+        for (&master, layer) in &glyph.layers {
+            let fixed = fix_paths(&layer.paths, kinds, grid);
+            if fixed == layer.paths {
+                continue;
+            }
+            // Contours entering the font must convert and be finite. Only the
+            // changed ones are checked: a malformed contour that was already
+            // there (and that the fixes leave alone) must not block the rest.
+            for path in fixed.iter().filter(|path| !layer.paths.contains(path)) {
+                to_bezpath(path).map_err(|error| {
+                    EditError::InvalidGeometry(format!(
+                        "fixing glyph '{}' would produce an invalid contour: {error}",
+                        glyph.name
+                    ))
+                })?;
+            }
+            changed.push((master, fixed));
+        }
         if !changed.is_empty() {
             fixes.push((id, changed));
         }
