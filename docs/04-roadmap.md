@@ -61,7 +61,7 @@ flowchart LR
 - **`forma-store`:** `.forma` (SQLite) y `.formapackage` (carpeta), `pack`/`unpack`, escritura atómica, journal de recuperación básico.
 - **`forma-geometry`:** `geometry_check` (contornos abiertos, dirección, extremos, duplicados, segmentos diminutos, fuera de grilla) y `geometry_fix`.
 - **`forma-compile`:** TTF y WOFF2 vía fontc; preflight; `.notdef` y `space` automáticos si faltan.
-- **`forma-validate`:** chequeos propios + fontspector (perfil acordado). Durante el hito se decide si se embebe OTS en el producto (ADR) o se usa solo en CI.
+- **`forma-validate`:** chequeos propios (modelo + binario vía read-fonts). OTS, fontspector y HarfBuzz se ejecutan como verificación externa en CI; integrarlos dentro del producto se reevalúa en la fase 2 (ADR 0006).
 - **`forma-render`:** previews de glifo (PNG y SVG) con vello_cpu, prueba de texto sin shaping complejo (cmap + avances) y comparación entre dos revisiones.
 - **`forma-mcp`:**
   - Toolset del Hito 1 de `07-mcp-ai-architecture.md §8` (~28 herramientas) y resources básicos.

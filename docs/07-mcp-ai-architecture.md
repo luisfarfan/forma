@@ -165,7 +165,7 @@ Convenciones: `snake_case`, prefijo de dominio, ≤ 40 caracteres, orden determi
 | core | `forma_capabilities` | read | 1 |
 | core | `document_create` | write | 1 |
 | core | `document_open` | read | 1 |
-| core | `document_save` / `document_save_as` | write (save_as sobre archivo existente: destructive) | 1 |
+| core | `document_save` (con `path` opcional = "guardar como") | write (guardar sobre otro archivo existente: destructive) | 1 |
 | core | `document_close` | write | 1 |
 | core | `document_list` | read | 1 |
 | core | `document_inspect` | read | 1 |
