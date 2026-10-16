@@ -1,0 +1,21 @@
+[package]
+name = "forma-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA document persistence: the .forma (SQLite) and .formapackage (canonical JSON) formats"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+# `float_roundtrip` makes parsing an f64 exact, so a saved coordinate always
+# loads back bit-for-bit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
