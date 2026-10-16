@@ -26,9 +26,10 @@
 //! nothing.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use forma_edit::{Document, EditError, TxOutcome};
-use forma_model::{Actor, EntityKey, Font};
+use forma_model::{Actor, EntityKey, Font, FontId};
 use forma_store::{Journal, JournalRecord, StoreError, apply_records, remove_journal, replay};
 
 use crate::engine::{DocHandle, Engine};
@@ -47,9 +48,12 @@ pub(crate) enum JournalState {
     Stale {
         /// The `journal_warning` of every change until the next save.
         warning: String,
-        /// Whether the records are this session's (a failed write or empty),
-        /// so that closing the document removes them like an active journal;
-        /// otherwise they are kept for a later recovery.
+        /// Whether the records are this session's, so that closing the
+        /// document removes them like an active journal: after a failed open
+        /// or write (a prefix of this session's changes) and after a failed
+        /// truncate following a save (records the saved file already holds).
+        /// Records of an earlier session and an unreadable journal are not,
+        /// and are kept for a later recovery.
         ours: bool,
     },
     /// Another open document, with the same font id, owns the journal of the
@@ -297,18 +301,38 @@ impl Engine {
     /// that cannot be read, and the journal of another document, are kept.
     /// Returns why the removal failed, if it did.
     pub(crate) fn journal_closed(&mut self, handle: &DocHandle) -> Option<String> {
-        let state = self.journals.remove(handle);
+        let (dir, font_id) = self.release_journal(handle)?;
+        debug_assert!(!self.holds_journal(handle));
+        remove_journal(&dir, font_id)
+            .err()
+            .map(|error| failed("removed", &error))
+    }
+
+    /// Forgets the journal state of `handle`, closing its journal file, and
+    /// says where that file is if closing the document must delete it. Only
+    /// a folder and a font id come out, never the open [`Journal`], so the
+    /// file is always closed before it is deleted (Windows refuses to delete
+    /// an open file).
+    fn release_journal(&mut self, handle: &DocHandle) -> Option<(PathBuf, FontId)> {
+        let removes = self.journals.remove(handle).is_none_or(|state| {
+            // `state`, and any journal it holds, is dropped right here.
+            matches!(
+                state,
+                JournalState::Active(_) | JournalState::Stale { ours: true, .. }
+            )
+        });
         let dir = self.cfg.journal_dir.clone()?;
         let open = self.docs.get(handle)?;
         open.source_path.as_ref()?;
-        match state.unwrap_or(JournalState::Active(None)) {
-            JournalState::Active(_) | JournalState::Stale { ours: true, .. } => {
-                remove_journal(&dir, open.font().id)
-                    .err()
-                    .map(|error| failed("removed", &error))
-            }
-            JournalState::Stale { ours: false, .. } | JournalState::Shared(_) => None,
-        }
+        removes.then(|| (dir, open.font().id))
+    }
+
+    /// Whether the engine holds the journal file of `handle` open.
+    fn holds_journal(&self, handle: &DocHandle) -> bool {
+        matches!(
+            self.journals.get(handle),
+            Some(JournalState::Active(Some(_)))
+        )
     }
 
     /// For `document_open`: what the journal of the freshly loaded `font`
@@ -374,5 +398,94 @@ impl Engine {
             opened.state = Some(JournalState::earlier_session(records.len()));
         }
         Ok(opened)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::engine::EngineConfig;
+    use crate::registry::ToolOutput;
+
+    fn json_of(output: Result<ToolOutput, ToolError>) -> Value {
+        match output {
+            Ok(ToolOutput::Json(value)) => value,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closing_releases_the_journal_before_removing_it() {
+        let root = tempfile::TempDir::new().expect("tempdir");
+        let docs = root.path().join("docs");
+        let journals = root.path().join("journals");
+        std::fs::create_dir(&docs).expect("mkdir");
+        let mut engine = Engine::new(EngineConfig {
+            allowed_roots: vec![docs.clone()],
+            journal_dir: Some(journals.clone()),
+            ..EngineConfig::default()
+        });
+        let actor = Actor::Agent("test".into());
+        let created = json_of(engine.call(
+            &actor,
+            "document_create",
+            json!({ "family_name": "Close", "path": docs.join("font.forma") }),
+        ));
+        let doc = DocHandle::from(created["doc"].as_str().expect("doc"));
+        json_of(engine.call(
+            &actor,
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": 0, "name": "A", "advance_width": 500 }),
+        ));
+        let font_id = engine.doc(&doc).expect("open").font().id;
+        let file = journals.join(format!("{font_id}.journal"));
+        assert!(file.is_file());
+        assert!(
+            engine.holds_journal(&doc),
+            "the journal is open while journaling"
+        );
+
+        // What comes out of the release is where the file is, and the engine
+        // no longer holds it open: the file can be deleted (on Windows too).
+        let (dir, released) = engine.release_journal(&doc).expect("removed on close");
+        assert_eq!((dir.as_path(), released), (journals.as_path(), font_id));
+        assert!(!engine.holds_journal(&doc));
+        assert!(!engine.journals.contains_key(&doc));
+        remove_journal(&dir, released).expect("remove");
+        assert!(!file.exists());
+
+        // A journal this session stopped is removed too; one of an earlier
+        // session or of another document is only released.
+        let stopped = JournalState::Stale {
+            warning: String::new(),
+            ours: true,
+        };
+        engine.journals.insert(doc.clone(), stopped);
+        assert!(engine.release_journal(&doc).is_some());
+        for kept in [
+            JournalState::earlier_session(3),
+            JournalState::Shared(DocHandle::from("doc_other")),
+        ] {
+            engine.journals.insert(doc.clone(), kept);
+            assert!(engine.release_journal(&doc).is_none());
+            assert!(!engine.journals.contains_key(&doc));
+        }
+
+        // Through document_close: the file is gone after a clean close.
+        let saved = json_of(engine.call(
+            &actor,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 1 }),
+        ));
+        assert!(saved.get("journal_warning").is_none(), "{saved}");
+        assert!(
+            engine.holds_journal(&doc),
+            "the save opened a fresh journal"
+        );
+        let closed = json_of(engine.call(&actor, "document_close", json!({ "doc": doc })));
+        assert!(closed.get("journal_warning").is_none(), "{closed}");
+        assert!(!file.exists());
     }
 }
