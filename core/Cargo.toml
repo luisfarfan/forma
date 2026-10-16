@@ -10,7 +10,9 @@ rust-version = "1.99"
 
 [workspace.dependencies]
 fontc = "1.0.0"
-rmcp = "3.5.1"
+# Official MCP Rust SDK. No default features: the macros are not used (FORMA's tools
+# are generated from the command registry at runtime); each crate enables what it needs.
+rmcp = { version = "3.5.1", default-features = false }
 norad = "0.19.2"
 kurbo = "0.13.1"
 vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "png", "u8_pipeline"] }

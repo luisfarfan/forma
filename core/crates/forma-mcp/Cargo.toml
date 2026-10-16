@@ -1,0 +1,29 @@
+[package]
+name = "forma-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA MCP server: a thin facade generated from the forma-engine command registry"
+
+[dependencies]
+forma-engine = { path = "../forma-engine" }
+forma-model = { path = "../forma-model" }
+# The MCP SDK: the server handler and the stdio transport. Tools are built from the
+# registry at runtime, so the `#[tool]` macros are not needed.
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+# The stdio runtime, and `spawn_blocking` for the synchronous engine.
+tokio = { workspace = true }
+# PNG previews travel as base64 (image content and resource blobs).
+base64 = { workspace = true }
+serde_json = { workspace = true }
+# `serve_stdio`'s error type (startup and transport failures).
+anyhow = { workspace = true }
+# Warnings only (to whatever subscriber the binary installs on stderr).
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The in-process MCP client of the contract tests.
+rmcp = { workspace = true, features = ["client", "server", "transport-io"] }
+insta = { workspace = true }
+tempfile = { workspace = true }
