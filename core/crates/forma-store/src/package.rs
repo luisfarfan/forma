@@ -28,6 +28,11 @@
 //! 4. *Clean up.* The folders are flushed to disk, then the glyph files that
 //!    no current glyph uses are deleted.
 //!
+//! A first save that fails removes the folders it created, and a folder left
+//! by one that was killed (only temporary files and an empty `glyphs/`) is
+//! accepted by the next save, which deletes the temporary files; so a failed
+//! first save can always be retried.
+//!
 //! So an error (a full disk, a permission problem, a file in use) before the
 //! commit leaves the previous package exactly as it was, and every file is
 //! flushed before it becomes visible, so after a power failure each file holds
@@ -49,7 +54,9 @@ use forma_model::{Font, FontId};
 use serde_json::{Value, json};
 
 use crate::StoreError;
-use crate::atomic::{create_synced, remove_quietly, sync_dir, temp_path, write_file_atomic};
+use crate::atomic::{
+    create_synced, is_temp_name, remove_quietly, sync_dir, temp_path, write_file_atomic,
+};
 use crate::canonical::canonical_string;
 use crate::filenames::{case_key, unique_file_name};
 use crate::parts::{
@@ -139,28 +146,72 @@ fn ensure_version_is_supported(version: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Makes sure `dir` can receive a package, creating it if it is missing.
+/// The temporary files in a folder that holds nothing but the debris of a
+/// first save that was interrupted before any file became visible: temporary
+/// files, and a `glyphs` folder that holds nothing but temporary files.
+/// Returns `None` if there is anything else.
+fn interrupted_first_save(dir: &Path) -> Result<Option<Vec<PathBuf>>, StoreError> {
+    let is_temp_file = |entry: &fs::DirEntry| -> io::Result<bool> {
+        Ok(entry.file_type()?.is_file() && is_temp_name(&entry.file_name().to_string_lossy()))
+    };
+    let mut temps = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if is_temp_file(&entry)? {
+            temps.push(entry.path());
+        } else if entry.file_type()?.is_dir() && entry.file_name() == GLYPHS {
+            for inner in fs::read_dir(entry.path())? {
+                let inner = inner?;
+                if !is_temp_file(&inner)? {
+                    return Ok(None);
+                }
+                temps.push(inner.path());
+            }
+        } else {
+            return Ok(None);
+        }
+    }
+    Ok(Some(temps))
+}
+
+/// Makes sure `dir` can receive a package, creating it if it is missing, and
+/// returns whether it had to be created.
 ///
-/// An existing folder is only used if it is empty or already a package, so a
-/// save can never scatter files into (or delete files from) a folder that
-/// belongs to something else.
-fn prepare_directory(dir: &Path) -> Result<(), StoreError> {
+/// An existing folder is only used if it is empty, already a package, or the
+/// remains of a first save that was interrupted (see
+/// [`interrupted_first_save`]; its temporary files are deleted). So a save can
+/// never scatter files into (or delete files from) a folder that belongs to
+/// something else.
+fn prepare_directory(dir: &Path) -> Result<bool, StoreError> {
     match fs::metadata(dir) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             fs::create_dir_all(dir)?;
-            Ok(())
+            Ok(true)
         }
         Err(err) => Err(err.into()),
         Ok(metadata) if !metadata.is_dir() => Err(StoreError::NotAFormaPackage(dir.to_path_buf())),
         Ok(_) => {
             if fs::read_dir(dir)?.next().is_none() {
-                return Ok(());
+                return Ok(false);
             }
-            // A package whose manifest has no usable version can still be saved
-            // over, so that saving repairs it; one written by a newer FORMA is
-            // refused, since saving would downgrade it.
-            let manifest = read_manifest(dir)?;
-            manifest_version(&manifest).map_or(Ok(()), ensure_version_is_supported)
+            match read_manifest(dir) {
+                Ok(manifest) => {
+                    // A package whose manifest has no usable version can still
+                    // be saved over, so that saving repairs it; one written by
+                    // a newer FORMA is refused, since saving would downgrade
+                    // it.
+                    manifest_version(&manifest).map_or(Ok(()), ensure_version_is_supported)?;
+                }
+                Err(StoreError::NotAFormaPackage(_)) => {
+                    let temps = interrupted_first_save(dir)?
+                        .ok_or_else(|| StoreError::NotAFormaPackage(dir.to_path_buf()))?;
+                    for temp in temps {
+                        fs::remove_file(temp)?;
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+            Ok(false)
         }
     }
 }
@@ -335,9 +386,7 @@ fn save_with(font: &Font, dir: &Path, files: &mut impl Files) -> Result<(), Stor
     } = parts::encode(font)?;
     let manifest = manifest_text(font_id)?;
 
-    prepare_directory(dir)?;
     let glyphs_dir = dir.join(GLYPHS);
-    fs::create_dir_all(&glyphs_dir)?;
 
     // Everything the package should hold, in commit order: the manifest, the
     // glyphs, and font.json last. Glyphs get their file names in identifier
@@ -357,17 +406,48 @@ fn save_with(font: &Font, dir: &Path, files: &mut impl Files) -> Result<(), Stor
     }
     wanted.push((dir.join(FONT), font_json.into_bytes()));
 
+    let created_dir = prepare_directory(dir)?;
+    let created_glyphs_dir = !glyphs_dir.exists();
+    let result = fs::create_dir_all(&glyphs_dir)
+        .map_err(StoreError::from)
+        .and_then(|()| write_package(files, dir, &glyphs_dir, wanted, &written));
+
+    if result.is_err() {
+        // Do not leave the folders this save created behind: an empty
+        // `glyphs/` or package folder is not a package and would be in the way
+        // of the next attempt. `remove_dir` only removes empty folders, so
+        // nothing that holds files is touched, and nothing that was there
+        // before this save is removed.
+        if created_glyphs_dir {
+            let _ = fs::remove_dir(&glyphs_dir);
+        }
+        if created_dir {
+            let _ = fs::remove_dir(dir);
+        }
+    }
+    result
+}
+
+/// Plans, stages and commits `wanted` (see the module documentation), then
+/// deletes the glyph files that are not in `written`.
+fn write_package(
+    files: &mut impl Files,
+    dir: &Path,
+    glyphs_dir: &Path,
+    wanted: Vec<(PathBuf, Vec<u8>)>,
+    written: &[String],
+) -> Result<(), StoreError> {
     let changes = plan_changes(wanted)?;
     stage(files, &changes)?;
     commit(files, &changes)?;
     if !changes.is_empty() {
-        sync_dir(&glyphs_dir);
+        sync_dir(glyphs_dir);
         sync_dir(dir);
     }
 
     // Only a complete new package may delete anything.
-    if remove_stale_glyph_files(&glyphs_dir, &written)? {
-        sync_dir(&glyphs_dir);
+    if remove_stale_glyph_files(glyphs_dir, written)? {
+        sync_dir(glyphs_dir);
     }
     Ok(())
 }
@@ -501,19 +581,22 @@ mod tests {
         font
     }
 
-    /// Every file under `dir`, by relative path.
+    /// Everything under `dir`, by relative path: files with their contents,
+    /// folders (marked by a trailing `/`) with empty contents.
     fn snapshot(dir: &Path) -> BTreeMap<String, Vec<u8>> {
         fn walk(root: &Path, dir: &Path, into: &mut BTreeMap<String, Vec<u8>>) {
             for entry in fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 if path.is_dir() {
+                    into.insert(format!("{relative}/"), Vec::new());
                     walk(root, &path, into);
                 } else {
-                    let relative = path.strip_prefix(root).unwrap();
-                    into.insert(
-                        relative.to_string_lossy().replace('\\', "/"),
-                        fs::read(&path).unwrap(),
-                    );
+                    into.insert(relative, fs::read(&path).unwrap());
                 }
             }
         }
@@ -628,28 +711,176 @@ mod tests {
         }
     }
 
+    /// Runs a first save of `font` into `package` that fails at the `n`-th
+    /// staged file (`stage`) or at the `n`-th rename; `None` if there is no
+    /// such file or rename, so the save succeeded.
+    fn failing_first_save(font: &Font, package: &Path, stage: bool, n: usize) -> Option<()> {
+        let mut files = if stage {
+            Flaky {
+                fail_create_at: Some(n),
+                ..Flaky::default()
+            }
+        } else {
+            Flaky {
+                fail_rename_at: Some(n),
+                ..Flaky::default()
+            }
+        };
+        save_with(font, package, &mut files).err().map(|_| ())
+    }
+
     #[test]
-    fn a_failed_first_save_leaves_no_files() {
+    fn a_failed_first_save_leaves_nothing_it_created() {
         let font = scenarios().remove(0).1;
-        for (stage_failure, n) in [(true, 0), (true, 2), (false, 0), (false, 2)] {
+        for stage in [true, false] {
+            let mut failures = 0;
+            for n in 0.. {
+                // The package folder did not exist: it must not exist after.
+                let dir = TempDir::new().unwrap();
+                let package = dir.path().join("font.formapackage");
+                if failing_first_save(&font, &package, stage, n).is_none() {
+                    break;
+                }
+                failures += 1;
+                assert!(
+                    !package.exists(),
+                    "stage {stage}, #{n}: {:?}",
+                    snapshot(&package)
+                );
+
+                // The user had made an empty folder: it is left as it was.
+                let dir = TempDir::new().unwrap();
+                let package = dir.path().join("font.formapackage");
+                fs::create_dir(&package).unwrap();
+                assert!(failing_first_save(&font, &package, stage, n).is_some());
+                assert!(snapshot(&package).is_empty(), "stage {stage}, #{n}");
+            }
+            assert!(
+                failures >= 5,
+                "stage {stage}: only {failures} failure points"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_first_save_can_be_retried() {
+        let font = scenarios().remove(0).1;
+        for stage in [true, false] {
+            for precreated in [false, true] {
+                for n in 0.. {
+                    let dir = TempDir::new().unwrap();
+                    let package = dir.path().join("font.formapackage");
+                    if precreated {
+                        fs::create_dir(&package).unwrap();
+                    }
+                    if failing_first_save(&font, &package, stage, n).is_none() {
+                        break;
+                    }
+
+                    save(&font, &package).unwrap();
+
+                    let context = format!("stage {stage}, precreated {precreated}, #{n}");
+                    assert_eq!(load(&package).unwrap(), font, "{context}");
+                    assert_no_temp_files(&snapshot(&package), &context);
+                }
+            }
+        }
+    }
+
+    /// The leftovers of a first save that was killed while staging: the
+    /// folder holds an empty `glyphs/` and temporary files, but no manifest.
+    fn interrupted_first_save(package: &Path) -> Vec<PathBuf> {
+        let stray = |name: &str, n: u128| format!("{name}.tmp-{}", Uuid::from_u128(n));
+        fs::create_dir_all(package.join(GLYPHS)).unwrap();
+        let temps = [
+            package.join(stray(MANIFEST, 1)),
+            package.join(stray(FONT, 2)),
+            package.join(GLYPHS).join(stray("a.json", 3)),
+            package.join(GLYPHS).join(stray("b.json", 4)),
+        ];
+        for temp in &temps {
+            fs::write(temp, b"half a fi").unwrap();
+        }
+        temps.to_vec()
+    }
+
+    #[test]
+    fn a_folder_left_by_an_interrupted_first_save_is_accepted_and_cleaned() {
+        let font = scenarios().remove(0).1;
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("font.formapackage");
+        let temps = interrupted_first_save(&package);
+
+        save(&font, &package).unwrap();
+
+        assert!(temps.iter().all(|temp| !temp.exists()));
+        assert_no_temp_files(&snapshot(&package), "after the retry");
+        assert_eq!(load(&package).unwrap(), font);
+    }
+
+    #[test]
+    fn an_empty_glyphs_folder_alone_is_accepted() {
+        let font = scenarios().remove(0).1;
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("font.formapackage");
+        fs::create_dir_all(package.join(GLYPHS)).unwrap();
+
+        save(&font, &package).unwrap();
+
+        assert_eq!(load(&package).unwrap(), font);
+    }
+
+    #[test]
+    fn a_folder_with_anything_else_in_it_is_still_refused() {
+        let font = scenarios().remove(0).1;
+        let uuid = Uuid::from_u128(7);
+        // (relative path of the extra file, its contents)
+        let extras = [
+            ("notes.txt", "precious"),
+            (".DS_Store", "junk"),
+            ("glyphs/notes.txt", "precious"),
+            // Real glyph data without a manifest is not ours to overwrite.
+            ("glyphs/a.json", "{}"),
+            // Not the name of one of our temporary files.
+            ("manifest.json.tmp-not-a-uuid", "x"),
+            ("font.json.tmp-", "x"),
+            ("tmp-7", "x"),
+        ];
+        for (relative, contents) in extras {
             let dir = TempDir::new().unwrap();
             let package = dir.path().join("font.formapackage");
-            let mut files = if stage_failure {
-                Flaky {
-                    fail_create_at: Some(n),
-                    ..Flaky::default()
-                }
-            } else {
-                Flaky {
-                    fail_rename_at: Some(n),
-                    ..Flaky::default()
-                }
-            };
+            let temps = interrupted_first_save(&package);
+            fs::write(package.join(relative), contents).unwrap();
+            let before = snapshot(&package);
 
-            assert!(save_with(&font, &package, &mut files).is_err());
+            let err = save(&font, &package).unwrap_err();
 
-            assert!(snapshot(&package).is_empty(), "{stage_failure} {n}");
+            assert!(
+                matches!(err, StoreError::NotAFormaPackage(_)),
+                "{relative}: {err:?}"
+            );
+            // Nothing was deleted, not even the temporary files.
+            assert_eq!(snapshot(&package), before, "{relative}");
+            assert!(temps.iter().all(|temp| temp.exists()), "{relative}");
         }
+        // A temporary name needs a real UUID after `.tmp-`.
+        assert!(is_temp_name(&format!("x.json.tmp-{uuid}")));
+        assert!(!is_temp_name("x.json.tmp-7"));
+    }
+
+    #[test]
+    fn a_temporary_folder_entry_that_is_a_directory_is_not_debris() {
+        let font = scenarios().remove(0).1;
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("font.formapackage");
+        interrupted_first_save(&package);
+        let folder = package.join(format!("sub.tmp-{}", Uuid::from_u128(9)));
+        fs::create_dir(&folder).unwrap();
+
+        let err = save(&font, &package).unwrap_err();
+
+        assert!(matches!(err, StoreError::NotAFormaPackage(_)), "{err:?}");
+        assert!(folder.is_dir());
     }
 
     #[test]

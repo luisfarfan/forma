@@ -1096,6 +1096,46 @@ fn saving_into_a_folder_that_is_not_a_package_is_refused() {
 }
 
 #[test]
+fn the_debris_of_a_killed_first_save_can_be_saved_over() {
+    // A first save killed while staging leaves temporary files and an empty
+    // `glyphs/`, and no manifest.
+    let dir = TempDir::new().unwrap();
+    let target = package_in(&dir);
+    let temp = |name: &str, n: u128| format!("{name}.tmp-{}", Uuid::from_u128(n));
+    fs::create_dir_all(target.join("glyphs")).unwrap();
+    fs::write(target.join(temp("manifest.json", 1)), b"{ \"for").unwrap();
+    fs::write(target.join("glyphs").join(temp("a.json", 2)), b"{ \"id").unwrap();
+    let font = sample_font();
+
+    save(&font, &target).unwrap();
+
+    assert_eq!(load(&target).unwrap(), font);
+    assert_eq!(
+        names_in(&target),
+        BTreeSet::from([
+            "font.json".to_owned(),
+            "glyphs".to_owned(),
+            "manifest.json".to_owned()
+        ])
+    );
+    assert!(
+        glyph_files(&target)
+            .iter()
+            .all(|name| !name.contains(".tmp-"))
+    );
+
+    // The same folder with one unknown file in it is still not ours.
+    let other = dir.path().join("other.formapackage");
+    fs::create_dir_all(other.join("glyphs")).unwrap();
+    fs::write(other.join("glyphs").join(temp("a.json", 3)), b"{").unwrap();
+    fs::write(other.join("notes.txt"), b"precious").unwrap();
+    let err = save(&font, &other).unwrap_err();
+    assert!(matches!(err, StoreError::NotAFormaPackage(_)), "{err:?}");
+    assert!(other.join("glyphs").join(temp("a.json", 3)).exists());
+    assert_eq!(fs::read(other.join("notes.txt")).unwrap(), b"precious");
+}
+
+#[test]
 fn a_manifest_of_another_format_does_not_make_a_package() {
     let dir = TempDir::new().unwrap();
     for (n, manifest) in [

@@ -28,6 +28,14 @@ pub(crate) fn temp_path(target: &Path) -> io::Result<PathBuf> {
     Ok(target.with_file_name(temp_name))
 }
 
+/// Whether `name` is the name of a temporary file as made by [`temp_path`]:
+/// something, then `.tmp-` and a hyphenated UUID. Matching strictly keeps the
+/// cleanup of interrupted saves away from anything a person might have named.
+pub(crate) fn is_temp_name(name: &str) -> bool {
+    name.rsplit_once(".tmp-")
+        .is_some_and(|(stem, id)| !stem.is_empty() && id.len() == 36 && Uuid::try_parse(id).is_ok())
+}
+
 /// Whether files and directories are flushed to the storage device.
 ///
 /// Always true, except when this crate's own tests enable the `test-no-fsync`
