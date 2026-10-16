@@ -1,6 +1,8 @@
 //! Helpers shared by the integration tests.
 #![allow(dead_code)]
 
+pub mod doc;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
