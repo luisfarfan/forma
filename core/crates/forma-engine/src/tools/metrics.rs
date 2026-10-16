@@ -14,6 +14,7 @@ use crate::tools::inputs::{find_master, glyph_label, selected_glyphs};
 use crate::tools::json_output;
 use crate::tools::limits::parse_checked;
 use crate::tools::mutate::{Mutation, MutationResult, OpArgs, Translation, run_edit};
+use crate::tools::plans::OrPlan;
 
 /// `metrics_get`.
 pub(crate) const GET: CommandSpec = CommandSpec {
@@ -50,7 +51,7 @@ pub(crate) const SET: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<MetricsSetArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: metrics_set,
 };
 

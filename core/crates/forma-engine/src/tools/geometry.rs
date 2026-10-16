@@ -16,6 +16,7 @@ use crate::tools::inputs::{check_grid, default_grid, selected_glyphs};
 use crate::tools::json_output;
 use crate::tools::limits::parse_checked;
 use crate::tools::mutate::{Edit, Mutation, OpArgs, Translation, mutate};
+use crate::tools::plans::OrPlan;
 use crate::tools::steps::Steps;
 
 /// A kind of geometry issue that `geometry_fix` repairs.
@@ -92,7 +93,7 @@ pub(crate) const FIX: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<GeometryFixArgs>,
-    output_schema: Some(schema_of::<GeometryFixResult>),
+    output_schema: Some(schema_of::<OrPlan<GeometryFixResult>>),
     handler: geometry_fix,
 };
 
@@ -294,6 +295,7 @@ fn geometry_fix(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
         args: &args,
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
+        dry_run: call.dry_run,
         label,
         steps: Steps::of(&font, cmds)?,
     };

@@ -5,17 +5,20 @@
 //! machinery:
 //!
 //! 1. `Mutation::parse` checks the raw arguments against the limits and
-//!    splits them into the common `doc` and `base_rev` and the tool's own
-//!    arguments (`Op`, which reject unknown fields). The same `Op` is what an
-//!    `edit_batch` operation carries.
+//!    splits them into the common `doc`, `base_rev` and `dry_run` and the
+//!    tool's own arguments (`Op`, which reject unknown fields). The same `Op`
+//!    is what an `edit_batch` operation carries (so an operation cannot be a
+//!    dry run on its own).
 //! 2. `Steps` applies the commands, in order, to a scratch copy of the font
 //!    as they are added (enforcing the node limit). Before each command it
 //!    records what that command does to the state it meets, so the effects
 //!    of a call (destructive or not, distinct glyphs affected) are measured
 //!    step by step, the way the transaction will run.
-//! 3. `mutate` asks the `approval_gate` hook and runs the commands as one
-//!    transaction with [`Document::execute`], marking the document dirty.
-//!    Conflicts become `REVISION_CONFLICT` with the details of
+//! 3. `mutate` asks the approval gate (`tools::plans`), which may answer
+//!    instead (a dry run returns a plan, a destructive or massive call needs
+//!    one), and runs the commands as one transaction with
+//!    [`Document::execute`], marking the document dirty. Conflicts become
+//!    `REVISION_CONFLICT` with the details of
 //!    [`conflict_details`](crate::errors::conflict_details).
 //!
 //! [`Document::execute`]: forma_edit::Document::execute
@@ -33,9 +36,10 @@ use serde_json::{Map, Value, json};
 
 use crate::engine::{DocHandle, Engine};
 use crate::errors::{ToolError, from_args_error};
-use crate::registry::{Effects, ToolOutput};
+use crate::registry::ToolOutput;
 use crate::tools::json_output;
 use crate::tools::limits::check_raw_args;
+use crate::tools::plans::{Change, Gate, Proposal, approval_gate};
 use crate::tools::steps::Steps;
 
 /// A history label and the commands that carry out one tool call.
@@ -56,21 +60,29 @@ pub trait OpArgs: DeserializeOwned + JsonSchema {
 }
 
 /// The fields every mutating tool takes besides its own.
-const COMMON_FIELDS: [&str; 2] = ["doc", "base_rev"];
+const COMMON_FIELDS: [&str; 3] = ["doc", "base_rev", "dry_run"];
 
-/// The arguments of a mutating tool: the document handle and the base
-/// revision, plus the tool's own arguments `Op` (which are, without `doc` and
-/// `base_rev`, also what an `edit_batch` operation carries).
+/// The description of `dry_run` in every schema that has it.
+const DRY_RUN_DESCRIPTION: &str = "Only plan the call: change nothing and return \
+     `{rev, plan}`, the plan of what the call would do, with a `plan_token` that plan_commit \
+     can run once the user confirms.";
+
+/// The arguments of a mutating tool: the document handle, the base revision
+/// and `dry_run`, plus the tool's own arguments `Op` (which are, without
+/// these, also what an `edit_batch` operation carries).
 ///
 /// On the wire every field is at the top level; its JSON Schema lists `doc`
-/// and `base_rev` first among the required fields, like `Op` does not allow
-/// other fields, and is described by [`OpArgs::DESCRIPTION`].
+/// and `base_rev` first among the required fields (`dry_run` is optional,
+/// default `false`), like `Op` does not allow other fields, and is described
+/// by [`OpArgs::DESCRIPTION`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mutation<Op> {
     /// The document handle.
     pub doc: DocHandle,
     /// The latest revision the caller received.
     pub base_rev: u64,
+    /// Only plan the call, changing nothing.
+    pub dry_run: bool,
     /// The tool's own arguments.
     pub op: Op,
 }
@@ -78,15 +90,15 @@ pub struct Mutation<Op> {
 impl<Op: DeserializeOwned> Mutation<Op> {
     /// Checks the raw arguments against the limits, then parses them.
     ///
-    /// Only `doc` and `base_rev` are taken out of `args`; every other field
-    /// goes to `Op`, which rejects the ones it does not know. Nothing is
-    /// copied out of `args` beyond what the typed values hold.
+    /// Only `doc`, `base_rev` and `dry_run` are taken out of `args`; every
+    /// other field goes to `Op`, which rejects the ones it does not know.
+    /// Nothing is copied out of `args` beyond what the typed values hold.
     ///
     /// # Errors
     ///
     /// `LIMIT_EXCEEDED` (see [`check_raw_args`]) and `INVALID_ARGUMENT` for
-    /// arguments that are not an object, miss `doc` or `base_rev`, or do not
-    /// match `Op`.
+    /// arguments that are not an object, miss `doc` or `base_rev`, have a
+    /// `dry_run` that is not a boolean, or do not match `Op`.
     pub(crate) fn parse(args: &Value) -> Result<Self, ToolError> {
         check_raw_args(args)?;
         let Some(map) = args.as_object() else {
@@ -96,13 +108,22 @@ impl<Op: DeserializeOwned> Mutation<Op> {
         };
         let doc = common_field::<DocHandle>(map, "doc")?;
         let base_rev = common_field::<u64>(map, "base_rev")?;
+        let dry_run = match map.get("dry_run") {
+            Some(_) => common_field::<bool>(map, "dry_run")?,
+            None => false,
+        };
         let own = map
             .iter()
             .filter(|(key, _)| !COMMON_FIELDS.contains(&key.as_str()))
             .map(|(key, value)| (key.as_str(), value));
         let op = Op::deserialize(MapDeserializer::<_, serde_json::Error>::new(own))
             .map_err(|error| from_args_error(&error))?;
-        Ok(Mutation { doc, base_rev, op })
+        Ok(Mutation {
+            doc,
+            base_rev,
+            dry_run,
+            op,
+        })
     }
 }
 
@@ -139,6 +160,12 @@ impl<Op: OpArgs> JsonSchema for Mutation<Op> {
             "description": "The latest `rev` you received for this document."
         })
         .to_value();
+        let dry_run = json_schema!({
+            "type": "boolean",
+            "default": false,
+            "description": DRY_RUN_DESCRIPTION
+        })
+        .to_value();
         let object = schema.ensure_object();
         object.insert("description".into(), Op::DESCRIPTION.into());
         let properties = object
@@ -147,6 +174,7 @@ impl<Op: OpArgs> JsonSchema for Mutation<Op> {
         if let Some(properties) = properties.as_object_mut() {
             properties.insert("doc".into(), doc);
             properties.insert("base_rev".into(), base_rev);
+            properties.insert("dry_run".into(), dry_run);
         }
         let mut required = vec![json!("doc"), json!("base_rev")];
         if let Some(Value::Array(own)) = object.remove("required") {
@@ -174,16 +202,15 @@ pub struct MutationResult {
 pub(crate) struct Edit<'a> {
     /// The tool that was called.
     pub tool: &'static str,
-    /// The arguments of the call, exactly as received.
-    #[expect(
-        dead_code,
-        reason = "read by the approval policy (plans), Milestone 1 Task 15"
-    )]
+    /// The arguments of the call, exactly as received (a plan keeps them to
+    /// run the call again on commit).
     pub args: &'a Value,
     /// The document to change.
     pub doc: &'a DocHandle,
     /// The revision the caller based the call on.
     pub base_rev: Rev,
+    /// Only plan the call, changing nothing.
+    pub dry_run: bool,
     /// The label of the transaction in the history.
     pub label: String,
     /// The commands, applied in order as one transaction, with the effects
@@ -191,71 +218,30 @@ pub(crate) struct Edit<'a> {
     pub steps: Steps,
 }
 
-/// What [`approval_gate`] decides on: a mutation about to be applied.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MutationRequest<'a> {
-    /// Who makes the call.
-    pub actor: &'a Actor,
-    /// The call: tool, arguments, document, base revision, label, and the
-    /// measured commands (`edit.steps`: states before and after, distinct
-    /// affected glyph ids).
-    pub edit: &'a Edit<'a>,
-    /// The number of distinct glyphs the commands touch (`edit.steps.affected`).
-    pub affected_glyphs: usize,
-    /// What the call does, judged command by command on the state each one
-    /// meets: [`Effects::DESTRUCTIVE`] when it deletes glyphs or replaces the
-    /// contours of a non-empty layer of a glyph that existed before the
-    /// call, [`Effects::WRITE`] otherwise.
-    pub effects: Effects,
-}
-
-/// The approval hook of every mutation: called by [`mutate`] right before the
-/// commands are applied, after the limits are checked. An error stops the
-/// mutation and is returned to the caller unchanged.
+/// Applies a mutation and answers the call:
 ///
-/// Milestone 1 Task 15 fills it with the approval policy (destructive or
-/// massive operations answer `APPROVAL_REQUIRED` with a plan, depending on
-/// the engine's policy); until then it allows everything.
+/// 1. a call without commands that is not a dry run is answered without
+///    changing anything (`tx: null`);
+/// 2. the approval gate decides on the call, measured by `edit.steps`
+///    (destructive or not, distinct glyphs affected, the font before and
+///    after); it may answer instead (a dry run returns `{rev, plan}`) or
+///    refuse (`APPROVAL_REQUIRED` with a plan, `UNSUPPORTED` under the
+///    `strict` policy);
+/// 3. the commands run as one transaction, marking the document dirty;
+/// 4. `finish` turns the [`MutationResult`] into the tool's result (adding
+///    tool-specific fields, such as the new glyph of `glyph_create`);
+///    [`plain`] keeps it as it is.
 ///
-/// # Errors
-///
-/// None yet.
-pub(crate) fn approval_gate(
-    _engine: &mut Engine,
-    request: &MutationRequest<'_>,
-) -> Result<(), ToolError> {
-    let edit = request.edit;
-    tracing::debug!(
-        actor = %request.actor,
-        tool = edit.tool,
-        doc = %edit.doc,
-        base_rev = edit.base_rev.0,
-        label = %edit.label,
-        commands = edit.steps.cmds.len(),
-        affected_glyphs = request.affected_glyphs,
-        destructive = request.effects.destructive,
-        "approval gate: allowed (no approval policy yet)"
-    );
-    Ok(())
-}
-
-/// Applies a mutation and answers the call: answers a call without commands
-/// without changing anything (`tx: null`), asks [`approval_gate`], runs the
-/// commands as one transaction (marking the document dirty), and finally lets
-/// `finish` turn the [`MutationResult`] into the tool's result (adding
-/// tool-specific fields, such as the new glyph of `glyph_create`). [`plain`]
-/// keeps it as it is.
-///
-/// Every mutating tool answers through this function, so a policy that
-/// answers without applying (a dry run, Task 15) needs no change in the
-/// tools. `edit.steps` must start from the document's current state.
+/// Every mutating tool answers through this function, so the approval
+/// policy and dry runs need nothing in the tools. `edit.steps` must start
+/// from the document's current state.
 ///
 /// # Errors
 ///
 /// * `NOT_FOUND` for an unknown document handle;
 /// * `INVALID_ARGUMENT` if `base_rev` is newer than the current revision, or
 ///   if the steps were not measured on the current state;
-/// * the error of [`approval_gate`];
+/// * the errors of the approval gate;
 /// * the mapped error of [`Document::execute`](forma_edit::Document::execute),
 ///   including `REVISION_CONFLICT`;
 /// * the error of `finish`.
@@ -274,13 +260,13 @@ pub(crate) fn mutate<R: Serialize>(
         ));
     }
     let rev = open.rev();
-    if edit.steps.cmds.is_empty() {
-        if edit.base_rev > rev {
-            return Err(ToolError::invalid_argument(format!(
-                "base revision {} is newer than the current revision {}",
-                edit.base_rev.0, rev.0
-            )));
-        }
+    if edit.base_rev > rev {
+        return Err(ToolError::invalid_argument(format!(
+            "base revision {} is newer than the current revision {}",
+            edit.base_rev.0, rev.0
+        )));
+    }
+    if edit.steps.cmds.is_empty() && !edit.dry_run {
         let unchanged = MutationResult {
             rev: rev.0,
             tx: None,
@@ -289,13 +275,25 @@ pub(crate) fn mutate<R: Serialize>(
         return json_output(&finish(engine, unchanged)?);
     }
 
-    let request = MutationRequest {
+    let proposal = Proposal {
         actor,
-        edit: &edit,
-        affected_glyphs: edit.steps.affected.len(),
-        effects: edit.steps.effects(),
+        tool: edit.tool,
+        args: edit.args,
+        doc: edit.doc,
+        base_rev: edit.base_rev,
+        dry_run: edit.dry_run,
+        destructive: edit.steps.effects().destructive,
+        label: edit.label.clone(),
+        change: Change::Font {
+            before: &edit.steps.before,
+            after: &edit.steps.after,
+            affected: &edit.steps.affected,
+            commands: Some(&edit.steps.cmds),
+        },
     };
-    approval_gate(engine, &request)?;
+    if let Gate::Answer(answer) = approval_gate(engine, &proposal)? {
+        return Ok(answer);
+    }
 
     let cmds = &edit.steps.cmds;
     let outcome = engine
@@ -340,6 +338,7 @@ pub(crate) fn run_edit<Op: DeserializeOwned>(
         args,
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
+        dry_run: call.dry_run,
         label,
         steps: Steps::of(&font, cmds)?,
     };
@@ -373,6 +372,21 @@ mod tests {
         assert_eq!(parsed.base_rev, 3);
         assert_eq!(parsed.op.name, "x");
         assert_eq!(parsed.op.count, Some(2));
+        assert!(!parsed.dry_run);
+        let planned = Mutation::<DemoOpArgs>::parse(
+            &json!({ "doc": "doc_1", "base_rev": 3, "name": "x", "dry_run": true }),
+        )
+        .expect("parse");
+        assert!(planned.dry_run);
+        let error = Mutation::<DemoOpArgs>::parse(
+            &json!({ "doc": "doc_1", "base_rev": 3, "name": "x", "dry_run": 1 }),
+        )
+        .expect_err("mistyped dry_run");
+        assert!(
+            error.message.starts_with("invalid arguments: `dry_run`:"),
+            "{}",
+            error.message
+        );
 
         let error = Mutation::<DemoOpArgs>::parse(
             &json!({ "doc": "doc_1", "base_rev": 3, "name": "x", "other": 1 }),
@@ -401,6 +415,8 @@ mod tests {
         assert_eq!(schema["required"], json!(["doc", "base_rev", "name"]));
         assert_eq!(schema["properties"]["doc"]["type"], json!("string"));
         assert_eq!(schema["properties"]["base_rev"]["type"], json!("integer"));
+        assert_eq!(schema["properties"]["dry_run"]["type"], json!("boolean"));
+        assert_eq!(schema["properties"]["dry_run"]["default"], json!(false));
         assert!(schema["properties"]["name"].is_object());
     }
 }

@@ -15,6 +15,11 @@ forma-store = { path = "../forma-store" }
 base64 = { workspace = true }
 # Canonical paths without Windows `\\?\` prefixes, for the allowed-roots sandbox.
 dunce = { workspace = true }
+# Approval plans: the per-process key and plan ids (getrandom), signed tokens
+# (HMAC-SHA256) and argument digests (SHA-256).
+getrandom = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

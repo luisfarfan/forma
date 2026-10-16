@@ -23,6 +23,7 @@ use crate::tools::json_output;
 use crate::tools::limits::parse_checked;
 use crate::tools::metrics::{BBox, layer_metrics};
 use crate::tools::mutate::{Edit, Mutation, MutationResult, OpArgs, Translation, mutate, run_edit};
+use crate::tools::plans::OrPlan;
 use crate::tools::steps::Steps;
 
 /// The largest page of `glyph_list`.
@@ -83,7 +84,7 @@ pub(crate) const CREATE: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<GlyphCreateArgs>,
-    output_schema: Some(schema_of::<GlyphCreateResult>),
+    output_schema: Some(schema_of::<OrPlan<GlyphCreateResult>>),
     handler: glyph_create,
 };
 
@@ -100,7 +101,7 @@ pub(crate) const UPDATE: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<GlyphUpdateArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: glyph_update,
 };
 
@@ -117,7 +118,7 @@ pub(crate) const DELETE: CommandSpec = CommandSpec {
     effects: Effects::DESTRUCTIVE,
     output: OutputKind::Json,
     input_schema: schema_of::<GlyphDeleteArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: glyph_delete,
 };
 
@@ -522,6 +523,7 @@ fn glyph_create(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
         args: &args,
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
+        dry_run: call.dry_run,
         label,
         steps: Steps::of(&font, cmds)?,
     };

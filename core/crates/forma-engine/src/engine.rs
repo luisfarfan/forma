@@ -14,7 +14,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::errors::{ToolError, from_edit_error};
+use crate::plans::{Clock, PlanStore, SystemClock};
 use crate::registry::{CommandSpec, ToolOutput, Toolset, find, registry};
+use crate::tools::plans::Committing;
 
 /// Tools that are not read-only but stay callable in read-only mode, because
 /// they only change the engine's in-memory state. Their effects (and so their
@@ -202,15 +204,28 @@ pub struct Engine {
     /// The canonical allowed roots that exist, in configuration order.
     pub(crate) roots: Vec<PathBuf>,
     pub(crate) docs: BTreeMap<DocHandle, OpenDoc>,
+    /// The pending approval plans and the key that signs their tokens.
+    pub(crate) plans: PlanStore,
+    /// The plan `plan_commit` is running, for the one pass through the
+    /// approval gate it grants; `None` otherwise.
+    pub(crate) committing: Option<Committing>,
 }
 
 impl Engine {
     /// Creates an engine with no open documents.
     ///
     /// Each allowed root is canonicalized; a root that does not exist (or
-    /// cannot be canonicalized) is dropped with a warning.
+    /// cannot be canonicalized) is dropped with a warning. The key that signs
+    /// approval plans is drawn here, so plans never outlive the engine.
     #[must_use]
     pub fn new(cfg: EngineConfig) -> Engine {
+        Engine::with_clock(cfg, Box::new(SystemClock))
+    }
+
+    /// [`Engine::new`], reading the time (for the expiry of approval plans)
+    /// from `clock` instead of the system clock.
+    #[must_use]
+    pub fn with_clock(cfg: EngineConfig, clock: Box<dyn Clock + Send>) -> Engine {
         let roots = cfg
             .allowed_roots
             .iter()
@@ -230,6 +245,8 @@ impl Engine {
             cfg,
             roots,
             docs: BTreeMap::new(),
+            plans: PlanStore::new(clock),
+            committing: None,
         }
     }
 
@@ -276,7 +293,7 @@ impl Engine {
 
     /// Refuses a command of a disabled toolset, or one that is not read-only
     /// in read-only mode (save the exemptions of [`ALLOWED_IN_READ_ONLY`]).
-    fn check_available(&self, spec: &CommandSpec) -> Result<(), ToolError> {
+    pub(crate) fn check_available(&self, spec: &CommandSpec) -> Result<(), ToolError> {
         if !self.is_toolset_enabled(spec.toolset) {
             return Err(ToolError::unsupported(format!(
                 "toolset '{}' is disabled",
@@ -310,6 +327,10 @@ impl Engine {
         tool: &str,
         args: Value,
     ) -> Result<ToolOutput, ToolError> {
+        // A commit's pass through the approval gate belongs to the call
+        // `plan_commit` makes from inside its own handler, never to a call
+        // that arrives here.
+        self.committing = None;
         let spec = find(tool)
             .ok_or_else(|| ToolError::invalid_argument(format!("unknown tool '{tool}'")))?;
         self.check_available(spec)?;
@@ -365,8 +386,10 @@ impl Engine {
         handle
     }
 
-    /// Closes the document `handle`, returning it.
+    /// Closes the document `handle`, returning it. Its pending approval
+    /// plans are dropped.
     pub(crate) fn remove_doc(&mut self, handle: &DocHandle) -> Option<OpenDoc> {
+        self.plans.remove_doc(handle);
         self.docs.remove(handle)
     }
 

@@ -1,4 +1,4 @@
-//! Registry entries for the tools that Tasks 15 and 16 implement.
+//! Registry entries for the tools that Task 16 implements.
 //!
 //! Each placeholder has its final name, title, toolset, effects and output
 //! kind, accepts any object and answers `UNSUPPORTED` ("not implemented
@@ -36,28 +36,6 @@ macro_rules! placeholder {
         };
     };
 }
-
-// core
-
-placeholder!(
-    PLAN_COMMIT,
-    "plan_commit",
-    "Commit plan",
-    Core,
-    DESTRUCTIVE,
-    Json,
-    "Apply a plan returned with APPROVAL_REQUIRED, identified by its `plan_token`. Only \
-     commit a plan the user has confirmed; a token is single-use and expires."
-);
-placeholder!(
-    PLAN_DISCARD,
-    "plan_discard",
-    "Discard plan",
-    Core,
-    WRITE,
-    Json,
-    "Discard a pending plan, identified by its `plan_token`, without applying it."
-);
 
 // quality
 
@@ -119,72 +97,4 @@ placeholder!(
     Image,
     "Render one glyph of `doc` at two revisions overlaid in a PNG image, to compare a \
      change visually."
-);
-
-// history
-
-placeholder!(
-    HISTORY_LIST,
-    "history_list",
-    "List history",
-    History,
-    READ,
-    Json,
-    "List the transactions of `doc` page by page, oldest first, with their actor, label, \
-     revision and touched entities. The result includes the current `rev`."
-);
-placeholder!(
-    HISTORY_UNDO,
-    "history_undo",
-    "Undo",
-    History,
-    WRITE,
-    Json,
-    "Undo your own last transaction in `doc`. If the last transaction belongs to another \
-     actor, take it back with history_revert instead."
-);
-placeholder!(
-    HISTORY_REDO,
-    "history_redo",
-    "Redo",
-    History,
-    WRITE,
-    Json,
-    "Redo your own last undone transaction in `doc`."
-);
-placeholder!(
-    HISTORY_REVERT,
-    "history_revert",
-    "Revert transaction",
-    History,
-    WRITE,
-    Json,
-    concat!(
-        "Take back one transaction of `doc` as a new undoable transaction, provided the \
-         entities it touched have not changed since.",
-        base_rev_note!()
-    )
-);
-placeholder!(
-    HISTORY_RESTORE,
-    "history_restore",
-    "Restore revision",
-    History,
-    DESTRUCTIVE,
-    Json,
-    concat!(
-        "Restore `doc` to the state of an earlier revision as a new undoable transaction. \
-         Destructive: answers APPROVAL_REQUIRED with a plan to confirm.",
-        base_rev_note!()
-    )
-);
-placeholder!(
-    DOCUMENT_DIFF,
-    "document_diff",
-    "Diff revisions",
-    History,
-    READ,
-    Json,
-    "Compare two revisions of `doc` and list the changed font info, vertical metrics and \
-     glyphs. The result includes the current `rev`."
 );

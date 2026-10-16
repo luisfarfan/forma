@@ -11,6 +11,7 @@ use crate::errors::ToolError;
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::inputs::{CoordinateSystemArg, PathInput, glyph_label, outline_paths};
 use crate::tools::mutate::{Mutation, MutationResult, OpArgs, Translation, run_edit};
+use crate::tools::plans::OrPlan;
 
 /// `glyph_set_outline`.
 pub(crate) const SET_OUTLINE: CommandSpec = CommandSpec {
@@ -28,7 +29,7 @@ pub(crate) const SET_OUTLINE: CommandSpec = CommandSpec {
     effects: Effects::DESTRUCTIVE,
     output: OutputKind::Json,
     input_schema: schema_of::<GlyphSetOutlineArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: glyph_set_outline,
 };
 
@@ -49,7 +50,7 @@ pub(crate) const CONTOUR_EDIT: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<ContourEditArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: contour_edit,
 };
 
@@ -71,7 +72,7 @@ pub(crate) const NODES_EDIT: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<NodesEditArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: nodes_edit,
 };
 

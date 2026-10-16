@@ -38,6 +38,18 @@ fn err(engine: &mut Engine, tool: &str, args: Value) -> ToolError {
     }
 }
 
+/// Runs a destructive call: checks that it answers APPROVAL_REQUIRED, then
+/// commits its plan, as an agent does once the user confirms.
+#[track_caller]
+fn confirmed(engine: &mut Engine, tool: &str, args: Value) -> Value {
+    let error = err(engine, tool, args);
+    assert_eq!(error.code, ErrorCode::ApprovalRequired, "{tool}: {error:?}");
+    let token = error.details["plan"]["plan_token"].clone();
+    let done = ok(engine, "plan_commit", json!({ "plan_token": token }));
+    assert_eq!(done["plan_committed"], json!(true), "{tool}");
+    done
+}
+
 /// A new in-memory document (units per em 1000, ascender 800) at rev 0.
 fn new_doc(engine: &mut Engine) -> String {
     let created = ok(engine, "document_create", json!({ "family_name": "Test" }));
@@ -663,13 +675,14 @@ fn both_svg_and_paths_is_invalid() {
     }
     assert_eq!(rev_of(&mut engine, &doc), 1);
 
-    // An explicitly empty outline clears the layer.
+    // An explicitly empty outline clears the layer (replacing a drawn layer
+    // needs approval).
     ok(
         &mut engine,
         "glyph_set_outline",
         json!({ "doc": doc, "base_rev": 1, "glyph": "A", "paths": paths }),
     );
-    ok(
+    confirmed(
         &mut engine,
         "glyph_set_outline",
         json!({ "doc": doc, "base_rev": 2, "glyph": "A", "paths": [] }),
@@ -727,7 +740,7 @@ fn svg_y_down_flips_using_ascender() {
         "font_set_vertical_metrics",
         json!({ "doc": doc, "base_rev": 3, "ascender": 900 }),
     );
-    ok(
+    confirmed(
         &mut engine,
         "glyph_set_outline",
         json!({ "doc": doc, "base_rev": 4, "glyph": "x", "coordinate_system": "svg_y_down",
@@ -965,7 +978,7 @@ fn glyph_get_returns_svg_and_structured_paths() {
     // The structured contours can be sent back as they are.
     let mut args = json!({ "doc": doc, "base_rev": 1, "glyph": "D" });
     args["paths"] = glyph["paths"].clone();
-    ok(&mut engine, "glyph_set_outline", args);
+    confirmed(&mut engine, "glyph_set_outline", args);
     assert_eq!(get(&mut engine, &doc, "D")["paths"], glyph["paths"]);
 }
 
@@ -1169,7 +1182,11 @@ fn mutations_mark_the_document_dirty_and_report_rev() {
         let mut args = args;
         args["doc"] = json!(doc);
         args["base_rev"] = json!(rev);
-        let done = ok(&mut engine, tool, args);
+        let done = if tool == "glyph_delete" {
+            confirmed(&mut engine, tool, args)
+        } else {
+            ok(&mut engine, tool, args)
+        };
         assert_eq!(done["rev"], json!(rev + 1), "{tool}");
         assert_eq!(done["tx"], json!(rev + 1), "{tool}");
         assert!(done["touched"].is_array(), "{tool}");
@@ -1317,7 +1334,7 @@ fn glyph_update_and_delete() {
         );
     }
 
-    let done = ok(
+    let done = confirmed(
         &mut engine,
         "glyph_delete",
         json!({ "doc": doc, "base_rev": 2, "glyphs": ["Alpha"] }),

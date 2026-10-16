@@ -13,7 +13,8 @@ use forma_model::Actor;
 use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::tools::{
-    capabilities, document, edit_batch, font, geometry, glyphs, metrics, outlines, placeholders,
+    capabilities, document, edit_batch, font, geometry, glyphs, history, metrics, outlines,
+    placeholders, plans,
 };
 
 /// A group of related tools that a facade can enable or disable together.
@@ -70,8 +71,9 @@ impl Toolset {
 }
 
 /// What calling a tool may do; the facades derive their annotations (MCP
-/// `readOnlyHint`, `destructiveHint`, `idempotentHint`) from it. The engine
-/// itself enforces read-only mode and, from Task 15, approvals.
+/// `readOnlyHint`, `destructiveHint`, `idempotentHint`) from it. These are
+/// hints for clients: the engine enforces read-only mode itself, and
+/// approvals by measuring each call (see `tools::plans`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Effects {
     /// The tool never changes a document or a file.
@@ -168,8 +170,8 @@ static REGISTRY: [CommandSpec; 35] = [
     font::SET_INFO,
     font::SET_VERTICAL_METRICS,
     edit_batch::SPEC,
-    placeholders::PLAN_COMMIT,
-    placeholders::PLAN_DISCARD,
+    plans::COMMIT,
+    plans::DISCARD,
     // glyphs
     glyphs::LIST,
     glyphs::GET,
@@ -194,12 +196,12 @@ static REGISTRY: [CommandSpec; 35] = [
     placeholders::PREVIEW_TEXT,
     placeholders::PREVIEW_COMPARE,
     // history
-    placeholders::HISTORY_LIST,
-    placeholders::HISTORY_UNDO,
-    placeholders::HISTORY_REDO,
-    placeholders::HISTORY_REVERT,
-    placeholders::HISTORY_RESTORE,
-    placeholders::DOCUMENT_DIFF,
+    history::LIST,
+    history::UNDO,
+    history::REDO,
+    history::REVERT,
+    history::RESTORE,
+    history::DIFF,
 ];
 
 /// Every command, in the exact registration order of the public API.

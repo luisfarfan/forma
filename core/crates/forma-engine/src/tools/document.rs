@@ -4,15 +4,16 @@
 use std::path::{Path, PathBuf};
 
 use forma_edit::Document;
-use forma_model::{Actor, Font, FontInfo, MAX_UNITS_PER_EM, MIN_UNITS_PER_EM, Master};
+use forma_model::{Actor, Font, FontInfo, MAX_UNITS_PER_EM, MIN_UNITS_PER_EM, Master, Rev};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::engine::{DocHandle, DocSummary, Engine, OpenDoc, path_text};
-use crate::errors::{ErrorCode, ToolError, from_store_error};
+use crate::errors::{ToolError, from_store_error};
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
-use crate::tools::{json_output, parse_args};
+use crate::tools::plans::{Change, Gate, OrPlan, Proposal, approval_gate};
+use crate::tools::{json_output, parse_args, parse_args_ref};
 
 /// `document_create`.
 pub(crate) const CREATE: CommandSpec = CommandSpec {
@@ -58,12 +59,13 @@ pub(crate) const SAVE: CommandSpec = CommandSpec {
                   as `base_rev`: a `base_rev` newer than the current revision is rejected, \
                   while an older one is accepted and the current state is saved. A document \
                   created without a path needs `path`. Overwriting an existing file other \
-                  than the document's own answers APPROVAL_REQUIRED.",
+                  than the document's own answers APPROVAL_REQUIRED with a plan to confirm; \
+                  with `dry_run: true` the call only returns the plan.",
     toolset: Toolset::Core,
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<DocumentSaveArgs>,
-    output_schema: Some(schema_of::<DocumentSaveResult>),
+    output_schema: Some(schema_of::<OrPlan<DocumentSaveResult>>),
     handler: document_save,
 };
 
@@ -176,6 +178,11 @@ pub struct DocumentSaveArgs {
     /// the document's own file.
     #[serde(default)]
     pub path: Option<PathBuf>,
+    /// Only plan the call: change nothing and return `{rev, plan}`, the plan
+    /// of what the call would do, with a `plan_token` that plan_commit can
+    /// run once the user confirms.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// Result of `document_save`.
@@ -332,36 +339,23 @@ fn document_open(
     })
 }
 
-fn document_save(
-    engine: &mut Engine,
-    _actor: &Actor,
-    args: Value,
-) -> Result<ToolOutput, ToolError> {
-    let args: DocumentSaveArgs = parse_args(args)?;
-    let open = engine.doc(&args.doc)?;
+fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
+    let call: DocumentSaveArgs = parse_args_ref(&args)?;
+    let open = engine.doc(&call.doc)?;
     let rev = open.rev().0;
-    if args.base_rev > rev {
+    if call.base_rev > rev {
         return Err(ToolError::invalid_argument(format!(
             "base_rev {} is newer than the current revision {rev}",
-            args.base_rev
+            call.base_rev
         )));
     }
-    let target = match &args.path {
+    let (target, overwrites) = match &call.path {
         Some(path) => {
             let resolved = engine.check_document_path(path, false)?;
-            ensure_not_open_elsewhere(engine, &resolved, Some(&args.doc))?;
+            ensure_not_open_elsewhere(engine, &resolved, Some(&call.doc))?;
             let own_file = open.source_path.as_deref() == Some(resolved.as_path());
-            if !own_file && exists(&resolved) {
-                return Err(ToolError::new(
-                    ErrorCode::ApprovalRequired,
-                    format!(
-                        "saving to '{}' would overwrite an existing file",
-                        path.display()
-                    ),
-                )
-                .with_details(json!({ "reason": "overwrites an existing file" })));
-            }
-            resolved
+            let overwrites = !own_file && exists(&resolved);
+            (resolved, overwrites)
         }
         None => {
             let source = open.source_path.clone().ok_or_else(|| {
@@ -380,16 +374,36 @@ fn document_save(
                     path_text(&resolved)
                 )));
             }
-            source
+            (source, false)
         }
     };
 
+    let label = if overwrites {
+        format!("overwrites {}", path_text(&target))
+    } else {
+        format!("saves to {}", path_text(&target))
+    };
+    let proposal = Proposal {
+        actor,
+        tool: SAVE.name,
+        args: &args,
+        doc: &call.doc,
+        base_rev: Rev(call.base_rev),
+        dry_run: call.dry_run,
+        destructive: overwrites,
+        label,
+        change: Change::File,
+    };
+    if let Gate::Answer(answer) = approval_gate(engine, &proposal)? {
+        return Ok(answer);
+    }
+
+    let open = engine.doc_mut(&call.doc)?;
     forma_store::save(open.font(), &target).map_err(from_store_error)?;
-    let open = engine.doc_mut(&args.doc)?;
     open.source_path = Some(target.clone());
     open.dirty = false;
     json_output(&DocumentSaveResult {
-        doc: args.doc,
+        doc: call.doc,
         rev,
         path: path_text(&target),
     })

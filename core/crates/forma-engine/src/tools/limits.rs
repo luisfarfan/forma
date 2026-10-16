@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::errors::{ErrorCode, ToolError};
 use crate::limits::{MAX_BATCH_OPS, MAX_NODES, MAX_TEXT_BYTES};
-use crate::tools::parse_args;
+use crate::tools::{parse_args, parse_args_ref};
 
 /// Arguments nested deeper than this are refused. JSON text never gets here
 /// that deep: serde_json stops parsing at 128 levels.
@@ -119,6 +119,16 @@ pub(crate) fn check_raw_args(args: &Value) -> Result<(), ToolError> {
 pub(crate) fn parse_checked<T: DeserializeOwned>(args: Value) -> Result<T, ToolError> {
     check_raw_args(&args)?;
     parse_args(args)
+}
+
+/// [`check_raw_args`], then [`parse_args_ref`], keeping the arguments.
+///
+/// # Errors
+///
+/// The errors of both.
+pub(crate) fn parse_checked_ref<T: DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
+    check_raw_args(args)?;
+    parse_args_ref(args)
 }
 
 /// One step of the path to an argument.

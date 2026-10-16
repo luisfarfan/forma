@@ -10,6 +10,7 @@ use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::mutate::{Mutation, MutationResult, OpArgs, Translation, run_edit};
+use crate::tools::plans::OrPlan;
 
 /// `font_set_info`.
 pub(crate) const SET_INFO: CommandSpec = CommandSpec {
@@ -26,7 +27,7 @@ pub(crate) const SET_INFO: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<FontSetInfoArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: font_set_info,
 };
 
@@ -44,7 +45,7 @@ pub(crate) const SET_VERTICAL_METRICS: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<FontSetVerticalMetricsArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: font_set_vertical_metrics,
 };
 

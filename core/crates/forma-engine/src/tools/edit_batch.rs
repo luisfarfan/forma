@@ -26,6 +26,7 @@ use crate::tools::limits::check_batch_ops;
 use crate::tools::mutate::{
     Edit, Mutation, MutationResult, OpArgs, Translate, Translation, mutate, plain,
 };
+use crate::tools::plans::OrPlan;
 use crate::tools::steps::Steps;
 use crate::tools::{font, geometry, glyphs, metrics, outlines};
 
@@ -48,7 +49,7 @@ pub(crate) const SPEC: CommandSpec = CommandSpec {
     effects: Effects::WRITE,
     output: OutputKind::Json,
     input_schema: schema_of::<EditBatchArgs>,
-    output_schema: Some(schema_of::<MutationResult>),
+    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
     handler: edit_batch,
 };
 
@@ -210,6 +211,7 @@ fn edit_batch(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOut
         args: &args,
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
+        dry_run: call.dry_run,
         label,
         steps,
     };

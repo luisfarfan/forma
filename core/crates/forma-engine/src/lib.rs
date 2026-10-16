@@ -26,11 +26,13 @@ mod engine;
 pub mod errors;
 pub mod limits;
 pub mod paths;
+pub mod plans;
 mod registry;
 pub mod tools;
 
 pub use engine::{DocHandle, DocSummary, Engine, EngineConfig, OpenDoc, Policy};
 pub use errors::{ErrorCode, ToolError};
+pub use plans::{Clock, SystemClock};
 pub use registry::{
     CommandSpec, Effects, Handler, OutputKind, ToolOutput, Toolset, any_object_schema, find,
     registry, schema_of,

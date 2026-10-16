@@ -63,20 +63,12 @@ fn write_font(path: &Path, family: &str) {
     forma_store::save(&Font::new(family, 1000), path).expect("save fixture");
 }
 
-const PLACEHOLDERS: [&str; 13] = [
-    "plan_commit",
-    "plan_discard",
+const PLACEHOLDERS: [&str; 5] = [
     "validate",
     "export_font",
     "preview_glyph",
     "preview_text",
     "preview_compare",
-    "history_list",
-    "history_undo",
-    "history_redo",
-    "history_revert",
-    "history_restore",
-    "document_diff",
 ];
 
 // ----------------------------------------------------------------- registry
@@ -181,6 +173,14 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "geometry_fix",
         "metrics_get",
         "metrics_set",
+        "plan_commit",
+        "plan_discard",
+        "history_list",
+        "history_undo",
+        "history_redo",
+        "history_revert",
+        "history_restore",
+        "document_diff",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");
@@ -869,10 +869,13 @@ fn save_as_over_existing_file_requires_approval() {
         json!({ "doc": doc_b, "base_rev": 0, "path": text(&a) }),
     );
     assert_eq!(error.code, ErrorCode::ApprovalRequired);
+    let plan = &error.details["plan"];
+    assert_eq!(plan["tool"], json!("document_save"));
     assert_eq!(
-        error.details,
-        json!({ "reason": "overwrites an existing file" })
+        plan["summary"],
+        json!(format!("overwrites {}", text(&canon(&a))))
     );
+    assert!(plan["plan_token"].is_string(), "{plan}");
     assert_eq!(
         std::fs::read(&a).expect("read"),
         before,
