@@ -1,0 +1,23 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Claude Code local state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# Rust
+target/
+
+# Python (test oracles)
+.venv/
+__pycache__/
+*.pyc
+
+# Build outputs
+/dist/
+/out/
+*.ttf.tmp
