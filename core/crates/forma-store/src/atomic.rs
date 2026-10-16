@@ -49,6 +49,13 @@ pub(crate) fn sync_file(file: &File) -> io::Result<()> {
     if FSYNC { file.sync_all() } else { Ok(()) }
 }
 
+/// Flushes the data of an open file (and the metadata needed to read it back,
+/// such as its length) to the storage device. Cheaper than [`sync_file`] when
+/// only the contents changed, as when appending to a log.
+pub(crate) fn sync_file_data(file: &File) -> io::Result<()> {
+    if FSYNC { file.sync_data() } else { Ok(()) }
+}
+
 /// Creates a new file at `path`, which must not exist, holding `contents`
 /// flushed to disk. On failure the partial file is left for the caller to
 /// remove.

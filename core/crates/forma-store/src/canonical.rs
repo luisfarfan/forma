@@ -31,6 +31,15 @@ impl Serialize for Sorted<'_> {
     }
 }
 
+/// Renders a JSON value in canonical form, on a single line: the same sorted
+/// keys, but no indentation and no spaces, ended by exactly one `\n`. This is
+/// the form of a line of a JSONL file such as the journal.
+pub(crate) fn canonical_line(value: &Value) -> Result<String, serde_json::Error> {
+    let mut text = serde_json::to_string(&Sorted(value))?;
+    text.push('\n');
+    Ok(text)
+}
+
 /// Renders a JSON value in canonical form.
 pub(crate) fn canonical_string(value: &Value) -> Result<String, serde_json::Error> {
     let mut text = serde_json::to_string_pretty(&Sorted(value))?;
@@ -91,6 +100,19 @@ mod tests {
             .map(|key| text.find(key).unwrap())
             .collect();
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+    }
+
+    #[test]
+    fn a_line_is_compact_sorted_and_ends_with_one_newline() {
+        let value = json!({"b": {"z": [1, {"y": "a\nb", "x": null}], "a": {}}, "a": []});
+
+        let line = canonical_line(&value).unwrap();
+
+        assert_eq!(
+            line,
+            "{\"a\":[],\"b\":{\"a\":{},\"z\":[1,{\"x\":null,\"y\":\"a\\nb\"}]}}\n"
+        );
+        assert_eq!(line.matches('\n').count(), 1);
     }
 
     #[test]

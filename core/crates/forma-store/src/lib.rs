@@ -19,12 +19,17 @@
 //!   package (or empty);
 //! * the JSON is canonical ([`to_canonical_json`]): saving the same font twice
 //!   gives identical bytes.
+//!
+//! Between saves, the [`Journal`] keeps every committed edit on disk so that a
+//! crash loses nothing: on reopening, [`replay`] and [`apply_records`] put the
+//! journaled edits back over the last saved file.
 
 #![forbid(unsafe_code)]
 
 mod atomic;
 mod canonical;
 mod filenames;
+mod journal;
 mod package;
 mod parts;
 mod sqlite;
@@ -36,6 +41,7 @@ use thiserror::Error;
 
 pub use canonical::{to_canonical_json, try_to_canonical_json};
 pub use filenames::glyph_file_name;
+pub use journal::{Journal, JournalRecord, apply_records, remove as remove_journal, replay};
 
 /// Everything that can go wrong while saving or loading a document.
 #[derive(Debug, Error)]

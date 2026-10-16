@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::sync::Arc;
 
-use forma_model::{Font, FontId, Glyph, GlyphId};
+use forma_model::{Font, FontId, Glyph, GlyphId, Master};
 use serde::de::Error as _;
 use serde_json::Value;
 
@@ -59,7 +59,15 @@ fn invalid(cause: impl Display) -> StoreError {
 /// which would not load back. Refusing them at save time keeps every saved
 /// document loadable.
 fn ensure_finite(font: &Font) -> Result<(), StoreError> {
-    let master_metrics = font.masters.iter().flat_map(|master| {
+    ensure_masters_finite(&font.masters)?;
+    font.glyphs
+        .values()
+        .try_for_each(|glyph| ensure_glyph_finite(glyph))
+}
+
+/// The master half of [`ensure_finite`], also used for journal records.
+pub(crate) fn ensure_masters_finite(masters: &[Master]) -> Result<(), StoreError> {
+    let metrics = masters.iter().flat_map(|master| {
         let metrics = &master.metrics;
         [
             metrics.ascender,
@@ -68,25 +76,28 @@ fn ensure_finite(font: &Font) -> Result<(), StoreError> {
             metrics.cap_height,
         ]
     });
-    if master_metrics.into_iter().any(|value| !value.is_finite()) {
+    if metrics.into_iter().any(|value| !value.is_finite()) {
         return Err(StoreError::Invalid(
             "a master has a vertical metric that is not a finite number".to_owned(),
         ));
     }
-    for glyph in font.glyphs.values() {
-        for layer in glyph.layers.values() {
-            let finite = layer.advance_width.is_finite()
-                && layer
-                    .paths
-                    .iter()
-                    .flat_map(|path| &path.nodes)
-                    .all(|node| node.x.is_finite() && node.y.is_finite());
-            if !finite {
-                return Err(StoreError::Invalid(format!(
-                    "glyph {:?} has an advance width or coordinate that is not a finite number",
-                    glyph.name
-                )));
-            }
+    Ok(())
+}
+
+/// The glyph half of [`ensure_finite`], also used for journal records.
+pub(crate) fn ensure_glyph_finite(glyph: &Glyph) -> Result<(), StoreError> {
+    for layer in glyph.layers.values() {
+        let finite = layer.advance_width.is_finite()
+            && layer
+                .paths
+                .iter()
+                .flat_map(|path| &path.nodes)
+                .all(|node| node.x.is_finite() && node.y.is_finite());
+        if !finite {
+            return Err(StoreError::Invalid(format!(
+                "glyph {:?} has an advance width or coordinate that is not a finite number",
+                glyph.name
+            )));
         }
     }
     Ok(())
