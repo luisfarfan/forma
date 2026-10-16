@@ -1,0 +1,12 @@
+[package]
+name = "forma-geometry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA outline geometry: Bezier conversion, SVG import, direction and nesting"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+kurbo = { workspace = true }
+thiserror = { workspace = true }
