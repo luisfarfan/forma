@@ -5,13 +5,14 @@
 //! same function the tool itself uses. The operations are first applied one
 //! by one to a scratch copy of the font with [`forma_edit::apply`], each
 //! translated against the state the previous ones left, so that a failure
-//! names its operation (`details.op_index`); then every command is committed
-//! at once with a single `Document::execute`, so the whole batch is one
-//! undoable transaction and one new revision, or nothing at all.
+//! names its operation (`details.op_index`) and the effects of the batch are
+//! measured command by command; then every command is committed at once with
+//! a single `Document::execute`, so the whole batch is one undoable
+//! transaction and one new revision, or nothing at all.
 
 use std::sync::Arc;
 
-use forma_edit::{Command, apply};
+use forma_edit::Command;
 use forma_model::{Actor, Font, Rev};
 use schemars::JsonSchema;
 use serde::de::{DeserializeOwned, IgnoredAny};
@@ -19,10 +20,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::engine::Engine;
-use crate::errors::{ToolError, from_args_error, from_edit_error};
+use crate::errors::{ToolError, from_args_error};
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
-use crate::tools::limits::{check_batch_ops, check_nodes, command_nodes};
-use crate::tools::mutate::{Edit, Mutation, MutationResult, Translate, Translation, mutate, plain};
+use crate::tools::limits::check_batch_ops;
+use crate::tools::mutate::{
+    Edit, Mutation, MutationResult, OpArgs, Translate, Translation, mutate, plain,
+};
+use crate::tools::steps::Steps;
 use crate::tools::{font, geometry, glyphs, metrics, outlines};
 
 /// `edit_batch`.
@@ -62,6 +66,10 @@ pub struct EditBatchOpArgs {
     /// The operations, applied in order: from 1 to 2000.
     #[schemars(with = "Vec<BatchOp>", length(min = 1, max = 2000))]
     pub ops: Vec<IgnoredAny>,
+}
+
+impl OpArgs for EditBatchOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `edit_batch`: the document, the base revision, an optional history label and the operations, applied in order as one transaction.";
 }
 
 /// One operation of a batch.
@@ -164,24 +172,19 @@ fn at_op(index: usize, mut error: ToolError) -> ToolError {
     error
 }
 
-/// Translates every operation and applies it to a scratch copy of `font`,
-/// stopping at the first that fails; returns all the commands, in order.
-fn batch_commands(font: &Font, ops: &[Value]) -> Result<Vec<Command>, ToolError> {
-    let mut scratch = font.clone();
-    let mut cmds = Vec::new();
-    let mut nodes = 0_usize;
+/// Translates every operation against the state the previous ones left and
+/// applies its commands to the scratch state, stopping at the first that
+/// fails; the steps measure the effects of the whole batch, command by
+/// command.
+fn batch_steps(font: &Arc<Font>, ops: &[Value]) -> Result<Steps, ToolError> {
+    let mut steps = Steps::new(font);
     for (index, op) in ops.iter().enumerate() {
-        let op_cmds = op_commands(&scratch, op).map_err(|error| at_op(index, error))?;
-        nodes = nodes.saturating_add(op_cmds.iter().map(command_nodes).sum());
-        check_nodes(nodes).map_err(|error| at_op(index, error))?;
-        for cmd in &op_cmds {
-            scratch = apply(&scratch, cmd)
-                .map_err(|error| at_op(index, from_edit_error(error)))?
-                .0;
+        let cmds = op_commands(&steps.after, op).map_err(|error| at_op(index, error))?;
+        for cmd in cmds {
+            steps.push(cmd).map_err(|error| at_op(index, error))?;
         }
-        cmds.extend(op_cmds);
     }
-    Ok(cmds)
+    Ok(steps)
 }
 
 fn edit_batch(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
@@ -196,7 +199,7 @@ fn edit_batch(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOut
         return Err(ToolError::invalid_argument("`ops` must not be empty"));
     }
     let font = Arc::clone(engine.doc(&call.doc)?.font());
-    let cmds = batch_commands(&font, ops)?;
+    let steps = batch_steps(&font, ops)?;
     let label = call
         .op
         .label
@@ -208,7 +211,7 @@ fn edit_batch(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOut
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
         label,
-        cmds,
+        steps,
     };
     mutate(engine, actor, edit, plain)
 }
@@ -237,6 +240,57 @@ mod tests {
 
         let odd = at_op(0, ToolError::invalid_argument("x").with_details(json!([1])));
         assert_eq!(odd.details, json!({ "op_index": 0, "details": [1] }));
+    }
+
+    /// A font with the glyph `A`, drawn.
+    fn drawn_font() -> Arc<Font> {
+        let font = Font::new("Test", 1000);
+        let create = json!({ "op": "create_glyph", "name": "A", "advance_width": 500,
+            "paths": [{ "id": 0, "closed": true, "nodes": [
+                { "x": 0, "y": 0, "kind": "line", "smooth": false },
+                { "x": 10, "y": 0, "kind": "line", "smooth": false },
+                { "x": 10, "y": 10, "kind": "line", "smooth": false }
+            ] }] });
+        let create: Command = serde_json::from_value(create).expect("a command");
+        Arc::new(forma_edit::apply(&font, &create).expect("create").0)
+    }
+
+    #[test]
+    fn batch_effects_follow_the_operations_in_order() {
+        let font = drawn_font();
+        let a = font.glyph_by_name("A").expect("A").id;
+        // Renaming `A` and then replacing the outline of `B` replaces the
+        // outline `A` had: destructive, and one glyph.
+        let steps = batch_steps(
+            &font,
+            &[
+                json!({ "tool": "glyph_update", "args": { "glyph": "A", "name": "B" } }),
+                json!({ "tool": "glyph_set_outline", "args": { "glyph": "B",
+                    "svg_path": "M0 0 L5 0 L5 5 Z" } }),
+                json!({ "tool": "metrics_set", "args": { "items": [
+                    { "glyph": "B", "advance_width": 1 },
+                    { "glyph": "B", "advance_width": 2 }
+                ] } }),
+            ],
+        )
+        .expect("valid batch");
+        assert_eq!(steps.effects(), Effects::DESTRUCTIVE);
+        assert_eq!(steps.affected.iter().copied().collect::<Vec<_>>(), [a]);
+        assert_eq!(steps.cmds.len(), 4);
+
+        // A glyph the batch creates and then redraws destroys nothing.
+        let steps = batch_steps(
+            &font,
+            &[
+                json!({ "tool": "glyph_create", "args": { "name": "C", "advance_width": 1,
+                    "svg_path": "M0 0 L5 0 L5 5 Z" } }),
+                json!({ "tool": "glyph_set_outline", "args": { "glyph": "C",
+                    "svg_path": "M0 0 L6 0 L6 6 Z" } }),
+            ],
+        )
+        .expect("valid batch");
+        assert_eq!(steps.effects(), Effects::WRITE);
+        assert_eq!(steps.affected.len(), 1);
     }
 
     #[test]

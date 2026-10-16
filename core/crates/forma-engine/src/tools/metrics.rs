@@ -13,7 +13,7 @@ use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, sch
 use crate::tools::inputs::{find_master, glyph_label, selected_glyphs};
 use crate::tools::json_output;
 use crate::tools::limits::parse_checked;
-use crate::tools::mutate::{Mutation, MutationResult, Translation, run_edit};
+use crate::tools::mutate::{Mutation, MutationResult, OpArgs, Translation, run_edit};
 
 /// `metrics_get`.
 pub(crate) const GET: CommandSpec = CommandSpec {
@@ -145,6 +145,10 @@ pub struct MetricsSetOpArgs {
     /// The changes, applied in order; at least one.
     #[schemars(length(min = 1))]
     pub items: Vec<MetricsItem>,
+}
+
+impl OpArgs for MetricsSetOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `metrics_set`: the document, the base revision, the master (the default master when omitted) and the changes, applied as one transaction.";
 }
 
 /// The new metrics of one glyph: at least one of `advance_width`, `lsb` and

@@ -10,7 +10,7 @@ use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::inputs::{CoordinateSystemArg, PathInput, glyph_label, outline_paths};
-use crate::tools::mutate::{Mutation, MutationResult, Translation, run_edit};
+use crate::tools::mutate::{Mutation, MutationResult, OpArgs, Translation, run_edit};
 
 /// `glyph_set_outline`.
 pub(crate) const SET_OUTLINE: CommandSpec = CommandSpec {
@@ -99,6 +99,10 @@ pub struct GlyphSetOutlineOpArgs {
     pub coordinate_system: CoordinateSystemArg,
 }
 
+impl OpArgs for GlyphSetOutlineOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `glyph_set_outline`: the document, the base revision, the glyph, the master (the default master when omitted) and the new outline, as `svg_path` or as `paths`, not both.";
+}
+
 /// Arguments of `contour_edit`.
 pub type ContourEditArgs = Mutation<ContourEditOpArgs>;
 
@@ -114,6 +118,10 @@ pub struct ContourEditOpArgs {
     pub master: Option<MasterId>,
     /// What to do.
     pub action: ContourActionArg,
+}
+
+impl OpArgs for ContourEditOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `contour_edit`: the document, the base revision, the glyph, the master (the default master when omitted) and the action.";
 }
 
 /// An edit of the contours of a glyph layer.
@@ -172,7 +180,62 @@ pub struct NodesEditOpArgs {
     /// The contour to edit (an id from glyph_get).
     pub path_id: PathId,
     /// What to do.
-    pub action: NodeAction,
+    pub action: NodeActionArg,
+}
+
+impl OpArgs for NodesEditOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `nodes_edit`: the document, the base revision, the glyph, the master (the default master when omitted), the contour and the action.";
+}
+
+/// An edit of the nodes of one contour. Nodes are addressed by their index
+/// in the contour's `nodes` (from glyph_get).
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "NodeAction")]
+pub enum NodeActionArg {
+    /// Moves exactly the listed nodes by `(dx, dy)`. Handles do not follow
+    /// their on-curve node: list them too to move them.
+    Move {
+        /// Indices of the nodes to move; each must exist.
+        indices: Vec<usize>,
+        /// Horizontal offset in font units.
+        dx: f64,
+        /// Vertical offset in font units.
+        dy: f64,
+    },
+    /// Splits segment `segment_index` at `t` with a new on-curve node,
+    /// keeping the shape. Segment `k` ends at the `k`-th on-curve node of a
+    /// closed contour; in an open contour it starts there.
+    Insert {
+        /// The segment to split.
+        segment_index: usize,
+        /// Where to split, strictly between 0 and 1.
+        t: f64,
+    },
+    /// Deletes an on-curve node and its handles; the segments around it
+    /// merge into one.
+    Delete {
+        /// Index of the on-curve node to delete.
+        index: usize,
+    },
+    /// Sets whether an on-curve node is smooth; handles are not realigned.
+    SetSmooth {
+        /// Index of the on-curve node.
+        index: usize,
+        /// The new value of the flag.
+        smooth: bool,
+    },
+}
+
+impl From<NodeActionArg> for NodeAction {
+    fn from(action: NodeActionArg) -> Self {
+        match action {
+            NodeActionArg::Move { indices, dx, dy } => NodeAction::Move { indices, dx, dy },
+            NodeActionArg::Insert { segment_index, t } => NodeAction::Insert { segment_index, t },
+            NodeActionArg::Delete { index } => NodeAction::Delete { index },
+            NodeActionArg::SetSmooth { index, smooth } => NodeAction::SetSmooth { index, smooth },
+        }
+    }
 }
 
 /// The command of `glyph_set_outline`.
@@ -279,7 +342,7 @@ pub(crate) fn nodes_edit_commands(
         glyph: op.glyph,
         master: op.master,
         path_id: op.path_id,
-        action: op.action,
+        action: op.action.into(),
     };
     Ok((label, vec![cmd]))
 }

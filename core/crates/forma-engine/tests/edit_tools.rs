@@ -1635,13 +1635,17 @@ fn geometry_tools_validate_their_arguments() {
         "geometry_fix",
         json!({ "doc": doc, "base_rev": 1, "kinds": ["off_grid", "tiny_segment"] }),
     );
-    assert!(
-        error
-            .message
-            .starts_with("tiny_segment has no automatic fix"),
-        "{}",
-        error.message
-    );
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    // The message names the refused kind and lists the fixable ones.
+    for text in [
+        "tiny_segment",
+        "duplicate_points",
+        "missing_extrema",
+        "off_grid",
+        "wrong_direction",
+    ] {
+        assert!(error.message.contains(text), "{}", error.message);
+    }
 
     // Only the requested kinds are fixed.
     let fixed = ok(
@@ -1669,4 +1673,168 @@ fn geometry_tools_validate_their_arguments() {
         json!({ "doc": doc, "grid": 0.0 }),
     );
     assert_eq!(check["issues"].as_array().map(Vec::len), Some(1));
+}
+
+// ------------------------------------------------------------- fix round 1
+
+/// Resolves a local `$ref` of `schema` (`#/$defs/<name>`), or returns the
+/// value itself.
+fn resolved<'a>(schema: &'a Value, value: &'a Value) -> &'a Value {
+    match value["$ref"].as_str() {
+        Some(reference) => {
+            let name = reference.trim_start_matches("#/$defs/");
+            &schema["$defs"][name]
+        }
+        None => value,
+    }
+}
+
+#[test]
+fn batch_geometry_fix_follows_a_glyph_created_in_the_same_batch() {
+    for fix_args in [json!({}), json!({ "glyphs": ["o"] })] {
+        let mut engine = engine();
+        let doc = new_doc(&mut engine);
+        // Clockwise: wrong direction for an outer contour.
+        let done = ok(
+            &mut engine,
+            "edit_batch",
+            json!({ "doc": doc, "base_rev": 0, "ops": [
+                { "tool": "glyph_create", "args": { "name": "o", "advance_width": 200,
+                    "svg_path": "M0 0 L0 100 L100 100 L100 0 Z" } },
+                { "tool": "geometry_fix", "args": fix_args }
+            ] }),
+        );
+        assert_eq!(done["rev"], json!(1), "{fix_args}");
+        assert_eq!(done["tx"], json!(1), "{fix_args}");
+        let checked = ok(&mut engine, "geometry_check", json!({ "doc": doc }));
+        assert_eq!(checked["issues"], json!([]), "{fix_args}");
+        assert_eq!(
+            points(&get(&mut engine, &doc, "o")),
+            [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)],
+            "{fix_args}"
+        );
+    }
+}
+
+#[test]
+fn nodes_edit_action_rejects_unknown_fields() {
+    let mut engine = engine();
+    let doc = new_doc(&mut engine);
+    create(
+        &mut engine,
+        &doc,
+        0,
+        json!({ "name": "a", "advance_width": 100, "svg_path": rect_svg(0.0, 0.0, 10.0, 10.0) }),
+    );
+    let error = err(
+        &mut engine,
+        "nodes_edit",
+        json!({ "doc": doc, "base_rev": 1, "glyph": "a", "path_id": 0,
+                "action": { "type": "move", "indices": [0], "dx": 1, "dy": 0, "bogus": 5 } }),
+    );
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(error.message.contains("bogus"), "{}", error.message);
+    // Inside a batch too.
+    let error = err(
+        &mut engine,
+        "edit_batch",
+        json!({ "doc": doc, "base_rev": 1, "ops": [{ "tool": "nodes_edit", "args": {
+            "glyph": "a", "path_id": 0,
+            "action": { "type": "set_smooth", "index": 0, "smooth": true, "bogus": 5 }
+        } }] }),
+    );
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert_eq!(op_index(&error), json!(0));
+    // A well-formed action still works.
+    let done = ok(
+        &mut engine,
+        "nodes_edit",
+        json!({ "doc": doc, "base_rev": 1, "glyph": "a", "path_id": 0,
+                "action": { "type": "move", "indices": [0], "dx": 1, "dy": 0 } }),
+    );
+    assert_eq!(done["rev"], json!(2));
+}
+
+#[test]
+fn schemas_are_precise_for_agents() {
+    // (a) geometry_fix lists only the kinds it can fix.
+    let fix = (forma_engine::find("geometry_fix")
+        .expect("registered")
+        .input_schema)();
+    let kinds = &fix["properties"]["kinds"];
+    let item = resolved(&fix, &kinds["items"]);
+    let mut listed: Vec<&str> = item["oneOf"]
+        .as_array()
+        .or_else(|| item["enum"].as_array())
+        .expect("an enumeration")
+        .iter()
+        .map(|variant| {
+            variant["const"]
+                .as_str()
+                .or_else(|| variant.as_str())
+                .expect("a kind")
+        })
+        .collect();
+    listed.sort_unstable();
+    assert_eq!(
+        listed,
+        [
+            "duplicate_points",
+            "missing_extrema",
+            "off_grid",
+            "wrong_direction"
+        ],
+        "{fix}"
+    );
+
+    // (b) Every variant of nodes_edit's action rejects unknown fields.
+    let nodes = (forma_engine::find("nodes_edit")
+        .expect("registered")
+        .input_schema)();
+    let action = resolved(&nodes, &nodes["properties"]["action"]);
+    let variants = action["oneOf"].as_array().expect("variants");
+    assert_eq!(variants.len(), 4, "{action}");
+    for variant in variants {
+        assert_eq!(variant["additionalProperties"], json!(false), "{variant}");
+    }
+
+    // (c) The top-level description is about the whole call.
+    for name in MUTATING.iter().chain(&["geometry_fix"]) {
+        let input = (forma_engine::find(name).expect("registered").input_schema)();
+        let description = input["description"].as_str().expect("description");
+        assert!(
+            !description.contains("without `doc`") && !description.contains("without doc"),
+            "{name}: {description}"
+        );
+        assert!(
+            description.contains(&format!("`{name}`")),
+            "{name}: {description}"
+        );
+    }
+
+    // (d) Every optional top-level argument declares its default.
+    for name in MUTATING.iter().chain(&[
+        "geometry_fix",
+        "glyph_list",
+        "glyph_get",
+        "geometry_check",
+        "metrics_get",
+    ]) {
+        let input = (forma_engine::find(name).expect("registered").input_schema)();
+        let required: Vec<&Value> = input["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .collect();
+        for (field, schema) in input["properties"].as_object().expect("properties") {
+            if !required.contains(&&json!(field)) {
+                assert!(schema.get("default").is_some(), "{name}.{field}: {schema}");
+            }
+        }
+    }
+    let create = (forma_engine::find("glyph_create")
+        .expect("registered")
+        .input_schema)();
+    assert_eq!(create["properties"]["paths"]["default"], Value::Null);
+    assert!(create["properties"]["paths"].get("default").is_some());
 }

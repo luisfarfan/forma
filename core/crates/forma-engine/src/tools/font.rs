@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
-use crate::tools::mutate::{Mutation, MutationResult, Translation, run_edit};
+use crate::tools::mutate::{Mutation, MutationResult, OpArgs, Translation, run_edit};
 
 /// `font_set_info`.
 pub(crate) const SET_INFO: CommandSpec = CommandSpec {
@@ -80,6 +80,10 @@ pub struct FontSetInfoOpArgs {
     pub units_per_em: Option<u16>,
 }
 
+impl OpArgs for FontSetInfoOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `font_set_info`: the document, the base revision and at least one font info field to change.";
+}
+
 /// Arguments of `font_set_vertical_metrics`.
 pub type FontSetVerticalMetricsArgs = Mutation<FontSetVerticalMetricsOpArgs>;
 
@@ -104,6 +108,10 @@ pub struct FontSetVerticalMetricsOpArgs {
     /// The height of capital letters.
     #[serde(default)]
     pub cap_height: Option<f64>,
+}
+
+impl OpArgs for FontSetVerticalMetricsOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `font_set_vertical_metrics`: the document, the base revision, the master (the default master when omitted) and at least one vertical metric to change.";
 }
 
 /// The commands of `font_set_info`.

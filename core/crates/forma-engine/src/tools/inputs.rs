@@ -27,8 +27,9 @@ const MAX_QUOTED: usize = 32;
 
 /// A Unicode code point given as an integer or as text such as `"U+0041"` or
 /// `"0x41"` (case-insensitive, 1 to 6 hexadecimal digits). Results always
-/// report code points as integers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// report code points as integers, and so does its serialization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
 pub struct CodePoint(pub u32);
 
 /// Parses `U+hhhh` or `0xhhhh` text.
@@ -129,7 +130,7 @@ pub enum CoordinateSystemArg {
 }
 
 /// A node of a contour given as input.
-#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeInput {
     /// Horizontal position.
@@ -148,7 +149,7 @@ pub struct NodeInput {
 
 /// A contour given as input. Contours are numbered by position; an `id` is
 /// accepted (so that the `paths` of glyph_get can be sent back) and ignored.
-#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PathInput {
     /// Ignored: contours are numbered by their position.

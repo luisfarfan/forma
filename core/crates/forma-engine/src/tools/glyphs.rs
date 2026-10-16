@@ -22,7 +22,8 @@ use crate::tools::inputs::{
 use crate::tools::json_output;
 use crate::tools::limits::parse_checked;
 use crate::tools::metrics::{BBox, layer_metrics};
-use crate::tools::mutate::{Edit, Mutation, MutationResult, Translation, mutate, run_edit};
+use crate::tools::mutate::{Edit, Mutation, MutationResult, OpArgs, Translation, mutate, run_edit};
+use crate::tools::steps::Steps;
 
 /// The largest page of `glyph_list`.
 const MAX_LIST_LIMIT: usize = 500;
@@ -262,6 +263,10 @@ pub struct GlyphCreateOpArgs {
     pub coordinate_system: CoordinateSystemArg,
 }
 
+impl OpArgs for GlyphCreateOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `glyph_create`: the document, the base revision and the new glyph. Give its outline as `svg_path` or as `paths`, not both, or neither for a glyph without contours.";
+}
+
 /// Result of `glyph_create`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GlyphCreateResult {
@@ -305,6 +310,10 @@ pub struct GlyphUpdateOpArgs {
     pub export: Option<bool>,
 }
 
+impl OpArgs for GlyphUpdateOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `glyph_update`: the document, the base revision, the glyph and at least one of `name`, `unicodes` and `export`.";
+}
+
 /// Arguments of `glyph_delete`.
 pub type GlyphDeleteArgs = Mutation<GlyphDeleteOpArgs>;
 
@@ -316,6 +325,11 @@ pub struct GlyphDeleteOpArgs {
     /// The glyphs to delete, by name or id; at least one.
     #[schemars(length(min = 1))]
     pub glyphs: Vec<GlyphRef>,
+}
+
+impl OpArgs for GlyphDeleteOpArgs {
+    const DESCRIPTION: &'static str =
+        "Arguments of `glyph_delete`: the document, the base revision and the glyphs to delete.";
 }
 
 // ------------------------------------------------------------ translations
@@ -509,7 +523,7 @@ fn glyph_create(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
         label,
-        cmds,
+        steps: Steps::of(&font, cmds)?,
     };
     mutate(engine, actor, edit, |engine, result| {
         let glyph = engine

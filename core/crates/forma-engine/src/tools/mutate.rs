@@ -8,17 +8,22 @@
 //!    splits them into the common `doc` and `base_rev` and the tool's own
 //!    arguments (`Op`, which reject unknown fields). The same `Op` is what an
 //!    `edit_batch` operation carries.
-//! 2. `mutate` enforces the node limit, asks the `approval_gate` hook and
-//!    runs the commands as one transaction with [`Document::execute`],
-//!    marking the document dirty. Conflicts become `REVISION_CONFLICT` with
-//!    the details of [`conflict_details`](crate::errors::conflict_details).
+//! 2. `Steps` applies the commands, in order, to a scratch copy of the font
+//!    as they are added (enforcing the node limit). Before each command it
+//!    records what that command does to the state it meets, so the effects
+//!    of a call (destructive or not, distinct glyphs affected) are measured
+//!    step by step, the way the transaction will run.
+//! 3. `mutate` asks the `approval_gate` hook and runs the commands as one
+//!    transaction with [`Document::execute`], marking the document dirty.
+//!    Conflicts become `REVISION_CONFLICT` with the details of
+//!    [`conflict_details`](crate::errors::conflict_details).
 //!
 //! [`Document::execute`]: forma_edit::Document::execute
 
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use forma_edit::{Command, affected_glyph_count};
+use forma_edit::Command;
 use forma_model::{Actor, EntityKey, Font, Rev};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::DeserializeOwned;
@@ -30,7 +35,8 @@ use crate::engine::{DocHandle, Engine};
 use crate::errors::{ToolError, from_args_error};
 use crate::registry::{Effects, ToolOutput};
 use crate::tools::json_output;
-use crate::tools::limits::{check_nodes, check_raw_args, command_nodes};
+use crate::tools::limits::check_raw_args;
+use crate::tools::steps::Steps;
 
 /// A history label and the commands that carry out one tool call.
 pub(crate) type Translation = (String, Vec<Command>);
@@ -40,6 +46,15 @@ pub(crate) type Translation = (String, Vec<Command>);
 /// previous operations). Pure: it never changes anything.
 pub(crate) type Translate<Op> = fn(&Font, Op) -> Result<Translation, ToolError>;
 
+/// The own arguments of a mutating tool: every argument but `doc` and
+/// `base_rev`, which is also what an `edit_batch` operation carries. Their
+/// own schema (and doc comment) describes them in that role.
+pub trait OpArgs: DeserializeOwned + JsonSchema {
+    /// The description of the tool's complete arguments (`doc`, `base_rev`
+    /// and these), for the top level of the tool's input schema.
+    const DESCRIPTION: &'static str;
+}
+
 /// The fields every mutating tool takes besides its own.
 const COMMON_FIELDS: [&str; 2] = ["doc", "base_rev"];
 
@@ -48,8 +63,8 @@ const COMMON_FIELDS: [&str; 2] = ["doc", "base_rev"];
 /// `base_rev`, also what an `edit_batch` operation carries).
 ///
 /// On the wire every field is at the top level; its JSON Schema lists `doc`
-/// and `base_rev` first among the required fields and, like `Op`, does not
-/// allow other fields.
+/// and `base_rev` first among the required fields, like `Op` does not allow
+/// other fields, and is described by [`OpArgs::DESCRIPTION`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mutation<Op> {
     /// The document handle.
@@ -100,7 +115,7 @@ fn common_field<T: DeserializeOwned>(map: &Map<String, Value>, key: &str) -> Res
     })
 }
 
-impl<Op: JsonSchema> JsonSchema for Mutation<Op> {
+impl<Op: OpArgs> JsonSchema for Mutation<Op> {
     /// `<Tool>OpArgs` becomes `<Tool>Args`.
     fn schema_name() -> Cow<'static, str> {
         let name = Op::schema_name();
@@ -125,6 +140,7 @@ impl<Op: JsonSchema> JsonSchema for Mutation<Op> {
         })
         .to_value();
         let object = schema.ensure_object();
+        object.insert("description".into(), Op::DESCRIPTION.into());
         let properties = object
             .entry("properties")
             .or_insert_with(|| Value::Object(Map::new()));
@@ -170,8 +186,9 @@ pub(crate) struct Edit<'a> {
     pub base_rev: Rev,
     /// The label of the transaction in the history.
     pub label: String,
-    /// The commands, applied in order as one transaction.
-    pub cmds: Vec<Command>,
+    /// The commands, applied in order as one transaction, with the effects
+    /// measured on the document's current state.
+    pub steps: Steps,
 }
 
 /// What [`approval_gate`] decides on: a mutation about to be applied.
@@ -179,20 +196,16 @@ pub(crate) struct Edit<'a> {
 pub(crate) struct MutationRequest<'a> {
     /// Who makes the call.
     pub actor: &'a Actor,
-    /// The call: tool, arguments, document, base revision, label, commands.
+    /// The call: tool, arguments, document, base revision, label, and the
+    /// measured commands (`edit.steps`: states before and after, distinct
+    /// affected glyph ids).
     pub edit: &'a Edit<'a>,
-    /// The current state of the document, which the commands apply to.
-    #[expect(
-        dead_code,
-        reason = "read by the approval policy (plans), Milestone 1 Task 15"
-    )]
-    pub font: &'a Arc<Font>,
-    /// The sum of [`affected_glyph_count`] over the commands, measured on
-    /// `font`. Glyphs touched by several commands count several times.
+    /// The number of distinct glyphs the commands touch (`edit.steps.affected`).
     pub affected_glyphs: usize,
-    /// What the call does: [`Effects::DESTRUCTIVE`] when it deletes glyphs
-    /// or replaces the contours of a non-empty layer, [`Effects::WRITE`]
-    /// otherwise.
+    /// What the call does, judged command by command on the state each one
+    /// meets: [`Effects::DESTRUCTIVE`] when it deletes glyphs or replaces the
+    /// contours of a non-empty layer of a glyph that existed before the
+    /// call, [`Effects::WRITE`] otherwise.
     pub effects: Effects,
 }
 
@@ -218,7 +231,7 @@ pub(crate) fn approval_gate(
         doc = %edit.doc,
         base_rev = edit.base_rev.0,
         label = %edit.label,
-        commands = edit.cmds.len(),
+        commands = edit.steps.cmds.len(),
         affected_glyphs = request.affected_glyphs,
         destructive = request.effects.destructive,
         "approval gate: allowed (no approval policy yet)"
@@ -226,23 +239,22 @@ pub(crate) fn approval_gate(
     Ok(())
 }
 
-/// Applies a mutation and answers the call: checks the node limit, answers
-/// a call without commands without changing anything (`tx: null`), asks
-/// [`approval_gate`], runs the commands as one transaction (marking the
-/// document dirty), and finally lets `finish` turn the [`MutationResult`]
-/// into the tool's result (adding tool-specific fields, such as the new
-/// glyph of `glyph_create`). [`plain`] keeps it as it is.
+/// Applies a mutation and answers the call: answers a call without commands
+/// without changing anything (`tx: null`), asks [`approval_gate`], runs the
+/// commands as one transaction (marking the document dirty), and finally lets
+/// `finish` turn the [`MutationResult`] into the tool's result (adding
+/// tool-specific fields, such as the new glyph of `glyph_create`). [`plain`]
+/// keeps it as it is.
 ///
 /// Every mutating tool answers through this function, so a policy that
 /// answers without applying (a dry run, Task 15) needs no change in the
-/// tools.
+/// tools. `edit.steps` must start from the document's current state.
 ///
 /// # Errors
 ///
-/// * `LIMIT_EXCEEDED` if the commands bring more than
-///   [`MAX_NODES`](crate::limits::MAX_NODES) nodes;
 /// * `NOT_FOUND` for an unknown document handle;
-/// * `INVALID_ARGUMENT` if `base_rev` is newer than the current revision;
+/// * `INVALID_ARGUMENT` if `base_rev` is newer than the current revision, or
+///   if the steps were not measured on the current state;
 /// * the error of [`approval_gate`];
 /// * the mapped error of [`Document::execute`](forma_edit::Document::execute),
 ///   including `REVISION_CONFLICT`;
@@ -253,11 +265,16 @@ pub(crate) fn mutate<R: Serialize>(
     edit: Edit<'_>,
     finish: impl FnOnce(&Engine, MutationResult) -> Result<R, ToolError>,
 ) -> Result<ToolOutput, ToolError> {
-    check_nodes(edit.cmds.iter().map(command_nodes).sum())?;
     let open = engine.doc(edit.doc)?;
-    let font = Arc::clone(open.font());
+    if !Arc::ptr_eq(open.font(), &edit.steps.before) {
+        // Cannot happen while the engine is borrowed mutably throughout a
+        // call; refusing keeps the measured effects honest regardless.
+        return Err(ToolError::invalid_argument(
+            "the document changed while the call was prepared; retry",
+        ));
+    }
     let rev = open.rev();
-    if edit.cmds.is_empty() {
+    if edit.steps.cmds.is_empty() {
         if edit.base_rev > rev {
             return Err(ToolError::invalid_argument(format!(
                 "base revision {} is newer than the current revision {}",
@@ -275,19 +292,15 @@ pub(crate) fn mutate<R: Serialize>(
     let request = MutationRequest {
         actor,
         edit: &edit,
-        font: &font,
-        affected_glyphs: edit
-            .cmds
-            .iter()
-            .map(|cmd| affected_glyph_count(&font, cmd))
-            .sum(),
-        effects: effects_of(&font, &edit.cmds),
+        affected_glyphs: edit.steps.affected.len(),
+        effects: edit.steps.effects(),
     };
     approval_gate(engine, &request)?;
 
+    let cmds = &edit.steps.cmds;
     let outcome = engine
         .doc_mut(edit.doc)?
-        .change(|document| document.execute(actor, edit.base_rev, &edit.label, &edit.cmds))?;
+        .change(|document| document.execute(actor, edit.base_rev, &edit.label, cmds))?;
     let applied = MutationResult {
         rev: outcome.rev.0,
         tx: Some(outcome.tx.0),
@@ -328,101 +341,14 @@ pub(crate) fn run_edit<Op: DeserializeOwned>(
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
         label,
-        cmds,
+        steps: Steps::of(&font, cmds)?,
     };
     mutate(engine, actor, edit, plain)
 }
 
-/// What `cmds` do to `font`: destructive when one of them deletes glyphs or
-/// replaces the contours of a layer that has any.
-#[must_use]
-pub(crate) fn effects_of(font: &Font, cmds: &[Command]) -> Effects {
-    if cmds.iter().any(|cmd| is_destructive(font, cmd)) {
-        Effects::DESTRUCTIVE
-    } else {
-        Effects::WRITE
-    }
-}
-
-fn is_destructive(font: &Font, cmd: &Command) -> bool {
-    match cmd {
-        Command::DeleteGlyphs { .. } => true,
-        Command::SetOutline { glyph, master, .. } => {
-            let Some(glyph) = glyph.resolve(font).and_then(|id| font.glyphs.get(&id)) else {
-                return false;
-            };
-            master
-                .or_else(|| font.masters.first().map(|master| master.id))
-                .and_then(|master| glyph.layers.get(&master))
-                .is_some_and(|layer| !layer.paths.is_empty())
-        }
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use forma_edit::{GlyphRef, apply};
-    use forma_model::{Node, NodeKind, Path, PathId};
-
     use super::*;
-
-    fn triangle() -> Path {
-        let node = |x: f64, y: f64| Node {
-            x,
-            y,
-            kind: NodeKind::Line,
-            smooth: false,
-        };
-        Path {
-            id: PathId(0),
-            closed: true,
-            nodes: vec![node(0.0, 0.0), node(10.0, 0.0), node(10.0, 10.0)],
-        }
-    }
-
-    fn font_with(name: &str, paths: Vec<Path>) -> Font {
-        let font = Font::new("Test", 1000);
-        let create = Command::CreateGlyph {
-            name: name.into(),
-            unicodes: Vec::new(),
-            advance_width: 100.0,
-            paths,
-        };
-        apply(&font, &create).expect("create").0
-    }
-
-    fn set_outline(name: &str) -> Command {
-        Command::SetOutline {
-            glyph: GlyphRef::Name(name.into()),
-            master: None,
-            paths: vec![triangle()],
-        }
-    }
-
-    #[test]
-    fn replacing_a_drawn_layer_or_deleting_is_destructive() {
-        let empty = font_with("a", Vec::new());
-        let drawn = font_with("a", vec![triangle()]);
-        assert_eq!(effects_of(&empty, &[set_outline("a")]), Effects::WRITE);
-        assert_eq!(
-            effects_of(&drawn, &[set_outline("a")]),
-            Effects::DESTRUCTIVE
-        );
-        // A glyph the font does not have yet has nothing to destroy.
-        assert_eq!(effects_of(&drawn, &[set_outline("b")]), Effects::WRITE);
-        let delete = Command::DeleteGlyphs {
-            glyphs: vec![GlyphRef::Name("a".into())],
-        };
-        assert_eq!(effects_of(&empty, &[delete]), Effects::DESTRUCTIVE);
-        let rename = Command::UpdateGlyph {
-            glyph: GlyphRef::Name("a".into()),
-            name: Some("b".into()),
-            unicodes: None,
-            export: None,
-        };
-        assert_eq!(effects_of(&drawn, &[rename]), Effects::WRITE);
-    }
 
     #[derive(Debug, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
@@ -431,6 +357,10 @@ mod tests {
         name: String,
         #[serde(default)]
         count: Option<u32>,
+    }
+
+    impl OpArgs for DemoOpArgs {
+        const DESCRIPTION: &'static str = "Arguments of `demo`.";
     }
 
     #[test]
@@ -465,6 +395,7 @@ mod tests {
     fn schema_puts_common_fields_at_the_top_level() {
         let schema = crate::registry::schema_of::<Mutation<DemoOpArgs>>();
         assert_eq!(schema["title"], json!("DemoArgs"));
+        assert_eq!(schema["description"], json!("Arguments of `demo`."));
         assert_eq!(schema["type"], json!("object"));
         assert_eq!(schema["additionalProperties"], json!(false));
         assert_eq!(schema["required"], json!(["doc", "base_rev", "name"]));

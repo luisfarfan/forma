@@ -15,15 +15,45 @@ use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, sch
 use crate::tools::inputs::{check_grid, default_grid, selected_glyphs};
 use crate::tools::json_output;
 use crate::tools::limits::parse_checked;
-use crate::tools::mutate::{Edit, Mutation, Translation, mutate};
+use crate::tools::mutate::{Edit, Mutation, OpArgs, Translation, mutate};
+use crate::tools::steps::Steps;
 
-/// The kinds of issue `geometry_fix` repairs, which it fixes by default.
-pub(crate) const FIXABLE_KINDS: [IssueKind; 4] = [
-    IssueKind::DuplicatePoints,
-    IssueKind::MissingExtrema,
-    IssueKind::OffGrid,
-    IssueKind::WrongDirection,
-];
+/// A kind of geometry issue that `geometry_fix` repairs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FixableKind {
+    /// Repeated on-curve nodes: the redundant node and its handles are
+    /// removed.
+    DuplicatePoints,
+    /// Curves whose extreme points have no node: they are split there,
+    /// keeping their shape.
+    MissingExtrema,
+    /// Nodes off the grid: every coordinate of the contour is rounded to it.
+    OffGrid,
+    /// Contours running the wrong way for their nesting: they are reversed.
+    WrongDirection,
+}
+
+impl FixableKind {
+    /// Every fixable kind, which `geometry_fix` repairs by default.
+    pub const ALL: [FixableKind; 4] = [
+        Self::DuplicatePoints,
+        Self::MissingExtrema,
+        Self::OffGrid,
+        Self::WrongDirection,
+    ];
+}
+
+impl From<FixableKind> for IssueKind {
+    fn from(kind: FixableKind) -> Self {
+        match kind {
+            FixableKind::DuplicatePoints => IssueKind::DuplicatePoints,
+            FixableKind::MissingExtrema => IssueKind::MissingExtrema,
+            FixableKind::OffGrid => IssueKind::OffGrid,
+            FixableKind::WrongDirection => IssueKind::WrongDirection,
+        }
+    }
+}
 
 /// `geometry_check`.
 pub(crate) const CHECK: CommandSpec = CommandSpec {
@@ -122,14 +152,17 @@ pub struct GeometryFixOpArgs {
     /// The glyphs to fix, by name or id; every glyph when omitted.
     #[serde(default)]
     pub glyphs: Option<Vec<GlyphRef>>,
-    /// The kinds of issue to fix: some of duplicate_points, missing_extrema,
-    /// off_grid and wrong_direction; all of them when omitted.
+    /// The kinds of issue to fix; all four when omitted.
     #[serde(default)]
-    pub kinds: Option<Vec<IssueKind>>,
+    pub kinds: Option<Vec<FixableKind>>,
     /// The grid, in font units, for the off_grid fix; 0 means no grid.
     #[serde(default = "default_grid")]
     #[schemars(range(min = 0.0))]
     pub grid: f64,
+}
+
+impl OpArgs for GeometryFixOpArgs {
+    const DESCRIPTION: &'static str = "Arguments of `geometry_fix`: the document, the base revision and, optionally, the glyphs, the kinds of issue and the grid.";
 }
 
 /// Result of `geometry_fix`.
@@ -171,36 +204,19 @@ fn glyph_issues(font: &Font, glyph: &Glyph, grid: f64) -> Vec<GlyphIssue> {
     issues
 }
 
-/// The wire name of an issue kind, such as `open_contour`.
-fn kind_name(kind: IssueKind) -> String {
-    match serde_json::to_value(kind) {
-        Ok(Value::String(name)) => name,
-        _ => format!("{kind:?}"),
-    }
-}
-
 /// Plans `geometry_fix`: the number of fixable issues of the requested kinds
 /// and the command that fixes them, limited to the glyphs that have any; no
 /// command when there is nothing to fix.
 fn plan_fixes(font: &Font, op: GeometryFixOpArgs) -> Result<(usize, Translation), ToolError> {
     check_grid(op.grid)?;
-    let kinds = match op.kinds {
-        None => FIXABLE_KINDS.to_vec(),
+    let kinds: Vec<IssueKind> = match op.kinds {
+        None => FixableKind::ALL.into_iter().map(IssueKind::from).collect(),
         Some(kinds) if kinds.is_empty() => {
             return Err(ToolError::invalid_argument(
                 "`kinds` must not be empty; omit it to fix every fixable kind",
             ));
         }
-        Some(kinds) => {
-            if let Some(kind) = kinds.iter().find(|kind| !FIXABLE_KINDS.contains(kind)) {
-                return Err(ToolError::invalid_argument(format!(
-                    "{} has no automatic fix; the fixable kinds are duplicate_points, \
-                     missing_extrema, off_grid and wrong_direction",
-                    kind_name(*kind)
-                )));
-            }
-            kinds
-        }
+        Some(kinds) => kinds.into_iter().map(IssueKind::from).collect(),
     };
 
     let mut fixable = 0;
@@ -222,8 +238,15 @@ fn plan_fixes(font: &Font, op: GeometryFixOpArgs) -> Result<(usize, Translation)
         [glyph] => format!("Fix geometry of '{}'", glyph.name),
         glyphs => format!("Fix geometry of {} glyphs", glyphs.len()),
     };
+    // By name, not by id: inside edit_batch `font` is the scratch state, and a
+    // glyph created earlier in the batch gets a different (random) id when the
+    // transaction is committed. Names are unique at every step and the commands
+    // replay in the same order, so a name always finds the same glyph.
     let cmd = Command::ApplyGeometryFixes {
-        glyphs: targets.iter().map(|glyph| GlyphRef::Id(glyph.id)).collect(),
+        glyphs: targets
+            .iter()
+            .map(|glyph| GlyphRef::Name(glyph.name.clone()))
+            .collect(),
         kinds,
         grid: op.grid,
     };
@@ -272,7 +295,7 @@ fn geometry_fix(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
         label,
-        cmds,
+        steps: Steps::of(&font, cmds)?,
     };
     mutate(engine, actor, edit, |_, result| {
         Ok(GeometryFixResult {

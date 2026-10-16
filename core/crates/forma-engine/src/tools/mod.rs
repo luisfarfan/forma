@@ -22,6 +22,7 @@ pub mod metrics;
 pub mod mutate;
 pub mod outlines;
 pub(crate) mod placeholders;
+pub(crate) mod steps;
 
 /// Deserializes the arguments of a tool; a mismatch (missing, mistyped or
 /// unknown field) is `INVALID_ARGUMENT` with serde's message.
