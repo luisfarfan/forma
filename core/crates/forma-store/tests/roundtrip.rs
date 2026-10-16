@@ -949,6 +949,110 @@ fn resaving_a_package_removes_glyph_files_that_no_longer_exist() {
     assert_eq!(load(&path).unwrap(), smaller);
 }
 
+/// `font` with every layer of every glyph set to the given advance width.
+fn with_advance_width(font: &Font, width: f64) -> Font {
+    let mut font = font.clone();
+    for glyph in Arc::make_mut(&mut font.glyphs).values_mut() {
+        for layer in Arc::make_mut(glyph).layers.values_mut() {
+            layer.advance_width = width;
+        }
+    }
+    font
+}
+
+#[test]
+fn an_io_error_while_saving_a_package_leaves_the_previous_package_intact() {
+    let dir = TempDir::new().unwrap();
+    let path = package_in(&dir);
+    let old = sample_font();
+    save(&old, &path).unwrap();
+    // The file of the second glyph cannot be read or replaced.
+    let glyphs = path.join("glyphs");
+    fs::remove_file(glyphs.join("a.json")).unwrap();
+    fs::create_dir(glyphs.join("a.json")).unwrap();
+    let files = [
+        "manifest.json",
+        "font.json",
+        "glyphs/A_.json",
+        "glyphs/space.json",
+    ];
+    let before: Vec<Vec<u8>> = files
+        .iter()
+        .map(|f| fs::read(path.join(f)).unwrap())
+        .collect();
+
+    // Every glyph changes, so the first and third files would be rewritten.
+    let err = save(&with_advance_width(&old, 700.0), &path).unwrap_err();
+
+    assert!(matches!(err, StoreError::Io(_)), "{err:?}");
+    let after: Vec<Vec<u8>> = files
+        .iter()
+        .map(|f| fs::read(path.join(f)).unwrap())
+        .collect();
+    assert_eq!(after, before);
+    assert_eq!(
+        glyph_files(&path),
+        BTreeSet::from([
+            "A_.json".to_owned(),
+            "a.json".to_owned(),
+            "space.json".to_owned()
+        ])
+    );
+    assert!(glyphs.join("a.json").is_dir());
+}
+
+/// The file identity (inode) of the files of a package.
+#[cfg(unix)]
+fn file_ids(package: &Path) -> BTreeMap<String, u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut ids = BTreeMap::new();
+    for relative in ["manifest.json", "font.json"] {
+        ids.insert(
+            relative.to_owned(),
+            fs::metadata(package.join(relative)).unwrap().ino(),
+        );
+    }
+    for name in glyph_files(package) {
+        let ino = fs::metadata(package.join("glyphs").join(&name))
+            .unwrap()
+            .ino();
+        ids.insert(format!("glyphs/{name}"), ino);
+    }
+    ids
+}
+
+#[cfg(unix)]
+#[test]
+fn resaving_a_package_only_replaces_the_files_that_changed() {
+    let dir = TempDir::new().unwrap();
+    let path = package_in(&dir);
+    let font = sample_font();
+    save(&font, &path).unwrap();
+    let first = file_ids(&path);
+
+    // Nothing changed: not one file is replaced (a replaced file is a new
+    // inode), so nothing is written or flushed.
+    save(&font, &path).unwrap();
+    assert_eq!(file_ids(&path), first);
+
+    // One glyph changed: only its file is replaced.
+    let mut edited = font.clone();
+    let glyph = Arc::make_mut(&mut edited.glyphs).get_mut(&gid(3)).unwrap();
+    Arc::make_mut(glyph)
+        .layers
+        .values_mut()
+        .for_each(|l| l.advance_width = 321.0);
+    save(&edited, &path).unwrap();
+    let second = file_ids(&path);
+    let changed: Vec<&String> = first
+        .keys()
+        .filter(|key| first[*key] != second[*key])
+        .collect();
+    assert_eq!(changed, ["glyphs/space.json"]);
+    assert_eq!(load(&path).unwrap(), edited);
+}
+
 #[test]
 fn resaving_a_package_after_a_case_only_rename_leaves_one_file() {
     // `a_` is stored as `a_.json`, `A` as `A_.json`: the same name on a

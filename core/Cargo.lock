@@ -232,6 +232,7 @@ name = "forma-store"
 version = "0.0.1"
 dependencies = [
  "forma-model",
+ "forma-store",
  "proptest",
  "rusqlite",
  "serde",

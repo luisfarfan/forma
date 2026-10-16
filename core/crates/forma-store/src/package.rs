@@ -10,15 +10,35 @@
 //!     A_.json
 //! ```
 //!
-//! Every file is replaced atomically, but a folder of files cannot change in
-//! one step: a save that is interrupted halfway can leave new glyph files next
-//! to an old `font.json`. Such a package is rejected when loaded (the glyph
-//! order no longer matches the glyphs) and saving again repairs it.
+//! # What a save guarantees
 //!
-//! Files are not flushed to the storage device ([`Flush::Lazy`]): that costs
-//! milliseconds per glyph, and a package is the interchange and version
-//! control format, whose history lives in Git. The `.forma` file, the working
-//! format, is flushed completely.
+//! A folder of files cannot change in one step, so a save is organized around
+//! a commit point:
+//!
+//! 1. *Plan.* Each file the package should hold is compared with what is on
+//!    disk; files that are already identical are left alone, so a typical save
+//!    touches only the glyphs that changed.
+//! 2. *Stage.* Every changed file is written to a temporary `*.tmp-<uuid>`
+//!    file next to its target and flushed to disk. If anything fails here, all
+//!    temporary files are deleted and the package has not been touched.
+//! 3. *Commit.* The staged files are renamed over their targets in one burst:
+//!    `manifest.json` first (if it changed), then the glyphs, and `font.json`
+//!    last. Each rename is atomic. If one fails, the renames already done are
+//!    rolled back (best effort) and the remaining temporary files are deleted.
+//! 4. *Clean up.* The folders are flushed to disk, then the glyph files that
+//!    no current glyph uses are deleted.
+//!
+//! So an error (a full disk, a permission problem, a file in use) before the
+//! commit leaves the previous package exactly as it was, and every file is
+//! flushed before it becomes visible, so after a power failure each file holds
+//! its old or its new contents, never a truncated mixture. What cannot be
+//! guaranteed: a power failure (or a failed rollback) in the middle of the
+//! commit burst, a window of a few milliseconds, can leave some files new and
+//! some old. Because `font.json` comes last this is usually detected on load
+//! (the glyph order no longer matches the glyphs), but not always: after an
+//! edit that only changes outlines the mixture loads. A failure while deleting
+//! stale glyph files is reported after the new package is complete; loading
+//! rejects the leftover files until a new save removes them.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -29,11 +49,11 @@ use forma_model::{Font, FontId};
 use serde_json::{Value, json};
 
 use crate::StoreError;
-use crate::atomic::{Flush, write_file_atomic};
+use crate::atomic::{create_synced, remove_quietly, sync_dir, temp_path, write_file_atomic};
 use crate::canonical::canonical_string;
 use crate::filenames::{case_key, unique_file_name};
 use crate::parts::{
-    self, FORMAT_VERSION, GENERATOR, assemble, decode_font_document, decode_glyph_document,
+    self, Encoded, FORMAT_VERSION, GENERATOR, assemble, decode_font_document, decode_glyph_document,
 };
 
 const MANIFEST: &str = "manifest.json";
@@ -163,7 +183,9 @@ fn manifest_text(font_id: FontId) -> Result<String, StoreError> {
 /// disk holds one file, still listed under its old spelling, and it must not
 /// be deleted. When both spellings are listed the file system tells them
 /// apart, and the one not written is stale.
-fn remove_stale_glyph_files(glyphs_dir: &Path, written: &[String]) -> Result<(), StoreError> {
+///
+/// Returns whether any file was deleted.
+fn remove_stale_glyph_files(glyphs_dir: &Path, written: &[String]) -> Result<bool, StoreError> {
     let written_exact: HashSet<&str> = written.iter().map(String::as_str).collect();
     let written_by_key: HashMap<String, &str> = written
         .iter()
@@ -172,6 +194,7 @@ fn remove_stale_glyph_files(glyphs_dir: &Path, written: &[String]) -> Result<(),
 
     let files = glyph_files(glyphs_dir)?;
     let listed: HashSet<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+    let mut removed = false;
     for (name, path) in &files {
         if written_exact.contains(name.as_str()) {
             continue;
@@ -181,44 +204,172 @@ fn remove_stale_glyph_files(glyphs_dir: &Path, written: &[String]) -> Result<(),
             .is_some_and(|written_name| !listed.contains(written_name));
         if !same_file_as_written {
             fs::remove_file(path)?;
+            removed = true;
+        }
+    }
+    Ok(removed)
+}
+
+/// The file operations of a save, behind a trait so that tests can make them
+/// fail.
+trait Files {
+    /// Creates a new file at `path` holding `contents`, flushed to disk. The
+    /// path does not exist yet.
+    fn create(&mut self, path: &Path, contents: &[u8]) -> io::Result<()>;
+
+    /// Moves `from` over `to`, replacing it atomically.
+    fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()>;
+}
+
+/// The real file system.
+struct RealFiles;
+
+impl Files for RealFiles {
+    fn create(&mut self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        create_synced(path, contents)
+    }
+
+    fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
+    }
+}
+
+/// A file that a save has to write because it differs from the disk.
+struct Change {
+    target: PathBuf,
+    contents: Vec<u8>,
+    /// What the file holds now, or `None` if it does not exist.
+    previous: Option<Vec<u8>>,
+    /// Where the new contents are staged before they replace the target.
+    temp: PathBuf,
+}
+
+/// Compares the files a package should hold, given in the order they are to
+/// be committed, with the disk, and returns those that need writing.
+fn plan_changes(wanted: Vec<(PathBuf, Vec<u8>)>) -> Result<Vec<Change>, StoreError> {
+    let mut changes = Vec::new();
+    for (target, contents) in wanted {
+        let previous = match fs::read(&target) {
+            Ok(bytes) => Some(bytes),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => {
+                return Err(StoreError::Io(io::Error::new(
+                    err.kind(),
+                    format!("{}: {err}", target.display()),
+                )));
+            }
+        };
+        if previous.as_deref() == Some(contents.as_slice()) {
+            continue;
+        }
+        let temp = temp_path(&target)?;
+        changes.push(Change {
+            target,
+            contents,
+            previous,
+            temp,
+        });
+    }
+    Ok(changes)
+}
+
+/// Writes and flushes every changed file to its temporary name. On failure
+/// all temporary files are deleted and nothing else has been touched.
+fn stage(files: &mut impl Files, changes: &[Change]) -> io::Result<()> {
+    for (n, change) in changes.iter().enumerate() {
+        if let Err(err) = files.create(&change.temp, &change.contents) {
+            // The failed file may be half written; remove it with the rest.
+            for staged in &changes[..=n] {
+                remove_quietly(&staged.temp);
+            }
+            return Err(err);
         }
     }
     Ok(())
 }
 
+/// Renames the staged files over their targets, in order. If a rename fails
+/// the earlier ones are undone (best effort) and the remaining temporary
+/// files are deleted.
+fn commit(files: &mut impl Files, changes: &[Change]) -> io::Result<()> {
+    for (n, change) in changes.iter().enumerate() {
+        if let Err(err) = files.rename(&change.temp, &change.target) {
+            for pending in &changes[n..] {
+                remove_quietly(&pending.temp);
+            }
+            roll_back(&changes[..n]);
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// Puts back what the already renamed files held, newest first. Errors are
+/// ignored: the original failure is the one to report, and there is nothing
+/// further to try.
+fn roll_back(done: &[Change]) {
+    for change in done.iter().rev() {
+        match &change.previous {
+            Some(previous) => {
+                let _ = write_file_atomic(&change.target, previous);
+            }
+            None => {
+                let _ = fs::remove_file(&change.target);
+            }
+        }
+    }
+}
+
 /// Writes `font` as a package in `dir`.
 pub(crate) fn save(font: &Font, dir: &Path) -> Result<(), StoreError> {
+    save_with(font, dir, &mut RealFiles)
+}
+
+/// [`save`] with the given file operations.
+fn save_with(font: &Font, dir: &Path, files: &mut impl Files) -> Result<(), StoreError> {
     // Validate and render everything before touching the disk.
-    let encoded = parts::encode(font)?;
-    let manifest = manifest_text(encoded.font_id)?;
+    let Encoded {
+        font_id,
+        font_json,
+        glyphs,
+    } = parts::encode(font)?;
+    let manifest = manifest_text(font_id)?;
 
     prepare_directory(dir)?;
     let glyphs_dir = dir.join(GLYPHS);
     fs::create_dir_all(&glyphs_dir)?;
 
-    // The manifest goes first, so that an interrupted first save leaves a
-    // folder that is recognizably a package and can be saved over.
-    write_file_atomic(&dir.join(MANIFEST), Flush::Lazy, manifest.as_bytes())?;
-
-    // Glyphs get their file names in identifier order, which never changes
-    // for a glyph: renaming one glyph cannot move another glyph's file.
+    // Everything the package should hold, in commit order: the manifest, the
+    // glyphs, and font.json last. Glyphs get their file names in identifier
+    // order, which never changes for a glyph: renaming one glyph cannot move
+    // another glyph's file.
+    let mut wanted = Vec::with_capacity(glyphs.len() + 2);
+    wanted.push((dir.join(MANIFEST), manifest.into_bytes()));
     let mut taken = HashSet::new();
-    let mut written = Vec::with_capacity(encoded.glyphs.len());
-    for glyph in &encoded.glyphs {
+    let mut written = Vec::with_capacity(glyphs.len());
+    for glyph in glyphs {
         let file_name = unique_file_name(&glyph.name, |candidate| {
             taken.contains(&case_key(candidate))
         });
         taken.insert(case_key(&file_name));
-        write_file_atomic(
-            &glyphs_dir.join(&file_name),
-            Flush::Lazy,
-            glyph.json.as_bytes(),
-        )?;
+        wanted.push((glyphs_dir.join(&file_name), glyph.json.into_bytes()));
         written.push(file_name);
     }
+    wanted.push((dir.join(FONT), font_json.into_bytes()));
 
-    write_file_atomic(&dir.join(FONT), Flush::Lazy, encoded.font_json.as_bytes())?;
-    remove_stale_glyph_files(&glyphs_dir, &written)
+    let changes = plan_changes(wanted)?;
+    stage(files, &changes)?;
+    commit(files, &changes)?;
+    if !changes.is_empty() {
+        sync_dir(&glyphs_dir);
+        sync_dir(dir);
+    }
+
+    // Only a complete new package may delete anything.
+    if remove_stale_glyph_files(&glyphs_dir, &written)? {
+        sync_dir(&glyphs_dir);
+    }
+    Ok(())
 }
 
 /// Reads the package in `dir`.
@@ -257,4 +408,320 @@ pub(crate) fn load(dir: &Path) -> Result<Font, StoreError> {
     }
 
     assemble(font, glyphs)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use forma_model::{Glyph, GlyphId, Layer, Node, NodeKind, Path as Contour, PathId};
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    use super::*;
+
+    /// File operations that count what a save does and fail on demand.
+    #[derive(Default)]
+    struct Flaky {
+        /// Fail the n-th file creation (counting from 0) after writing half
+        /// of it, like a disk that fills up.
+        fail_create_at: Option<usize>,
+        /// Fail the n-th rename (counting from 0).
+        fail_rename_at: Option<usize>,
+        creates: usize,
+        rename_attempts: usize,
+        /// Names of the files that were renamed into place, in order.
+        renamed: Vec<String>,
+    }
+
+    impl Files for Flaky {
+        fn create(&mut self, path: &Path, contents: &[u8]) -> io::Result<()> {
+            let n = self.creates;
+            self.creates += 1;
+            if self.fail_create_at == Some(n) {
+                fs::write(path, &contents[..contents.len() / 2])?;
+                return Err(io::Error::other("injected create failure"));
+            }
+            RealFiles.create(path, contents)
+        }
+
+        fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
+            let n = self.rename_attempts;
+            self.rename_attempts += 1;
+            if self.fail_rename_at == Some(n) {
+                return Err(io::Error::other("injected rename failure"));
+            }
+            self.renamed
+                .push(to.file_name().unwrap().to_string_lossy().into_owned());
+            RealFiles.rename(from, to)
+        }
+    }
+
+    fn square(advance_width: f64) -> Layer {
+        let corner = |x: f64, y: f64| Node {
+            x,
+            y,
+            kind: NodeKind::Line,
+            smooth: false,
+        };
+        Layer {
+            advance_width,
+            paths: vec![Contour {
+                id: PathId(1),
+                closed: true,
+                nodes: vec![corner(0.0, 0.0), corner(500.0, 0.0), corner(500.0, 500.0)],
+            }],
+        }
+    }
+
+    /// `base` with exactly the given `(id, name, advance width)` glyphs.
+    fn with_glyphs(base: &Font, glyphs: &[(u128, &str, f64)]) -> Font {
+        let mut font = base.clone();
+        let master = font.masters[0].id;
+        let map = glyphs
+            .iter()
+            .map(|&(id, name, width)| {
+                let id = GlyphId(Uuid::from_u128(id));
+                let glyph = Glyph {
+                    id,
+                    name: name.to_owned(),
+                    unicodes: Vec::new(),
+                    export: true,
+                    layers: BTreeMap::from([(master, square(width))]),
+                };
+                (id, Arc::new(glyph))
+            })
+            .collect();
+        font.glyph_order = glyphs
+            .iter()
+            .map(|&(id, ..)| GlyphId(Uuid::from_u128(id)))
+            .collect();
+        font.glyphs = Arc::new(map);
+        font
+    }
+
+    /// Every file under `dir`, by relative path.
+    fn snapshot(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        fn walk(root: &Path, dir: &Path, into: &mut BTreeMap<String, Vec<u8>>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, into);
+                } else {
+                    let relative = path.strip_prefix(root).unwrap();
+                    into.insert(
+                        relative.to_string_lossy().replace('\\', "/"),
+                        fs::read(&path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        walk(dir, dir, &mut files);
+        files
+    }
+
+    fn assert_no_temp_files(files: &BTreeMap<String, Vec<u8>>, context: &str) {
+        assert!(
+            files.keys().all(|name| !name.contains(".tmp-")),
+            "{context}: temporary files left behind: {:?}",
+            files.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Pairs of (old, new) fonts covering the ways a save can differ from what
+    /// is on disk.
+    fn scenarios() -> Vec<(&'static str, Font, Font)> {
+        let base = Font::new("Scenario", 1000);
+        let old = with_glyphs(&base, &[(1, "a", 600.0), (2, "b", 600.0), (3, "c", 600.0)]);
+        let mut everything =
+            with_glyphs(&base, &[(1, "A", 700.0), (2, "B", 700.0), (3, "c", 700.0)]);
+        everything.info.family_name = "Renamed family".to_owned();
+        vec![
+            (
+                // Glyphs renamed: some files get new names, old ones go stale.
+                "rename",
+                old.clone(),
+                with_glyphs(&base, &[(1, "A", 600.0), (2, "B", 600.0), (3, "c", 600.0)]),
+            ),
+            (
+                // Only outlines change: same file names, same font.json.
+                "outline only",
+                old.clone(),
+                with_glyphs(&base, &[(1, "a", 650.0), (2, "b", 650.0), (3, "c", 650.0)]),
+            ),
+            (
+                // A glyph removed and another added: font.json changes too.
+                "add and remove",
+                old.clone(),
+                with_glyphs(&base, &[(2, "b", 600.0), (3, "c", 600.0), (4, "d", 600.0)]),
+            ),
+            ("everything", old, everything),
+        ]
+    }
+
+    #[test]
+    fn failure_while_staging_leaves_the_old_package_untouched() {
+        for (name, old, new) in scenarios() {
+            let mut failures = 0;
+            for n in 0.. {
+                let dir = TempDir::new().unwrap();
+                let package = dir.path().join("font.formapackage");
+                save(&old, &package).unwrap();
+                let before = snapshot(&package);
+
+                let mut files = Flaky {
+                    fail_create_at: Some(n),
+                    ..Flaky::default()
+                };
+                match save_with(&new, &package, &mut files) {
+                    // Past the last file that needed staging.
+                    Ok(()) => {
+                        assert_eq!(load(&package).unwrap(), new, "{name}");
+                        break;
+                    }
+                    Err(err) => {
+                        failures += 1;
+                        assert!(matches!(err, StoreError::Io(_)), "{name}: {err:?}");
+                        let after = snapshot(&package);
+                        assert_no_temp_files(&after, &format!("{name}, create #{n}"));
+                        assert_eq!(after, before, "{name}: create #{n} changed the package");
+                        assert_eq!(load(&package).unwrap(), old, "{name}, create #{n}");
+                    }
+                }
+            }
+            assert!(failures >= 2, "{name}: only {failures} files were staged");
+        }
+    }
+
+    #[test]
+    fn failure_while_renaming_is_rolled_back() {
+        for (name, old, new) in scenarios() {
+            let mut failures = 0;
+            for n in 0.. {
+                let dir = TempDir::new().unwrap();
+                let package = dir.path().join("font.formapackage");
+                save(&old, &package).unwrap();
+                let before = snapshot(&package);
+
+                let mut files = Flaky {
+                    fail_rename_at: Some(n),
+                    ..Flaky::default()
+                };
+                match save_with(&new, &package, &mut files) {
+                    Ok(()) => {
+                        assert_eq!(load(&package).unwrap(), new, "{name}");
+                        break;
+                    }
+                    Err(err) => {
+                        failures += 1;
+                        assert!(matches!(err, StoreError::Io(_)), "{name}: {err:?}");
+                        let after = snapshot(&package);
+                        assert_no_temp_files(&after, &format!("{name}, rename #{n}"));
+                        assert_eq!(after, before, "{name}: rename #{n} changed the package");
+                        assert_eq!(load(&package).unwrap(), old, "{name}, rename #{n}");
+                    }
+                }
+            }
+            assert!(failures >= 2, "{name}: only {failures} files were renamed");
+        }
+    }
+
+    #[test]
+    fn a_failed_first_save_leaves_no_files() {
+        let font = scenarios().remove(0).1;
+        for (stage_failure, n) in [(true, 0), (true, 2), (false, 0), (false, 2)] {
+            let dir = TempDir::new().unwrap();
+            let package = dir.path().join("font.formapackage");
+            let mut files = if stage_failure {
+                Flaky {
+                    fail_create_at: Some(n),
+                    ..Flaky::default()
+                }
+            } else {
+                Flaky {
+                    fail_rename_at: Some(n),
+                    ..Flaky::default()
+                }
+            };
+
+            assert!(save_with(&font, &package, &mut files).is_err());
+
+            assert!(snapshot(&package).is_empty(), "{stage_failure} {n}");
+        }
+    }
+
+    #[test]
+    fn saving_an_unchanged_font_writes_nothing() {
+        let (_, font, _) = scenarios().remove(0);
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("font.formapackage");
+        save(&font, &package).unwrap();
+        let before = snapshot(&package);
+
+        let mut files = Flaky::default();
+        save_with(&font, &package, &mut files).unwrap();
+
+        assert_eq!(files.creates, 0);
+        assert_eq!(files.rename_attempts, 0);
+        assert_eq!(snapshot(&package), before);
+    }
+
+    #[test]
+    fn only_changed_files_are_written() {
+        let base = Font::new("Changed", 1000);
+        let old = with_glyphs(&base, &[(1, "a", 600.0), (2, "b", 600.0), (3, "c", 600.0)]);
+        let new = with_glyphs(&base, &[(1, "a", 600.0), (2, "b", 601.0), (3, "c", 600.0)]);
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("font.formapackage");
+        save(&old, &package).unwrap();
+
+        let mut files = Flaky::default();
+        save_with(&new, &package, &mut files).unwrap();
+
+        // Only the glyph `b` changed: not the manifest, not font.json.
+        assert_eq!(files.creates, 1);
+        assert_eq!(files.renamed, ["b.json"]);
+        assert_eq!(load(&package).unwrap(), new);
+    }
+
+    #[test]
+    fn the_manifest_is_renamed_first_and_font_json_last() {
+        let (_, old, mut new) = scenarios().remove(3);
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("font.formapackage");
+        save(&old, &package).unwrap();
+        // A different font id changes the manifest as well as everything else.
+        new.id = forma_model::FontId(Uuid::from_u128(0xF0F0));
+
+        let mut files = Flaky::default();
+        save_with(&new, &package, &mut files).unwrap();
+
+        assert_eq!(
+            files.renamed.first().map(String::as_str),
+            Some("manifest.json")
+        );
+        assert_eq!(files.renamed.last().map(String::as_str), Some("font.json"));
+        assert_eq!(files.renamed.len(), 5, "{:?}", files.renamed);
+        assert_eq!(load(&package).unwrap(), new);
+    }
+
+    #[test]
+    fn stale_files_survive_a_save_that_fails_before_the_commit() {
+        // `a.json` is stale after the rename of glyph `a`, but only a
+        // finished save may delete it.
+        let (_, old, new) = scenarios().remove(0);
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("font.formapackage");
+        save(&old, &package).unwrap();
+
+        let mut files = Flaky {
+            fail_create_at: Some(1),
+            ..Flaky::default()
+        };
+        assert!(save_with(&new, &package, &mut files).is_err());
+
+        assert!(package.join("glyphs").join("a.json").is_file());
+    }
 }

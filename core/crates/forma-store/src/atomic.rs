@@ -16,7 +16,7 @@ use uuid::Uuid;
 /// The name of the temporary file used to replace `target`: the target's file
 /// name plus `.tmp-<uuid>`, in the same directory so the final rename never
 /// crosses a file system.
-fn temp_path(target: &Path) -> io::Result<PathBuf> {
+pub(crate) fn temp_path(target: &Path) -> io::Result<PathBuf> {
     let name = target.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -28,31 +28,38 @@ fn temp_path(target: &Path) -> io::Result<PathBuf> {
     Ok(target.with_file_name(temp_name))
 }
 
-/// How hard to push a new file to disk before it replaces the old one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Flush {
-    /// Flush the file's data to the storage device, then, after the rename,
-    /// the directory entry. A power failure then leaves the old file or the
-    /// new one. This costs a few milliseconds per file.
-    ToDisk,
-    /// Leave flushing to the operating system. The replacement is still
-    /// atomic as far as other processes and a crashing program are concerned,
-    /// but after a power failure the file may be empty or truncated (a damaged
-    /// file is detected on load, never taken for good data). Used for the many
-    /// small files of a package, as Git does for its loose objects.
-    Lazy,
+/// Whether files and directories are flushed to the storage device.
+///
+/// Always true, except when this crate's own tests enable the `test-no-fsync`
+/// feature (through the self dev-dependency in `Cargo.toml`) to avoid spending
+/// minutes in `fsync` on a property test. Nothing else may enable it: a build
+/// without durability can lose a saved font on power failure.
+const FSYNC: bool = !cfg!(feature = "test-no-fsync");
+
+/// Flushes an open file's data to the storage device.
+pub(crate) fn sync_file(file: &File) -> io::Result<()> {
+    if FSYNC { file.sync_all() } else { Ok(()) }
+}
+
+/// Creates a new file at `path`, which must not exist, holding `contents`
+/// flushed to disk. On failure the partial file is left for the caller to
+/// remove.
+pub(crate) fn create_synced(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(contents)?;
+    file.flush()?;
+    sync_file(&file)
 }
 
 /// Replaces `target` with a file that `fill` creates at the path it is given.
 ///
 /// `fill` must create a complete file at that path (the path is unique and
-/// does not exist yet) and close it. If it fails, or the final rename fails,
-/// the temporary file is deleted and `target` is untouched. This is the
-/// general form, for writers that need a path rather than an open file
-/// (SQLite).
+/// does not exist yet) and close it. The file is then flushed to disk, renamed
+/// over `target` and the directory is flushed. If anything fails the temporary
+/// file is deleted and `target` is untouched. This is the general form, for
+/// writers that need a path rather than an open file (SQLite).
 pub(crate) fn write_atomic_at<E>(
     target: &Path,
-    flush: Flush,
     fill: impl FnOnce(&Path) -> Result<(), E>,
 ) -> Result<(), E>
 where
@@ -60,13 +67,11 @@ where
 {
     let temp = temp_path(target)?;
     let result = fill(&temp)
-        .and_then(|()| flush_file(&temp, flush).map_err(E::from))
+        .and_then(|()| flush_file(&temp).map_err(E::from))
         .and_then(|()| fs::rename(&temp, target).map_err(E::from));
     match result {
         Ok(()) => {
-            if flush == Flush::ToDisk {
-                sync_parent(target);
-            }
+            sync_parent(target);
             Ok(())
         }
         Err(err) => {
@@ -78,10 +83,11 @@ where
 
 /// Data must be on disk before the rename makes the file visible, or a power
 /// failure could leave an empty file under the final name.
-fn flush_file(path: &Path, flush: Flush) -> io::Result<()> {
-    match flush {
-        Flush::ToDisk => OpenOptions::new().write(true).open(path)?.sync_all(),
-        Flush::Lazy => Ok(()),
+fn flush_file(path: &Path) -> io::Result<()> {
+    if FSYNC {
+        OpenOptions::new().write(true).open(path)?.sync_all()
+    } else {
+        Ok(())
     }
 }
 
@@ -91,10 +97,9 @@ fn flush_file(path: &Path, flush: Flush) -> io::Result<()> {
 /// for the failure behavior.
 pub(crate) fn write_atomic(
     target: &Path,
-    flush: Flush,
     fill: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
-    write_atomic_at(target, flush, |temp| {
+    write_atomic_at(target, |temp| {
         let mut file = OpenOptions::new().write(true).create_new(true).open(temp)?;
         fill(&mut file)?;
         file.flush()
@@ -102,8 +107,8 @@ pub(crate) fn write_atomic(
 }
 
 /// Atomically replaces `target` with `contents`.
-pub(crate) fn write_file_atomic(target: &Path, flush: Flush, contents: &[u8]) -> io::Result<()> {
-    write_atomic(target, flush, |file| file.write_all(contents))
+pub(crate) fn write_file_atomic(target: &Path, contents: &[u8]) -> io::Result<()> {
+    write_atomic(target, |file| file.write_all(contents))
 }
 
 /// Flushes the directory entry created by a rename, where the platform lets us.
@@ -118,13 +123,17 @@ pub(crate) fn sync_parent(path: &Path) {
     sync_dir(dir);
 }
 
+/// Flushes a directory so that the files created, renamed and deleted in it
+/// survive a power failure. Windows offers no directory flush; NTFS journals
+/// its metadata.
 #[cfg(unix)]
 pub(crate) fn sync_dir(dir: &Path) {
-    if let Ok(dir) = File::open(dir) {
+    if FSYNC && let Ok(dir) = File::open(dir) {
         let _ = dir.sync_all();
     }
 }
 
+/// See the Unix version.
 #[cfg(not(unix))]
 pub(crate) fn sync_dir(_dir: &Path) {}
 
@@ -141,7 +150,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{Flush, write_atomic, write_atomic_at, write_file_atomic};
+    use super::{write_atomic, write_atomic_at, write_file_atomic};
 
     fn names(dir: &std::path::Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)
@@ -160,7 +169,7 @@ mod tests {
 
         // A writer that gets partway through and then fails, like a disk
         // that fills up or a process that is interrupted.
-        let result = write_atomic(&target, Flush::ToDisk, |file| {
+        let result = write_atomic(&target, |file| {
             file.write_all(b"partial new conte")?;
             Err(io::Error::other("injected failure"))
         });
@@ -180,7 +189,7 @@ mod tests {
         let target = dir.path().join("font.forma");
         fs::write(&target, b"original contents that are rather long").unwrap();
 
-        write_file_atomic(&target, Flush::ToDisk, b"new").unwrap();
+        write_file_atomic(&target, b"new").unwrap();
 
         assert_eq!(fs::read(&target).unwrap(), b"new");
         assert_eq!(names(dir.path()), ["font.forma"]);
@@ -191,7 +200,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let target = dir.path().join("new.json");
 
-        write_file_atomic(&target, Flush::Lazy, b"{}").unwrap();
+        write_file_atomic(&target, b"{}").unwrap();
 
         assert_eq!(fs::read(&target).unwrap(), b"{}");
         assert_eq!(names(dir.path()), ["new.json"]);
@@ -203,7 +212,7 @@ mod tests {
         let target = dir.path().join("font.forma");
         fs::write(&target, b"original").unwrap();
 
-        let result: io::Result<()> = write_atomic_at(&target, Flush::ToDisk, |temp| {
+        let result: io::Result<()> = write_atomic_at(&target, |temp| {
             fs::write(temp, b"half a database")?;
             Err(io::Error::other("injected failure"))
         });
@@ -220,7 +229,7 @@ mod tests {
         let target = dir.path().join("font.forma");
         fs::create_dir(&target).unwrap();
 
-        let result = write_file_atomic(&target, Flush::ToDisk, b"data");
+        let result = write_file_atomic(&target, b"data");
 
         assert!(result.is_err());
         assert!(target.is_dir());

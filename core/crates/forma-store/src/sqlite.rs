@@ -29,7 +29,7 @@ use forma_model::{Font, FontId};
 use rusqlite::{Connection, ErrorCode, OpenFlags, params};
 
 use crate::StoreError;
-use crate::atomic::{Flush, remove_quietly, write_atomic_at};
+use crate::atomic::{remove_quietly, write_atomic_at};
 use crate::parts::{
     self, Encoded, FORMAT_VERSION, GENERATOR, assemble, decode_font_document, decode_glyph_document,
 };
@@ -60,7 +60,7 @@ const READ_FLAGS: OpenFlags =
 pub(crate) fn save(font: &Font, path: &Path) -> Result<(), StoreError> {
     // Validate and render everything before touching the disk.
     let encoded = parts::encode(font)?;
-    write_atomic_at(path, Flush::ToDisk, |temp| build_database(temp, &encoded))
+    write_atomic_at(path, |temp| build_database(temp, &encoded))
 }
 
 /// Builds the complete database at `temp`, which must not exist yet.
@@ -91,7 +91,7 @@ fn build_database_inner(temp: &Path, encoded: &Encoded) -> Result<(), StoreError
     }
 
     // The file is flushed to disk as a whole before it replaces the target
-    // (`Flush::ToDisk`), so SQLite need not do it at every step of building it.
+    // (see `write_atomic_at`), so SQLite need not do it at every step of building it.
     conn.pragma_update(None, "synchronous", "OFF")?;
 
     {

@@ -9,9 +9,10 @@
 //! [`unpack`]). Losing or corrupting a font is the worst thing a font editor
 //! can do, so:
 //!
-//! * saving never edits a document in place: the new contents are written to a
-//!   temporary file and renamed over the old one, and a failed save leaves
-//!   the old document untouched;
+//! * saving never edits a document in place: the new contents are written to
+//!   temporary files, flushed to disk and only then renamed over the old ones,
+//!   and a save that fails before that point leaves the old document
+//!   untouched;
 //! * nothing that could not be loaded back is written, and [`load`] checks
 //!   every font with [`Font::validate_invariants`] before returning it;
 //! * saving a package never writes into a folder that is not already a
@@ -91,9 +92,13 @@ fn format_of(path: &Path) -> Result<Format, StoreError> {
 /// according to the extension.
 ///
 /// An existing `.forma` file is replaced atomically. An existing
-/// `.formapackage` folder is updated file by file, atomically for each file,
-/// and glyph files of glyphs that no longer exist are deleted. A folder that
-/// is neither empty nor a package is refused and left untouched.
+/// `.formapackage` folder is updated in a stage-then-commit sequence: every
+/// changed file is written and flushed under a temporary name first, so a
+/// failure there leaves the package untouched, and only then are they renamed
+/// into place (see the `package` module for the exact guarantee). Files that
+/// did not change are not rewritten, and glyph files of glyphs that no longer
+/// exist are deleted at the end. A folder that is neither empty nor a package
+/// is refused and left untouched.
 ///
 /// # Errors
 ///
