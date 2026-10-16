@@ -18,6 +18,7 @@ use crate::errors::{ToolError, from_edit_error};
 use crate::plans::{Clock, PlanStore, SystemClock};
 use crate::recovery::JournalState;
 use crate::registry::{CommandSpec, ToolOutput, Toolset, find, registry};
+use crate::tools::limits::check_raw_args;
 use crate::tools::plans::Committing;
 
 /// Tools that are not read-only but stay callable in read-only mode, because
@@ -328,7 +329,12 @@ impl Engine {
     /// # Errors
     ///
     /// * `INVALID_ARGUMENT` for an unknown tool, or arguments that are not an
-    ///   object or do not match the tool's schema (including unknown fields);
+    ///   object, are nested more than 128 levels deep or do not match the
+    ///   tool's schema (including unknown fields);
+    /// * `LIMIT_EXCEEDED` for a text argument (or object key) longer than
+    ///   [`MAX_TEXT_BYTES`](crate::limits::MAX_TEXT_BYTES), whatever the tool,
+    ///   with `details = { limit, actual, argument }`, and for the tool's own
+    ///   limits (outline nodes, `edit_batch` operations);
     /// * `UNSUPPORTED` for a tool of a disabled toolset, or for a tool that is
     ///   not read-only when the engine is in read-only mode (`document_close`
     ///   excepted);
@@ -377,6 +383,9 @@ impl Engine {
                 ));
             }
         };
+        // The text and nesting limits hold for every tool, before any
+        // argument is parsed; tools that take outlines also count their nodes.
+        check_raw_args(&args)?;
         (spec.handler)(self, actor, args)
     }
 

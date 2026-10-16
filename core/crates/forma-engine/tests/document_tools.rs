@@ -1299,3 +1299,104 @@ fn save_rechecks_the_document_path() {
         );
     }
 }
+
+// ------------------------------------------------------------------- limits
+
+/// The 4 MiB text limit holds for every tool, before its arguments are
+/// parsed: not only for the tools that take outlines.
+#[test]
+fn text_limit_applies_to_every_tool() {
+    use forma_engine::limits::MAX_TEXT_BYTES;
+
+    let root = TempDir::new().expect("tempdir");
+    let mut engine = engine_with(&[root.path()]);
+    let too_long = "x".repeat(MAX_TEXT_BYTES + 1);
+
+    // A lifecycle tool that parses its arguments with plain serde.
+    let error = err(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": too_long }),
+    );
+    assert_eq!(error.code, ErrorCode::LimitExceeded, "{error:?}");
+    assert_eq!(
+        error.details,
+        json!({ "limit": MAX_TEXT_BYTES, "actual": MAX_TEXT_BYTES + 1,
+                "argument": "family_name" })
+    );
+    assert_eq!(
+        ok(&mut engine, "document_list", json!({}))["documents"],
+        json!([]),
+        "nothing was created"
+    );
+
+    // A read-only tool, with a 5 MiB glyph reference.
+    let created = ok(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": "T" }),
+    );
+    let doc = doc_of(&created);
+    let five_mib = "a".repeat(5 * 1024 * 1024);
+    let error = err(
+        &mut engine,
+        "glyph_get",
+        json!({ "doc": doc, "glyph": five_mib }),
+    );
+    assert_eq!(error.code, ErrorCode::LimitExceeded, "{error:?}");
+    assert_eq!(error.details["limit"], json!(MAX_TEXT_BYTES));
+    assert_eq!(error.details["actual"], json!(5 * 1024 * 1024));
+    assert_eq!(error.details["argument"], json!("glyph"));
+
+    // A path is text too: refused for its size before the sandbox looks at it.
+    let error = err(
+        &mut engine,
+        "document_open",
+        json!({ "path": format!("{}/{too_long}.forma", text(root.path())) }),
+    );
+    assert_eq!(error.code, ErrorCode::LimitExceeded, "{error:?}");
+
+    // Every registered tool refuses an oversized value or key before it
+    // parses (an unknown field would otherwise be INVALID_ARGUMENT).
+    for spec in registry() {
+        let error = err(&mut engine, spec.name, json!({ "oversized": too_long }));
+        assert_eq!(
+            error.code,
+            ErrorCode::LimitExceeded,
+            "{}: {error:?}",
+            spec.name
+        );
+        assert_eq!(
+            error.details["argument"],
+            json!("oversized"),
+            "{}",
+            spec.name
+        );
+        let mut key = serde_json::Map::new();
+        key.insert(too_long.clone(), json!(1));
+        let error = err(&mut engine, spec.name, Value::Object(key));
+        assert_eq!(
+            error.code,
+            ErrorCode::LimitExceeded,
+            "{}: {error:?}",
+            spec.name
+        );
+    }
+
+    // Exactly at the limit is accepted.
+    let exact = "x".repeat(MAX_TEXT_BYTES);
+    let created = ok(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": exact }),
+    );
+    let inspected = ok(
+        &mut engine,
+        "document_inspect",
+        json!({ "doc": doc_of(&created) }),
+    );
+    assert_eq!(
+        inspected["info"]["family_name"].as_str().map(str::len),
+        Some(MAX_TEXT_BYTES)
+    );
+}

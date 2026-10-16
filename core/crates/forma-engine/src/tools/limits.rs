@@ -2,10 +2,18 @@
 //! arguments, the number of `edit_batch` operations and the number of outline
 //! nodes.
 //!
-//! [`check_raw_args`] inspects the arguments as received, before they are
-//! parsed into typed values, so that oversized input is refused before
-//! anything is allocated for it. Nodes produced by parsing SVG path data are
-//! counted afterwards, with [`check_nodes`].
+//! Two walks inspect the arguments as received, before they are parsed into
+//! typed values, so that oversized input is refused before anything is
+//! allocated for it:
+//!
+//! * [`check_raw_args`] (text size and nesting depth) runs in
+//!   [`Engine::call`](crate::Engine::call) for **every** tool;
+//! * [`check_raw_nodes`] (structured contour nodes) runs in the tools that
+//!   take outlines, through [`parse_checked`] and `Mutation::parse`.
+//!
+//! Nodes produced by parsing SVG path data are counted afterwards, with
+//! [`check_nodes`], and `edit_batch` counts its operations with
+//! [`check_batch_ops`].
 
 use forma_edit::{Command, ContourAction};
 use forma_model::Path;
@@ -91,43 +99,49 @@ pub(crate) fn path_nodes(paths: &[Path]) -> usize {
     paths.iter().map(|path| path.nodes.len()).sum()
 }
 
-/// Checks the arguments of a call as received, before they are parsed:
-///
-/// * no string value and no object key is longer than [`MAX_TEXT_BYTES`];
-/// * the structured contours (arrays under a `nodes` key, wherever they are)
-///   carry at most [`MAX_NODES`] nodes in total.
+/// Checks the arguments of any call as received, before they are parsed:
+/// no string value and no object key is longer than [`MAX_TEXT_BYTES`], and
+/// nothing is nested more than 128 levels deep.
+/// [`Engine::call`](crate::Engine::call) runs it for every tool.
 ///
 /// # Errors
 ///
-/// `LIMIT_EXCEEDED`: for text, `details = { limit, actual, argument }`, where
-/// `argument` locates the text (for example `ops[1].args.svg_path`); for
-/// nodes, `details = { limit, actual }`. `INVALID_ARGUMENT` for arguments
-/// nested more than 128 levels deep.
+/// `LIMIT_EXCEEDED` with `details = { limit, actual, argument }`, where
+/// `argument` locates the text (for example `ops[1].args.svg_path`);
+/// `INVALID_ARGUMENT` for arguments nested more than 128 levels deep.
 pub(crate) fn check_raw_args(args: &Value) -> Result<(), ToolError> {
-    Walk {
-        path: Vec::new(),
-        nodes: 0,
-    }
-    .value(args)
+    Walk::new(Check::Text).value(args)
 }
 
-/// [`check_raw_args`], then [`parse_args`].
+/// Checks that the structured contours of a call's raw arguments (arrays
+/// under a `nodes` key, wherever they are) carry at most [`MAX_NODES`] nodes
+/// in total.
+///
+/// # Errors
+///
+/// `LIMIT_EXCEEDED` with `details = { limit, actual }`; `INVALID_ARGUMENT`
+/// for arguments nested more than 128 levels deep.
+pub(crate) fn check_raw_nodes(args: &Value) -> Result<(), ToolError> {
+    Walk::new(Check::Nodes).value(args)
+}
+
+/// [`check_raw_nodes`], then [`parse_args`].
 ///
 /// # Errors
 ///
 /// The errors of both.
 pub(crate) fn parse_checked<T: DeserializeOwned>(args: Value) -> Result<T, ToolError> {
-    check_raw_args(&args)?;
+    check_raw_nodes(&args)?;
     parse_args(args)
 }
 
-/// [`check_raw_args`], then [`parse_args_ref`], keeping the arguments.
+/// [`check_raw_nodes`], then [`parse_args_ref`], keeping the arguments.
 ///
 /// # Errors
 ///
 /// The errors of both.
 pub(crate) fn parse_checked_ref<T: DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
-    check_raw_args(args)?;
+    check_raw_nodes(args)?;
     parse_args_ref(args)
 }
 
@@ -137,8 +151,19 @@ enum Segment<'a> {
     Index(usize),
 }
 
+/// What a [`Walk`] checks, besides the nesting depth.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Check {
+    /// The size of every string value and object key.
+    Text,
+    /// The total of the structured contour nodes.
+    Nodes,
+}
+
 /// A depth-first walk over the raw arguments.
 struct Walk<'a> {
+    /// What the walk checks.
+    check: Check,
     /// The path to the value being visited.
     path: Vec<Segment<'a>>,
     /// The structured nodes seen so far.
@@ -146,6 +171,14 @@ struct Walk<'a> {
 }
 
 impl<'a> Walk<'a> {
+    fn new(check: Check) -> Walk<'a> {
+        Walk {
+            check,
+            path: Vec::new(),
+            nodes: 0,
+        }
+    }
+
     fn value(&mut self, value: &'a Value) -> Result<(), ToolError> {
         if self.path.len() > MAX_DEPTH {
             return Err(ToolError::invalid_argument(format!(
@@ -166,7 +199,8 @@ impl<'a> Walk<'a> {
                 for (key, item) in map {
                     self.text(key.len(), Some("an object key in "))?;
                     self.path.push(Segment::Key(key));
-                    if key == NODES_KEY
+                    if self.check == Check::Nodes
+                        && key == NODES_KEY
                         && let Value::Array(nodes) = item
                     {
                         self.nodes = self.nodes.saturating_add(nodes.len());
@@ -184,7 +218,7 @@ impl<'a> Walk<'a> {
     /// Refuses text of `len` bytes at the current path if it is too long;
     /// `prefix` qualifies what the text is.
     fn text(&self, len: usize, prefix: Option<&str>) -> Result<(), ToolError> {
-        if len <= MAX_TEXT_BYTES {
+        if self.check != Check::Text || len <= MAX_TEXT_BYTES {
             return Ok(());
         }
         let argument = self.rendered_path();
@@ -282,14 +316,20 @@ mod tests {
             "paths": [{ "nodes": nodes(50_000) }],
             "action": { "path": { "nodes": nodes(50_000) } }
         });
-        assert_eq!(check_raw_args(&ok), Ok(()));
-        let error = exceeded(&json!({
+        assert_eq!(check_raw_nodes(&ok), Ok(()));
+        let too_many = json!({
             "paths": [{ "nodes": nodes(50_000) }, { "nodes": nodes(50_001) }]
-        }));
+        });
+        let error = check_raw_nodes(&too_many).expect_err("too many nodes");
+        assert_eq!(error.code, ErrorCode::LimitExceeded);
         assert_eq!(
             error.details,
             json!({ "limit": MAX_NODES, "actual": 100_001 })
         );
+        // Counting nodes is the business of the tools that take outlines.
+        assert_eq!(check_raw_args(&too_many), Ok(()));
+        let big = json!({ "name": "x".repeat(MAX_TEXT_BYTES + 1) });
+        assert_eq!(check_raw_nodes(&big), Ok(()));
     }
 
     #[test]
@@ -299,6 +339,10 @@ mod tests {
             value = json!([value]);
         }
         assert_eq!(exceeded(&value).code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            check_raw_nodes(&value).map_err(|error| error.code),
+            Err(ErrorCode::InvalidArgument)
+        );
     }
 
     #[test]

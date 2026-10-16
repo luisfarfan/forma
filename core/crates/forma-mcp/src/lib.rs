@@ -8,9 +8,10 @@
 //! which validates arguments and enforces revisions, approvals, toolsets,
 //! read-only mode and the path sandbox.
 //!
-//! * **Both protocol eras.** The `initialize` handshake (2025-06-18 and
-//!   2025-11-25, what Codex speaks) and the 2026-07-28 `server/discover`
-//!   lifecycle, where every request carries its own `_meta`.
+//! * **Both protocol eras.** The `initialize` handshake (every revision from
+//!   2024-11-05 to 2025-11-25; Codex speaks 2025-06-18) and the 2026-07-28
+//!   `server/discover` lifecycle, where every request carries its own
+//!   `_meta`.
 //! * **Actors.** Every call is made as `agent:<client name>`, from the
 //!   handshake's `clientInfo` or the request's `_meta` `clientInfo`,
 //!   sanitized (control characters removed, trimmed, at most 64 characters;

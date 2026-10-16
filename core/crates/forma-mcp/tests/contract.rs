@@ -722,28 +722,23 @@ async fn read_only_server_lists_only_read_tools_plus_close() {
 // ----------------------------------------------------------------- extras
 
 /// Both eras reach the same server identity, instructions and capabilities;
-/// the legacy era echoes the versions FORMA serves over `initialize`.
+/// the legacy era echoes every revision rmcp knows, from 2024-11-05, and the
+/// server works in each.
 #[tokio::test]
 async fn both_eras_serve_forma_info_and_capabilities() {
     let root = TempDir::new().expect("tempdir");
     assert!(INSTRUCTIONS.chars().count() <= 512);
+    let unknown: ProtocolVersion =
+        serde_json::from_value(json!("2024-01-01")).expect("a version string");
+    let legacy =
+        |asked: ProtocolVersion, negotiated: ProtocolVersion| (Era::Legacy, asked, negotiated);
     let cases = [
-        (
-            Era::Legacy,
-            ProtocolVersion::V_2025_06_18,
-            ProtocolVersion::V_2025_06_18,
-        ),
-        (
-            Era::Legacy,
-            ProtocolVersion::V_2025_11_25,
-            ProtocolVersion::V_2025_11_25,
-        ),
-        // A version older than the ones FORMA serves gets the newest legacy one.
-        (
-            Era::Legacy,
-            ProtocolVersion::V_2025_03_26,
-            ProtocolVersion::V_2025_11_25,
-        ),
+        legacy(ProtocolVersion::V_2024_11_05, ProtocolVersion::V_2024_11_05),
+        legacy(ProtocolVersion::V_2025_03_26, ProtocolVersion::V_2025_03_26),
+        legacy(ProtocolVersion::V_2025_06_18, ProtocolVersion::V_2025_06_18),
+        legacy(ProtocolVersion::V_2025_11_25, ProtocolVersion::V_2025_11_25),
+        // A revision rmcp does not know gets the newest legacy one.
+        legacy(unknown, ProtocolVersion::V_2025_11_25),
         (
             Era::Modern,
             ProtocolVersion::V_2026_07_28,
@@ -776,10 +771,23 @@ async fn both_eras_serve_forma_info_and_capabilities() {
             "no Tasks or MCP Apps extension"
         );
         assert_eq!(capabilities.experimental, None);
+
+        // The server works in every negotiated revision.
+        let reported = ok(&call(&client, "forma_capabilities", json!({})).await);
+        assert_eq!(reported["api_version"], "1.0.0", "{era:?} {asked}");
+        let doc = new_doc(&client).await;
+        create_glyph(&client, &doc, 0, "A").await;
+        let preview = call(
+            &client,
+            "preview_glyph",
+            json!({ "doc": doc, "glyph": "A" }),
+        )
+        .await;
+        assert!(preview.content[0].as_image().is_some(), "{era:?} {asked}");
         close(client).await;
     }
 
-    // server/discover lists exactly the versions FORMA serves.
+    // server/discover lists every version FORMA serves.
     let client = connect(config(root.path()), Era::Modern).await;
     let discovered = client
         .discover(RequestMetaObject::with_client_context(
@@ -792,6 +800,8 @@ async fn both_eras_serve_forma_info_and_capabilities() {
     assert_eq!(
         discovered.supported_versions,
         [
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
             ProtocolVersion::V_2025_06_18,
             ProtocolVersion::V_2025_11_25,
             ProtocolVersion::V_2026_07_28,
@@ -858,6 +868,34 @@ async fn concurrent_calls_share_one_engine() {
         let listed = ok(&call(&client, "document_list", json!({})).await);
         let documents = listed["documents"].as_array().expect("documents");
         assert_eq!(documents.len(), 16, "{era:?}: {listed}");
+        close(client).await;
+    }
+}
+
+/// The engine's 4 MiB text limit reaches every tool through MCP: an
+/// oversized `family_name` is a LIMIT_EXCEEDED tool error, not a document.
+#[tokio::test]
+async fn oversized_text_argument_is_limit_exceeded() {
+    let root = TempDir::new().expect("tempdir");
+    let limit = forma_engine::limits::MAX_TEXT_BYTES;
+    for era in ERAS {
+        let client = connect(config(root.path()), era).await;
+        let error = tool_error(
+            &call(
+                &client,
+                "document_create",
+                json!({ "family_name": "x".repeat(limit + 1) }),
+            )
+            .await,
+        );
+        assert_eq!(error["code"], "LIMIT_EXCEEDED", "{era:?}");
+        assert_eq!(
+            error["details"],
+            json!({ "limit": limit, "actual": limit + 1, "argument": "family_name" }),
+            "{era:?}"
+        );
+        let listed = ok(&call(&client, "document_list", json!({})).await);
+        assert_eq!(listed["documents"], json!([]), "{era:?}");
         close(client).await;
     }
 }

@@ -4,8 +4,9 @@
 //! [`Command`]s (a crate-private `Translate` function) plus this shared
 //! machinery:
 //!
-//! 1. `Mutation::parse` checks the raw arguments against the limits and
-//!    splits them into the common `doc`, `base_rev` and `dry_run` and the
+//! 1. `Mutation::parse` checks the raw contour nodes against the node limit
+//!    (text sizes are checked for every tool by `Engine::call`) and splits
+//!    the arguments into the common `doc`, `base_rev` and `dry_run` and the
 //!    tool's own arguments (`Op`, which reject unknown fields). The same `Op`
 //!    is what an `edit_batch` operation carries (so an operation cannot be a
 //!    dry run on its own).
@@ -41,7 +42,7 @@ use crate::errors::{ToolError, from_args_error, from_edit_error};
 use crate::recovery::Committed;
 use crate::registry::ToolOutput;
 use crate::tools::json_output;
-use crate::tools::limits::check_raw_args;
+use crate::tools::limits::check_raw_nodes;
 use crate::tools::plans::{Change, Gate, Proposal, approval_gate};
 use crate::tools::steps::Steps;
 
@@ -91,7 +92,9 @@ pub struct Mutation<Op> {
 }
 
 impl<Op: DeserializeOwned> Mutation<Op> {
-    /// Checks the raw arguments against the limits, then parses them.
+    /// Checks the raw structured contours against the node limit (text sizes
+    /// were checked by [`Engine::call`](crate::Engine::call)), then parses
+    /// the arguments.
     ///
     /// Only `doc`, `base_rev` and `dry_run` are taken out of `args`; every
     /// other field goes to `Op`, which rejects the ones it does not know.
@@ -99,11 +102,11 @@ impl<Op: DeserializeOwned> Mutation<Op> {
     ///
     /// # Errors
     ///
-    /// `LIMIT_EXCEEDED` (see [`check_raw_args`]) and `INVALID_ARGUMENT` for
+    /// `LIMIT_EXCEEDED` (see [`check_raw_nodes`]) and `INVALID_ARGUMENT` for
     /// arguments that are not an object, miss `doc` or `base_rev`, have a
     /// `dry_run` that is not a boolean, or do not match `Op`.
     pub(crate) fn parse(args: &Value) -> Result<Self, ToolError> {
-        check_raw_args(args)?;
+        check_raw_nodes(args)?;
         let Some(map) = args.as_object() else {
             return Err(ToolError::invalid_argument(
                 "invalid arguments: expected a JSON object",
