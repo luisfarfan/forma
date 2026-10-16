@@ -23,6 +23,8 @@ ttf2woff2 = { version = "0.14.0", default-features = false }
 woff2-patched = "0.4.0"
 read-fonts = "0.43.3"
 thiserror = "2.0.21"
+# Structured logging facade; only `std` (no proc-macro attributes).
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 proptest = "1.12.0"

@@ -1,0 +1,23 @@
+[package]
+name = "forma-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA command registry, document lifecycle and path sandbox shared by every facade (MCP, CLI, UI, agent)"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+forma-edit = { path = "../forma-edit" }
+forma-store = { path = "../forma-store" }
+# Canonical paths without Windows `\\?\` prefixes, for the allowed-roots sandbox.
+dunce = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
