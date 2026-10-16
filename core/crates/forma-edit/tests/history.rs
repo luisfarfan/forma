@@ -402,7 +402,8 @@ fn restore_creates_new_revision() {
     commit(&mut doc, &agent(), "Rename B", vec![rename("B", "Bee")]);
     let latest = doc.snapshot_at(Rev(3)).unwrap();
 
-    let out = doc.restore(&agent(), Rev(1)).expect("restores");
+    let base = doc.rev();
+    let out = doc.restore(&agent(), base, Rev(1)).expect("restores");
     assert_eq!(out.rev, Rev(4));
     assert_eq!(out.tx, TxId(4));
     assert_eq!(out.touched, BTreeSet::from([b, c, EntityKey::GlyphOrder]));
@@ -418,9 +419,76 @@ fn restore_creates_new_revision() {
 }
 
 #[test]
+fn restore_with_stale_base_conflicts_on_entities_changed_by_others() {
+    let mut doc = new_doc();
+    let c = key(&doc, "C");
+    commit(&mut doc, &user(), "Widen A", vec![advance("A", 650.0)]);
+    let agent_base = doc.rev();
+    // The user keeps editing after the revision the agent saw.
+    commit(&mut doc, &user(), "Widen C", vec![advance("C", 700.0)]);
+    commit(
+        &mut doc,
+        &user(),
+        "Create D",
+        vec![create("D", &[], 500.0, vec![])],
+    );
+    let d = key(&doc, "D");
+    let before = Arc::clone(doc.font());
+
+    let info = conflict(doc.restore(&agent(), agent_base, Rev(0)).unwrap_err());
+    assert_eq!(info.current_rev, Rev(3));
+    let mut expected = vec![(c, Rev(2), user()), (d, Rev(3), user())];
+    expected.sort_by_key(|(entity, _, _)| *entity);
+    // A changed at the agent's base revision, so it is not a conflict; the
+    // glyph order never is.
+    assert_eq!(info.conflicts, expected);
+    assert_eq!(doc.rev(), Rev(3));
+    assert!(Arc::ptr_eq(doc.font(), &before));
+}
+
+#[test]
+fn restore_with_current_base_succeeds() {
+    let mut doc = new_doc();
+    commit(&mut doc, &user(), "Widen A", vec![advance("A", 650.0)]);
+    commit(&mut doc, &user(), "Widen C", vec![advance("C", 700.0)]);
+    let base = doc.rev();
+    let out = doc.restore(&agent(), base, Rev(0)).expect("restores");
+    assert_eq!(out.rev, Rev(3));
+    assert_eq!(**doc.font(), *doc.snapshot_at(Rev(0)).unwrap());
+}
+
+#[test]
+fn restore_base_rev_ahead_is_invalid() {
+    let mut doc = new_doc();
+    commit(&mut doc, &user(), "Widen A", vec![advance("A", 650.0)]);
+    let err = doc.restore(&user(), Rev(5), Rev(0)).unwrap_err();
+    assert!(matches!(err, EditError::InvalidArgument(_)), "{err:?}");
+    assert_eq!(doc.rev(), Rev(1));
+    assert_eq!(width(&doc, "A"), 650.0);
+}
+
+#[test]
+fn revert_of_a_restore_entry_brings_back_the_state_before_it() {
+    let mut doc = new_doc();
+    commit(&mut doc, &user(), "Widen A", vec![advance("A", 650.0)]);
+    commit(&mut doc, &user(), "Delete C", vec![delete(&["C"])]);
+    let before_restore = Arc::clone(doc.font());
+    let base = doc.rev();
+    let restored = doc.restore(&agent(), base, Rev(0)).expect("restores");
+    assert_eq!(names_in_order(&doc), vec!["A", "B", "C"]);
+
+    let out = doc
+        .revert(&user(), restored.tx)
+        .expect("reverts the restore");
+    assert_eq!(out.rev, Rev(4));
+    assert_eq!(**doc.font(), *before_restore);
+    assert_eq!(doc.last_entry().unwrap().kind, EntryKind::Revert);
+}
+
+#[test]
 fn restore_rejects_an_unknown_revision() {
     let mut doc = new_doc();
-    let err = doc.restore(&user(), Rev(5)).unwrap_err();
+    let err = doc.restore(&user(), Rev(0), Rev(5)).unwrap_err();
     assert!(matches!(err, EditError::NotFound(_)), "{err:?}");
 }
 
@@ -430,7 +498,7 @@ fn restore_to_an_identical_state_is_rejected() {
     commit(&mut doc, &user(), "Widen A", vec![advance("A", 650.0)]);
     commit(&mut doc, &user(), "Narrow A", vec![advance("A", 600.0)]);
     for rev in [Rev(0), Rev(2)] {
-        let err = doc.restore(&user(), rev).unwrap_err();
+        let err = doc.restore(&user(), Rev(2), rev).unwrap_err();
         match err {
             EditError::InvalidArgument(message) => {
                 assert!(message.contains("already at that state"), "{message}");
@@ -449,7 +517,8 @@ fn restore_is_undoable_and_clears_the_redo_stack() {
     doc.undo(&user()).expect("undoes");
     let before_restore = Arc::clone(doc.font());
 
-    doc.restore(&agent(), Rev(0)).expect("restores");
+    let base = doc.rev();
+    doc.restore(&agent(), base, Rev(0)).expect("restores");
     assert_eq!(width(&doc, "A"), 600.0);
     assert!(!doc.can_redo(&user()));
     assert!(!doc.can_undo(&user()));
@@ -513,7 +582,8 @@ fn every_state_change_increments_rev_by_one() {
     let widen_b = commit(&mut doc, &agent(), "Widen B", vec![advance("B", 750.0)]);
     outcomes.push(widen_b.clone());
     outcomes.push(doc.revert(&user(), widen_b.tx).expect("revert"));
-    outcomes.push(doc.restore(&agent(), Rev(0)).expect("restore"));
+    let base = doc.rev();
+    outcomes.push(doc.restore(&agent(), base, Rev(0)).expect("restore"));
 
     for (index, outcome) in outcomes.iter().enumerate() {
         let n = u64::try_from(index).unwrap() + 1;

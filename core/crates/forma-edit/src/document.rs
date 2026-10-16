@@ -181,12 +181,7 @@ impl Document {
         label: &str,
         cmds: &[Command],
     ) -> Result<TxOutcome, EditError> {
-        if base_rev > self.rev {
-            return Err(EditError::InvalidArgument(format!(
-                "base revision {} is newer than the current revision {}",
-                base_rev.0, self.rev.0
-            )));
-        }
+        self.check_base_rev(base_rev)?;
         let Some((first, rest)) = cmds.split_first() else {
             return Err(EditError::InvalidArgument(
                 "no commands to execute: the list is empty".into(),
@@ -237,6 +232,13 @@ impl Document {
             }
             None => return Err(EditError::NotAllowed("nothing to undo".into())),
         };
+        // Invariant: only undo and redo run between pushing a step and
+        // undoing it, so the current font is the after-state of the top undo
+        // step.
+        debug_assert!(
+            Arc::ptr_eq(&self.font, &step.after),
+            "the current font is the after-state of the undone step"
+        );
         let outcome = self.record(
             actor,
             EntryKind::Undo,
@@ -271,6 +273,12 @@ impl Document {
             }
             None => return Err(EditError::NotAllowed("nothing to redo".into())),
         };
+        // Invariant: any commit, revert or restore clears the redo stack, so
+        // the current font is the before-state of the top redo step.
+        debug_assert!(
+            Arc::ptr_eq(&self.font, &step.before),
+            "the current font is the before-state of the redone step"
+        );
         let outcome = self.record(
             actor,
             EntryKind::Redo,
@@ -341,14 +349,25 @@ impl Document {
 
     /// Sets the whole document back to its state at revision `rev`, as a new
     /// undoable revision by `actor` that touches every entity whose value
-    /// differs.
+    /// differs, based on the revision `base_rev` the actor last saw.
     ///
     /// # Errors
     ///
+    /// * [`EditError::InvalidArgument`] if `base_rev` is newer than the
+    ///   current revision, or if the document already has the content of
+    ///   revision `rev`.
     /// * [`EditError::NotFound`] if revision `rev` does not exist.
-    /// * [`EditError::InvalidArgument`] if the document already has the
-    ///   content of that revision.
-    pub fn restore(&mut self, actor: &Actor, rev: Rev) -> Result<TxOutcome, EditError> {
+    /// * [`EditError::Conflict`] if any entity the restore would change, other
+    ///   than the glyph order, changed after `base_rev`: restoring would
+    ///   silently overwrite a change the actor has not seen. The conflicts are
+    ///   listed as in [`execute`](Self::execute).
+    pub fn restore(
+        &mut self,
+        actor: &Actor,
+        base_rev: Rev,
+        rev: Rev,
+    ) -> Result<TxOutcome, EditError> {
+        self.check_base_rev(base_rev)?;
         let target = self
             .snapshot_at(rev)
             .ok_or_else(|| EditError::NotFound(format!("revision {}", rev.0)))?;
@@ -359,11 +378,25 @@ impl Document {
                 rev.0
             )));
         }
+        let conflicts = self.changed_since(&touched, |changed| changed > base_rev);
+        if !conflicts.is_empty() {
+            return Err(self.conflict(conflicts));
+        }
         let label = format!("Restore revision {}", rev.0);
         Ok(self.push_undoable(actor, EntryKind::Restore, label, touched, target))
     }
 
     // ------------------------------------------------------------ internals
+
+    fn check_base_rev(&self, base_rev: Rev) -> Result<(), EditError> {
+        if base_rev > self.rev {
+            return Err(EditError::InvalidArgument(format!(
+                "base revision {} is newer than the current revision {}",
+                base_rev.0, self.rev.0
+            )));
+        }
+        Ok(())
+    }
 
     /// The touched entities, other than the glyph order, whose last change
     /// revision satisfies `changed`, with that revision and its actor, in
