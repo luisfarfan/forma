@@ -1,7 +1,7 @@
 # 02 — Comparación tecnológica y stack recomendado
 
-> Estado: revisión 2 (multiplataforma + MCP central) · 2026-10-16
-> **Aprobado por el responsable:** Rust como núcleo. **Pendiente de aprobación:** tecnología de UI (§4), que se decide con un spike comparativo (`04-roadmap.md`, Hito 2).
+> Estado: revisión 3 (open source) · 2026-10-16
+> **Aprobado por el responsable:** Rust como núcleo; Hito 1; FORMA es **open source bajo MIT OR Apache-2.0**, sin fines comerciales. **Pendiente de aprobación:** tecnología de UI (§4), que se decide con un spike comparativo (`04-roadmap.md`, Hito 2).
 > Evidencia: **[V]** verificado en fuente primaria (URL en §12) · **[A]** afirmación del proveedor · **[H]** hipótesis o juicio de ingeniería.
 
 ## 1. Resumen de decisiones
@@ -16,7 +16,8 @@
 | Formato nativo | **`.forma`**: archivo único SQLite. **`.formapackage`**: carpeta con JSON canónico para git | Recomendado | Zip de JSON (como Sketch); solo carpeta |
 | Compilación | **fontc 1.0** in-process (TTF, VF-TTF); fontmake como oráculo de pruebas y ruta CFF (fase 4) | Recomendado | fontmake como ruta única |
 | Validación | OTS (`opentype-sanitizer`) + fontspector + chequeos propios | Recomendado | — |
-| Distribución | macOS universal firmado y notarizado; Windows firmado (MSIX/MSI); Linux AppImage + Flatpak + deb | Recomendado | — |
+| Distribución | macOS universal firmado y notarizado; Windows firmado (MSIX/MSI); Linux AppImage + Flatpak + deb; además Homebrew, winget y Flathub; la CLI vía `cargo install` | Recomendado | — |
+| Licencia del proyecto | **MIT OR Apache-2.0**; dependencias permisivas, más Qt bajo LGPLv3 con enlace dinámico si se elige Qt | **Aprobado** | — |
 
 **Por qué se descarta SwiftUI/AppKit como UI principal:** limita el producto a macOS. La propuesta anterior ya ponía toda la lógica en Rust, así que el cambio de UI **no** afecta al núcleo. Esa fue la razón para separar núcleo y shell desde el principio.
 
@@ -59,7 +60,7 @@ Todas compilan en macOS, Windows y Linux (Rust puro, o C/C++ con builds soportad
 - **Escala:** grilla de miles de glifos con desplazamiento fluido; high-DPI y monitores mixtos.
 - **Integración:** menús nativos (barra global en macOS), diálogos de archivos nativos.
 - **Distribución:** empaquetado firmado y actualizaciones en los tres SO.
-- **Licencia:** compatible con un producto comercial de código cerrado.
+- **Licencia:** compatible con FORMA open source bajo MIT OR Apache-2.0, sin obligar a relicenciar el proyecto.
 
 ### 4.2 Comparación detallada
 
@@ -94,13 +95,20 @@ Otros candidatos, descartados con una línea:
 - **Dioxus Blitz:** beta [V].
 - **Compose Multiplatform:** JVM + JNI [V].
 
-### 4.3 Licencia de Qt (decisión que debe tomarse **antes** de escribir código de UI de producto)
+### 4.3 Licencias de los toolkits con FORMA open source (MIT OR Apache-2.0)
 
-| Opción | Implicaciones |
-|---|---|
-| **Comercial (recomendada)** | Plan Small Business: **€546 por desarrollador al año**, si los ingresos o la financiación son ≤ €1M y hay como máximo 3 licencias [V]. Sin obligaciones LGPL; acceso a parches LTS comerciales (tras los primeros parches, las LTS son solo comerciales [V]). Precio estándar: ~$3 600–4 700 por desarrollador al año [H: dato de 2022 / tercero]. |
-| LGPLv3 | Permite código cerrado con **enlace dinámico**, posibilidad de re-enlazar, oferta del código fuente de Qt y aviso visible [V]. **Prohibido** usar módulos solo GPL o comerciales: Canvas Painter, Graphs, Charts, Quick 3D y el compilador `qmlsc` [V]. |
-| ⚠ Restricción | Qt no permite pasar a comercial código desarrollado con la licencia open source sin su consentimiento escrito [V FAQ]. Por eso el **spike del Hito 2 es código desechable**, o se hace con la evaluación comercial. |
+FORMA es un proyecto **open source, sin fines comerciales**, bajo **MIT OR Apache-2.0** (decisión del responsable, 2026-10-16). Esto cambia el análisis respecto a la revisión anterior:
+
+| Toolkit | Cómo se usa con FORMA | Obligaciones |
+|---|---|---|
+| **Qt 6 bajo LGPLv3 (gratis)** | Enlace **dinámico**. No hace falta licencia comercial | Distribuir avisos de licencia y ofrecer el código fuente de Qt (o enlazar a él); permitir sustituir las librerías de Qt [V]. Como el código de FORMA es abierto, el requisito de re-enlazado se cumple de forma natural |
+| Qt: módulos solo GPL o comerciales | Canvas Painter, Graphs, Charts, Quick 3D, `qmlsc` [V] | **No usarlos**: obligarían a distribuir FORMA como GPL, incompatible con MIT/Apache. Lista de módulos permitidos en CI |
+| Slint (licencia royalty-free 2.0) | Permitida para apps de escritorio | Atribución obligatoria (widget AboutSlint o badge) [V]. Su opción GPLv3 no es compatible con MIT/Apache |
+| Tauri, GPUI | MIT/Apache | Ninguna especial |
+
+Con esto **desaparece el costo de licencia** como criterio de desempate entre toolkits; queda solo el cumplimiento de la LGPL, que es sencillo para un proyecto abierto.
+
+⚠ **Consecuencia práctica:** con Qt open source, las versiones de parche LTS posteriores a las primeras son **solo comerciales** [V]. FORMA tendría que seguir las versiones menores recientes de Qt 6.x en lugar de quedarse en una LTS, y planificar actualizaciones periódicas.
 
 ### 4.4 Recomendación
 
@@ -115,7 +123,7 @@ Justificación:
 **Riesgos de la recomendación:**
 - Tres lenguajes en el shell.
 - cxx-qt en "early development" [V].
-- Costo o cumplimiento de licencia.
+- Cumplimiento de la LGPL (enlace dinámico; no usar módulos solo GPL).
 - El ritmo de 120 Hz no está demostrado públicamente en ningún toolkit: hay que medirlo en el spike.
 
 **Cuándo elegir la alternativa:**

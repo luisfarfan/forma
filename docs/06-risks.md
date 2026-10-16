@@ -1,6 +1,6 @@
 # 06 — Riesgos técnicos, legales y de producto
 
-> Estado: revisión 2 (FORMA, multiplataforma, MCP central) · 2026-10-16 · Revisar al cierre de cada hito.
+> Estado: revisión 3 (open source MIT OR Apache-2.0) · 2026-10-16 · Revisar al cierre de cada hito.
 > Probabilidad (P) e impacto (I): **A** alta · **M** media · **B** baja. ★ = condicionan decisiones actuales.
 
 ## 1. Riesgos técnicos
@@ -32,11 +32,11 @@
 |---|---|---|---|---|
 | L1 ★ | Reclamación por ingeniería inversa de Glyphs (EULA bajo ley austríaca; §2 "alter, translate") [V] | B (con política) | A | Política de niveles (`05-reverse-engineering.md`): solo fuentes públicas y caja negra; opinión legal antes del nivel ≥ 2 |
 | L2 | Similitud de UI, trade dress o marca de Glyphs | M | M | Diseño e iconografía originales; uso nominativo de "Glyphs" |
-| L3 ★ | **Licencias open source:** contaminación GPL (Fontra y FontForge son GPL [V]); módulos de Qt solo GPL o comerciales (Canvas Painter, Graphs, Charts, Quick 3D, `qmlsc`) [V]; obligaciones LGPL de Qt (enlace dinámico, re-enlazado, fuente, aviso) [V]; atribución obligatoria de la licencia royalty-free de Slint [V]; FTL; MPL-2.0 | M | A | `cargo-deny` con lista de licencias permitidas; SBOM por release; lista de módulos de Qt permitidos; decidir licencia comercial o LGPL de Qt **antes** del código de producto (no se puede migrar sin consentimiento [V]) |
+| L3 ★ | **Compatibilidad de licencias con MIT OR Apache-2.0:** no se puede incorporar código GPL (Fontra, FontForge [V]) ni módulos de Qt solo GPL/comerciales (Canvas Painter, Graphs, Charts, Quick 3D, `qmlsc`) [V]; Qt LGPLv3 exige enlace dinámico, avisos y acceso al fuente de Qt [V]; Slint royalty-free exige atribución [V]; FTL exige crédito | M | A | `cargo-deny` con lista de licencias permitidas; SBOM por release; lista de módulos de Qt permitidos en CI; archivo de avisos de terceros (`THIRD_PARTY_NOTICES`) |
 | L4 | Datos sin licencia clara (`GlyphData.xml`, GlyphsInfo) [V] | M | M | Base de datos propia desde Unicode UCD y AGLFN |
 | L5 | Fuentes de prueba y datos de entrenamiento de IA; derechos sobre contornos generados | M | A | Solo fixtures propias u OFL; no entrenar con fuentes sin licencia; términos de uso claros |
 | L6 ★ | **Privacidad y confidencialidad:** diseños no publicados enviados a proveedores LLM (agente integrado); RGPD | M | A | IA opt-in; visibilidad de lo enviado; BYOK; modelos locales; MCP local por stdio (FORMA no envía nada: el cliente MCP decide) |
-| L7 ★ | **Marca "FORMA":** **Forma DJR**, familia tipográfica comercial muy conocida de David Jonathan Ross (revival de Forma, Nebiolo 1968), vendida al **mismo público** (diseñadores, tipógrafos) [V]. **Autodesk Forma**, marca en expansión con solicitudes en EE. UU. en las **clases 9 y 42** [V snippets USPTO]. Otras: marca "FORMA" para software de documentos (USPTO 98578915), Unity Forma [V snippets]. No se pudieron consultar USPTO, EUIPO ni WIPO de forma automatizada [V] | **A** | **A** | Búsqueda de marcas profesional (USPTO, EUIPO/TMview incl. Italia, WIPO Global Brand Database, INDECOPI, CIPO/UKIPO) **antes de cualquier comunicación pública**. Considerar una marca compuesta (p. ej. "FORMA Studio") o un nombre alternativo si el abogado lo recomienda. El nombre en código (`forma-*`) puede mantenerse; cambiar la marca pública es barato si se decide pronto |
+| L7 ★ | **Marca "FORMA":** **Forma DJR**, familia tipográfica comercial muy conocida de David Jonathan Ross (revival de Forma, Nebiolo 1968), vendida al **mismo público** (diseñadores, tipógrafos) [V]. **Autodesk Forma**, marca en expansión con solicitudes en EE. UU. en las **clases 9 y 42** [V snippets USPTO]. Otras: marca "FORMA" para software de documentos (USPTO 98578915), Unity Forma [V snippets]. No se pudieron consultar USPTO, EUIPO ni WIPO de forma automatizada [V] | **M** | **M** | Para un proyecto open source sin venta el riesgo baja, pero no desaparece: un nombre que coincide con una tipografía muy conocida genera confusión en la comunidad, y los titulares pueden objetar el uso. Hacer al menos una búsqueda básica (USPTO, EUIPO/TMview, WIPO, INDECOPI) antes de anunciar el proyecto; considerar una variante distintiva si la comunidad lo percibe como conflicto. El nombre en código `forma-*` se mantiene |
 | L8 | Extensión `.forma` usada por proyectos pequeños (un editor vectorial web, un lenguaje de programación) [V] | M | B | Firma de contenido (`application_id` de SQLite y magic en el manifiesto); registro del tipo en los 3 SO |
 | L9 | Licencias de herramientas de ingeniería inversa propietarias (Hopper, IDA, JEB) | B | B | Irrelevante mientras la política prohíba el nivel 3 |
 
@@ -48,8 +48,9 @@
 | P2 ★ | Costo de cambio para usuarios de Glyphs | A | A | Interoperabilidad UFO (F2) y `.glyphs` (F5) de alta fidelidad; adelantarla si la beta lo exige |
 | P3 | Escepticismo de la comunidad hacia la IA [H] | M | M | IA opcional, transparente y deshacible; FORMA es completo sin IA; MCP como herramienta para usuarios técnicos |
 | P4 | **Costo de soportar 3 SO** (QA, soporte, hardware, firma) | A | M | CI en 3 SO desde el Hito 1; canvas e interacción en Rust; matriz de soporte explícita (Ubuntu 24.04+ y Flatpak para otras distros) |
-| P5 | Mercado pequeño y de nicho; sin datos de cuotas [V] | M | A | Validar la disposición a pagar en la beta; segmentos adyacentes (iconos, branding, educación, foundries con CI) |
-| P6 | Equipo pequeño / factor bus; dependencia de agentes para implementar | A | A | ADRs, CI estricta, criterios de aceptación automatizados, `CLAUDE.md` |
+| P5 | **Sostenibilidad del proyecto open source** (sin ingresos: tiempo de mantenimiento, costos de firma de código en macOS y Windows, CI de 3 SO) | A | A | Mantener el alcance acotado; CI en runners gratuitos para open source; buscar patrocinio (GitHub Sponsors, Open Collective, subvenciones para tipografía y software libre); atraer contribuidores con buena documentación |
+| P6 | Equipo pequeño / factor bus; dependencia de agentes para implementar | A | A | ADRs, CI estricta, criterios de aceptación automatizados, `CLAUDE.md`; contribuidores externos (CONTRIBUTING, issues etiquetados) |
+| P9 | **Gobernanza open source**: contribuciones de calidad variable, PRs con código de procedencia dudosa (copiado de software propietario o GPL) | M | M | CONTRIBUTING con política de procedencia y DCO (`Signed-off-by`); revisión obligatoria; la política de ingeniería inversa aplica también a contribuidores |
 | P7 | Pérdida de confianza por bugs graves | M | A | Validación integrada; beta cerrada; incidentes P0 |
 | P8 | Alcance del MVP (ahora con MCP y 3 SO) demasiado grande | M | M | Hitos pequeños con cierre verificable; el Hito 1 es headless; recortar funcionalidades antes que tests |
 
@@ -57,7 +58,7 @@
 
 | Decisión propuesta | Por qué es discutible | Alternativa |
 |---|---|---|
-| Qt 6.12 + cxx-qt como UI | Licencia, tres lenguajes, cxx-qt inmaduro | Slint (100 % Rust, sin presión de lápiz); GPUI (pre-1.0); Tauri 3 con CEF cuando sea estable |
+| Qt 6.12 + cxx-qt como UI | Obligaciones LGPL, sin parches LTS para open source, tres lenguajes, cxx-qt inmaduro | Slint (100 % Rust, sin presión de lápiz); GPUI (pre-1.0); Tauri 3 con CEF cuando sea estable |
 | Canvas e interacción en Rust, no en el toolkit | Más trabajo inicial | Usar las primitivas de dibujo del toolkit (más rápido de hacer, más dependencia del toolkit) |
 | `.forma` en SQLite + `.formapackage` | Dos contenedores | Solo carpeta (problemas en Windows/Linux) o zip (reescritura completa) |
 | MCP con dos eras del protocolo | Más superficie de pruebas | Solo 2026-07-28 (rompe Codex hoy) [V] |

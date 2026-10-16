@@ -2,10 +2,11 @@
 
 FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, Linux)**: alternativa a Glyphs 4 y FontLab, con **integración nativa de IA mediante un servidor MCP oficial**. Su objetivo es igualar progresivamente las capacidades centrales de esos editores y superarlos en robustez, validación integrada, control por agentes y experiencia en los tres sistemas.
 
-**Estado: Fase 0 (investigación, revisión 2) completada; pendiente de aprobación del Hito 1.**
-- **Aprobado:** Rust como núcleo, Git inicializado, instalación justificada de dependencias del Hito 1.
+**FORMA es open source, sin fines comerciales, bajo `MIT OR Apache-2.0`.**
+
+**Estado: Hito 1 aprobado y en curso** (núcleo headless + MCP + CLI en 3 SO; ver `docs/04-roadmap.md`).
+- **Aprobado:** Rust como núcleo, licencia MIT OR Apache-2.0, Hito 1, instalación justificada de sus dependencias.
 - **No aprobado aún:** el toolkit de UI. No construyas el editor gráfico ni instales Qt o Slint hasta aprobar el Hito 2.
-- No empieces el Hito 1 hasta que el responsable lo apruebe explícitamente.
 
 ## Documentos de referencia (leer antes de trabajar)
 - `docs/01-research.md`: competencia y ecosistema, con niveles de evidencia.
@@ -70,9 +71,11 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
   - Schemas MCP generados con `schemars`, nunca escritos a mano.
 - **Definición de terminado** (ver `docs/04-roadmap.md`): comando del registro + tests + exposición MCP y CLI + escenario MCP + CI verde en los 3 SO (+ UI desde el Hito 3).
 - Fixtures de fuentes: solo propias u OFL, con su licencia en `tests/fixtures/<nombre>/`. **Nunca** fuentes comerciales.
+- **Licencia:** cada crate declara `license = "MIT OR Apache-2.0"`. Archivos `LICENSE-MIT` y `LICENSE-APACHE` en la raíz.
 - **Dependencias:** justificar cada una (qué resuelve, licencia, mantenimiento).
-  - Licencias permitidas: MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, Unicode, FTL, OFL (solo fixtures).
-  - **Prohibido** incorporar código GPL (Fontra, FontForge) y usar módulos de Qt solo GPL o comerciales (Canvas Painter, Graphs, Charts, Quick 3D, `qmlsc`) sin ADR.
+  - Licencias permitidas: MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, Unicode, FTL, OFL (solo fixtures). Qt bajo LGPLv3 con enlace dinámico, si se aprueba Qt.
+  - **Prohibido** incorporar código GPL (Fontra, FontForge) y usar módulos de Qt solo GPL o comerciales (Canvas Painter, Graphs, Charts, Quick 3D, `qmlsc`). Serían incompatibles con MIT OR Apache-2.0.
+- **Procedencia:** todo el código debe ser original o venir de fuentes con licencia compatible. Nunca se copia código de software propietario. Esto aplica también a contribuidores externos.
 - No instalar herramientas globales sin justificación. Preferir entornos locales al repo: `rust-toolchain.toml`, venv en `tools/oracle/`.
 - Commits y pushes solo cuando el responsable lo pida.
 

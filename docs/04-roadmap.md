@@ -1,6 +1,6 @@
 # 04 — Roadmap
 
-> Estado: revisión 2 (multiplataforma + MCP desde el MVP) · 2026-10-16
+> Estado: revisión 3 (open source MIT OR Apache-2.0; Hito 1 aprobado y en curso) · 2026-10-16
 > Tamaños relativos: **S** < 2 sem · **M** 2–5 sem · **L** 5–10 sem · **XL** > 10 sem, para un equipo pequeño (1–2 ingenieros + agentes). Son **estimaciones [H]**, no compromisos.
 > **Regla general:** una fase no se cierra sin que pasen sus criterios de aceptación automatizados **en macOS, Windows y Ubuntu 24.04**, y, cuando se indica, una prueba manual con un diseñador.
 
@@ -28,7 +28,7 @@ flowchart LR
   F3 --> F4[Fase 4<br/>OpenType · CFF · booleanas · hinting]
   F4 --> F5[Fase 5<br/>.glyphs · Python · plugins]
   F5 --> F6[Fase 6<br/>Paridad avanzada]
-  F6 --> F7[Fase 7<br/>v1.0 comercial]
+  F6 --> F7[Fase 7<br/>v1.0 estable]
 ```
 
 | Etapa | Versión | Resultado verificable | Tamaño |
@@ -42,7 +42,7 @@ flowchart LR
 | Fase 4 | v0.4 | Features OpenType, OTF/CFF, remove overlap, hinting | L |
 | Fase 5 | v0.5 | `.glyphs` v3/v4, scripting Python, plugins | XL |
 | Fase 6 | v0.8 | Smart components, avar2, CFF2, herramientas avanzadas | XL |
-| Fase 7 | v1.0 | Color, licenciamiento, actualizaciones, rendimiento CJK | XL |
+| Fase 7 | v1.0 | Color, actualizaciones, rendimiento CJK, comunidad | XL |
 
 ---
 
@@ -312,9 +312,9 @@ Smart/variable components, corner/cap components (diseño original), avar2, CFF2
 
 ---
 
-## Fase 7 — v1.0 comercial
+## Fase 7 — v1.0 estable
 
-Color (COLRv0/v1), licenciamiento y activación, canal beta, documentación y tutoriales, rendimiento CJK (≥ 10 000 glifos), localización y accesibilidad, programa beta con foundries.
+Color (COLRv0/v1), canal beta, documentación y tutoriales, rendimiento CJK (≥ 10 000 glifos), localización y accesibilidad, programa beta con diseñadores y foundries, distribución en Homebrew, winget y Flathub, y gobernanza del proyecto open source (CONTRIBUTING, código de conducta, proceso de releases, política de seguridad).
 
 **Criterios de aceptación:**
 1. Fuente CJK que abre en < 3 s, con la grilla a 60 fps en los 3 SO.

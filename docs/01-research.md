@@ -1,6 +1,6 @@
 # 01 — Investigación y análisis competitivo
 
-> Estado: investigación Fase 0, revisión 2 (FORMA, multiplataforma, MCP central) · Fecha: 2026-10-16
+> Estado: investigación Fase 0, revisión 3 (FORMA open source, multiplataforma, MCP central) · Fecha: 2026-10-16
 > **Convención de evidencia** (obligatoria en todo el documento):
 > - **[V]** Verificado en fuente primaria (documentación oficial, repositorio, release notes, appcast, texto legal). URL en §9.
 > - **[A]** Afirmación del proveedor (marketing); comportamiento no verificado por nosotros.
@@ -16,7 +16,7 @@
 3. **FontLab 8** lleva >2 años sin release mayor (8.4.x); sus usuarios piden señales de continuidad en el foro [V]. **RoboFont 4.6** es Python+AppKit sobre UFO [V]. **Fontra** (GPL-3.0) es el editor libre más activo, web y "variable-first" [V]. **FontForge** sigue vivo pero con cadencia lenta [V].
 4. **El ecosistema de compilación cambió en 2026:** fontc 1.0 (Rust, Google) salió el 2026-09-01 — rápido y en paridad alta con fontmake, **pero solo TrueType** [V]. Esto habilita por primera vez construir un editor con un compilador moderno embebido sin depender de Python.
 5. **IA:** ningún editor profesional (Glyphs, FontLab, RoboFont) anuncia funciones de IA en sus fuentes oficiales [V para las páginas revisadas]. La investigación académica en generación vectorial de glifos existe pero tiene límites fuertes [V]. Es un espacio abierto, con riesgo de expectativas infladas.
-6. **Plataformas:** Glyphs y RoboFont son solo macOS. FontLab (Qt) cubre macOS y Windows, pero no Linux [V]. Fontra y FontForge son multiplataforma y libres (GPL) [V]. **No existe un editor profesional comercial que cubra macOS, Windows y Linux con la misma calidad**, un hueco que FORMA puede ocupar.
+6. **Plataformas:** Glyphs y RoboFont son solo macOS. FontLab (Qt) cubre macOS y Windows, pero no Linux [V]. Fontra y FontForge son multiplataforma y libres (GPL) [V]. **No existe un editor profesional que cubra macOS, Windows y Linux con la misma calidad**, y las opciones libres (Fontra, FontForge) no ofrecen una experiencia comparable a Glyphs. FORMA puede ocupar ese hueco como alternativa **open source (MIT OR Apache-2.0)**.
 7. **MCP:** ningún editor profesional ofrece un servidor MCP oficial. Solo existe un proyecto comunitario para FontLab [A]. Los servidores MCP de herramientas de diseño (Figma, Canva, Blender, Sketch) muestran patrones útiles, pero ninguno documenta control de concurrencia frente a un humano editando [V, ver `07-mcp-ai-architecture.md`].
 
 ## 2. Glyphs (Glyphs GmbH, Viena)
@@ -125,7 +125,7 @@ Afirmaciones de "auto-kerning con ML" o "trazador IA" en Glyphs/FontLab aparecen
 
 ## 7. Implicaciones para FORMA
 
-1. **Interoperar primero, competir después.** Importar `.glyphs` (spec pública), UFO/designspace y exportar a ellos reduce el costo de cambio de los usuarios. Es requisito comercial, no extra.
+1. **Interoperar primero, competir después.** Importar `.glyphs` (spec pública), UFO/designspace y exportar a ellos reduce el costo de cambio de los usuarios. Es requisito de adopción, no extra.
 2. **Diferenciadores plausibles** frente a Glyphs 4 [H]: (a) compilador moderno y validación integrada (fontspector/OTS en vivo, "esta fuente pasa Google Fonts" como estado visible); (b) Python incluido y API documentada/tipada desde el día 1; (c) IA como asistente con cambios revisables y deshacibles; (d) formato nativo amigable con git (diff por glifo); (e) motor headless/CLI idéntico al de la app para CI de foundries.
 3. **No competir en amplitud en v1.** Glyphs tiene ~13 años de features. El MVP debe ser *excelente* en el flujo central: dibujar, espaciar, kernear, exportar una fuente válida.
 4. **Riesgo de paridad:** smart components, corner components, HOI, nodos Hobby/espiral, color y hinting manual son trabajo de años. Se priorizan por demanda real (ver roadmap).
