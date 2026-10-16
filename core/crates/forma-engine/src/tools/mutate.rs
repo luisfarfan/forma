@@ -207,9 +207,10 @@ pub struct MutationResult {
     pub touched_count: usize,
     /// Whether `touched` lists only the first 100 of them.
     pub touched_truncated: bool,
-    /// Present when the change applied but could not be kept in the
-    /// crash-recovery journal: what went wrong. The change itself is fine;
-    /// save the document to make it safe.
+    /// Present when the change applied but is not kept in the
+    /// crash-recovery journal: why. The change itself is fine; save the
+    /// document to make it safe (after a journal failure, no change is
+    /// journaled until the next save).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_warning: Option<String>,
 }
@@ -348,7 +349,11 @@ pub(crate) fn mutate<R: Serialize>(
         )));
     }
     if edit.steps.cmds.is_empty() && !edit.dry_run {
-        return json_output(&finish(engine, MutationResult::unchanged(rev))?);
+        let mut unchanged = MutationResult::unchanged(rev);
+        // Nothing to journal, but say so if this document's changes are not
+        // journaled.
+        unchanged.journal_warning = engine.journal_notice(edit.doc);
+        return json_output(&finish(engine, unchanged)?);
     }
     open.document
         .check_conflicts(&edit.steps.touched, edit.base_rev)

@@ -11,7 +11,13 @@
 //! saved file.
 //!
 //! A journal failure never fails the change it follows: the result gains a
-//! `journal_warning` instead.
+//! `journal_warning` instead. After a journal that could not be opened or
+//! written, the document journals nothing more until it is saved (which
+//! starts a new journal): the records already written stay a consistent
+//! prefix of the session, and every later change result carries a
+//! `journal_warning`. A record never goes after a gap, because a record holds
+//! only what its change touched and replaying it without the missing ones
+//! would rebuild a state that never existed, or none at all.
 //!
 //! A journal has a single writer. A document opened while records of an
 //! earlier session are pending, and not recovered, leaves them alone (they
@@ -33,10 +39,19 @@ use crate::errors::{ToolError, from_store_error};
 pub(crate) enum JournalState {
     /// The document's session writes the journal (opened on first use).
     Active(Option<Journal>),
-    /// The journal holds records of an earlier session that were not
-    /// recovered (or cannot be read): they are kept for a later recovery and
-    /// nothing is appended to them until a save makes them obsolete.
-    Stale,
+    /// Nothing is appended to the journal until a save starts a new one: it
+    /// holds records of an earlier session that were not recovered, or it
+    /// cannot be read, or a write to it failed (its records are then a
+    /// prefix of this session's changes), or it could not be emptied after a
+    /// save.
+    Stale {
+        /// The `journal_warning` of every change until the next save.
+        warning: String,
+        /// Whether the records are this session's (a failed write or empty),
+        /// so that closing the document removes them like an active journal;
+        /// otherwise they are kept for a later recovery.
+        ours: bool,
+    },
     /// Another open document, with the same font id, owns the journal of the
     /// font: this one journals nothing.
     Shared(DocHandle),
@@ -68,10 +83,37 @@ pub(crate) struct Opened {
     pub warning: Option<String>,
 }
 
-const STALE: &str = "this change is not journaled for crash recovery: the journal of this font \
-                     holds records this session must not extend (unsaved changes of an earlier \
-                     session, see `recovery_available` of document_open, or a journal that \
-                     cannot be read or emptied); save the document to start a new journal";
+/// The warning of a change that is not journaled, and why.
+fn not_journaled(reason: &str) -> String {
+    format!(
+        "this change is not journaled for crash recovery: {reason}; save the document to start \
+         a new journal"
+    )
+}
+
+impl JournalState {
+    /// The state of a document opened while the journal holds `records`
+    /// unsaved changes of an earlier session that it did not recover.
+    fn earlier_session(records: usize) -> JournalState {
+        JournalState::Stale {
+            warning: not_journaled(&format!(
+                "the journal of this font holds {records} unsaved changes of an earlier session \
+                 (see `recovery_available` of document_open), which it must not extend"
+            )),
+            ours: false,
+        }
+    }
+
+    /// The `journal_warning` of a change made in this state, without
+    /// touching the journal; `None` while the document is journaled.
+    fn notice(&self) -> Option<String> {
+        match self {
+            JournalState::Active(_) => None,
+            JournalState::Stale { warning, .. } => Some(warning.clone()),
+            JournalState::Shared(owner) => Some(shared(owner)),
+        }
+    }
+}
 
 fn shared(owner: &DocHandle) -> String {
     format!(
@@ -141,8 +183,19 @@ impl Engine {
         })
     }
 
+    /// The `journal_warning` for a result about `handle` when its changes
+    /// are not journaled (until the next save), without touching the
+    /// journal; `None` when they are, or when nothing is journaled at all.
+    pub(crate) fn journal_notice(&self, handle: &DocHandle) -> Option<String> {
+        self.cfg.journal_dir.as_ref()?;
+        self.docs.get(handle)?.source_path.as_ref()?;
+        self.journals.get(handle)?.notice()
+    }
+
     /// Appends the record of `outcome` to the journal of `handle`, if the
-    /// document is journaled; returns why it could not.
+    /// document is journaled; returns why it could not. A journal that
+    /// cannot be opened or written makes the document stop journaling until
+    /// its next save (see the module documentation).
     fn journal_change(
         &mut self,
         handle: &DocHandle,
@@ -152,6 +205,10 @@ impl Engine {
         let dir = self.cfg.journal_dir.clone()?;
         let open = self.docs.get(handle)?;
         open.source_path.as_ref()?;
+        // Not journaled: answer before building a record for nothing.
+        if let Some(notice) = self.journals.get(handle).and_then(JournalState::notice) {
+            return Some(notice);
+        }
         let font = open.font();
         let label = open
             .document
@@ -163,22 +220,33 @@ impl Engine {
             .journals
             .entry(handle.clone())
             .or_insert(JournalState::Active(None));
-        match state {
-            JournalState::Active(slot) => {
-                if slot.is_none() {
-                    match Journal::open(&dir, font_id) {
-                        Ok(journal) => *slot = Some(journal),
-                        Err(error) => return Some(failed("opened", &error)),
-                    }
-                }
-                slot.as_mut()?
-                    .append(&record)
-                    .err()
-                    .map(|error| failed("written", &error))
-            }
-            JournalState::Stale => Some(STALE.to_owned()),
-            JournalState::Shared(owner) => Some(shared(owner)),
-        }
+        let JournalState::Active(slot) = state else {
+            return state.notice();
+        };
+        let written = match slot {
+            Some(journal) => journal.append(&record).map_err(|error| ("written", error)),
+            None => Journal::open(&dir, font_id)
+                .map_err(|error| ("opened", error))
+                .and_then(|journal| {
+                    slot.insert(journal)
+                        .append(&record)
+                        .map_err(|error| ("written", error))
+                }),
+        };
+        let (what, error) = written.err()?;
+        // A later record after this gap would replay into a state that never
+        // existed: stop here, the records so far being a consistent prefix.
+        *state = JournalState::Stale {
+            warning: not_journaled(&format!(
+                "an earlier change could not be journaled ({})",
+                failed(what, &error)
+            )),
+            ours: true,
+        };
+        Some(format!(
+            "{}; this change and the ones after it are not journaled until the document is saved",
+            failed(what, &error)
+        ))
     }
 
     /// After a successful save of `handle`: its journal is emptied, since the
@@ -197,14 +265,26 @@ impl Engine {
                 return None;
             }
             JournalState::Active(Some(journal)) => Ok(journal),
-            JournalState::Active(None) | JournalState::Stale => Journal::open(&dir, font_id),
+            JournalState::Active(None) | JournalState::Stale { .. } => Journal::open(&dir, font_id),
         };
         let emptied = journal.and_then(|mut journal| journal.truncate().map(|()| journal));
         let (state, warning) = match emptied {
             Ok(journal) => (JournalState::Active(Some(journal)), None),
             // Records that no longer match the saved file must never be
             // extended: journal nothing until a save manages to empty them.
-            Err(error) => (JournalState::Stale, Some(failed("emptied", &error))),
+            Err(error) => (
+                JournalState::Stale {
+                    warning: not_journaled(&format!(
+                        "the journal could not be emptied after the last save ({})",
+                        failed("emptied", &error)
+                    )),
+                    ours: true,
+                },
+                Some(format!(
+                    "{}; changes are not journaled until a save empties it",
+                    failed("emptied", &error)
+                )),
+            ),
         };
         self.journals.insert(handle.clone(), state);
         warning
@@ -212,8 +292,9 @@ impl Engine {
 
     /// When `handle` is about to close: the journal of its session is removed
     /// (a clean document has nothing to recover; a document closed with
-    /// `discard_changes` had its changes discarded on purpose). Records of an
-    /// earlier session, and the journal of another document, are kept.
+    /// `discard_changes` had its changes discarded on purpose), also when it
+    /// stopped after a failed write. Records of an earlier session, a journal
+    /// that cannot be read, and the journal of another document, are kept.
     /// Returns why the removal failed, if it did.
     pub(crate) fn journal_closed(&mut self, handle: &DocHandle) -> Option<String> {
         let state = self.journals.remove(handle);
@@ -221,13 +302,12 @@ impl Engine {
         let open = self.docs.get(handle)?;
         open.source_path.as_ref()?;
         match state.unwrap_or(JournalState::Active(None)) {
-            JournalState::Active(journal) => {
-                drop(journal);
+            JournalState::Active(_) | JournalState::Stale { ours: true, .. } => {
                 remove_journal(&dir, open.font().id)
                     .err()
                     .map(|error| failed("removed", &error))
             }
-            JournalState::Stale | JournalState::Shared(_) => None,
+            JournalState::Stale { ours: false, .. } | JournalState::Shared(_) => None,
         }
     }
 
@@ -271,7 +351,12 @@ impl Engine {
                     "{}; changes are not journaled until the document is saved",
                     failed("read", &error)
                 ));
-                opened.state = Some(JournalState::Stale);
+                opened.state = Some(JournalState::Stale {
+                    warning: not_journaled(&format!(
+                        "the journal of this font cannot be read ({error})"
+                    )),
+                    ours: false,
+                });
                 return Ok(opened);
             }
         };
@@ -286,7 +371,7 @@ impl Engine {
             opened.state = Some(JournalState::Active(None));
         } else {
             opened.recovery_available = Some(records.len());
-            opened.state = Some(JournalState::Stale);
+            opened.state = Some(JournalState::earlier_session(records.len()));
         }
         Ok(opened)
     }

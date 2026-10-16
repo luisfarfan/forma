@@ -537,3 +537,238 @@ fn documents_without_a_file_are_not_journaled() {
         json!(false)
     );
 }
+
+/// Runs `tool` as `actor`.
+#[track_caller]
+fn ok_as(engine: &mut Engine, actor: &Actor, tool: &str, args: Value) -> Value {
+    match engine.call(actor, tool, args) {
+        Ok(ToolOutput::Json(value)) => value,
+        Ok(ToolOutput::Image { .. }) => panic!("{tool} returned an image"),
+        Err(error) => panic!("{tool} failed: {error:?}"),
+    }
+}
+
+/// The `journal_warning` of a result, which must be there.
+#[track_caller]
+fn warning_of(result: &Value) -> String {
+    result["journal_warning"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no journal_warning in {result}"))
+        .to_owned()
+}
+
+/// Opens `path` with `recover: true` in a fresh engine (after a crash) and
+/// returns the engine, the handle and the number of records recovered.
+fn recover(sandbox: &Sandbox, path: &std::path::Path) -> (Engine, String, Value) {
+    let mut engine = sandbox.engine();
+    let opened = ok(
+        &mut engine,
+        "document_open",
+        json!({ "path": path, "recover": true }),
+    );
+    let doc = doc_of(&opened);
+    (engine, doc, opened["recovered"].clone())
+}
+
+#[test]
+fn a_failed_journal_write_stops_journaling_until_the_next_save() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.docs.join("font.forma");
+    // A record whose actor cannot be encoded (an agent without a name) cannot
+    // be written: a write failure that only that change meets.
+    let nameless = Actor::Agent(String::new());
+
+    let prefix = {
+        let mut engine = sandbox.engine();
+        let doc = doc_of(&ok(
+            &mut engine,
+            "document_create",
+            json!({ "family_name": "Gap", "path": path }),
+        ));
+        let created = ok(
+            &mut engine,
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": 0, "name": "A", "advance_width": 500 }),
+        );
+        assert!(created.get("journal_warning").is_none(), "{created}");
+        assert_eq!(sandbox.journal_records(), 1);
+        let prefix = state(&mut engine, &doc);
+
+        let failed = ok_as(
+            &mut engine,
+            &nameless,
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": 1, "name": "B", "advance_width": 500 }),
+        );
+        let warning = warning_of(&failed);
+        assert!(warning.contains("could not be written"), "{warning}");
+        assert!(warning.contains("until the document is saved"), "{warning}");
+
+        // Later changes would be written fine, but never after the gap: a
+        // record of `B` without the record that created it would make the
+        // whole journal unrecoverable.
+        for (tool, args) in [
+            (
+                "metrics_set",
+                json!({ "doc": doc, "base_rev": 2,
+                        "items": [{ "glyph": "B", "advance_width": 640 }] }),
+            ),
+            (
+                "glyph_update",
+                json!({ "doc": doc, "base_rev": 3, "glyph": "A", "export": false }),
+            ),
+            // Nothing to fix: no change, but the warning still says that
+            // changes are not journaled.
+            ("geometry_fix", json!({ "doc": doc, "base_rev": 4 })),
+        ] {
+            let done = ok(&mut engine, tool, args);
+            let warning = warning_of(&done);
+            assert!(warning.contains("not journaled"), "{tool}: {warning}");
+            assert!(warning.contains("save the document"), "{tool}: {warning}");
+        }
+        let undone = ok(&mut engine, "history_undo", json!({ "doc": doc }));
+        warning_of(&undone);
+        assert_eq!(sandbox.journal_records(), 1);
+        prefix
+        // A crash: the engine goes away without saving.
+    };
+
+    // Recovery gives the state as of the last journaled change: a consistent
+    // prefix of the session.
+    let (mut engine, doc, recovered) = recover(&sandbox, &path);
+    assert_eq!(recovered, json!(1));
+    assert_eq!(state(&mut engine, &doc), prefix);
+
+    // The same in this session, then a save starts a new journal.
+    let failed = ok_as(
+        &mut engine,
+        &nameless,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": 0, "name": "C", "advance_width": 300 }),
+    );
+    warning_of(&failed);
+    let later = ok(
+        &mut engine,
+        "metrics_set",
+        json!({ "doc": doc, "base_rev": 1, "items": [{ "glyph": "C", "advance_width": 310 }] }),
+    );
+    warning_of(&later);
+    assert_eq!(sandbox.journal_records(), 1, "only the recovered record");
+    let saved = ok(
+        &mut engine,
+        "document_save",
+        json!({ "doc": doc, "base_rev": 2 }),
+    );
+    assert!(saved.get("journal_warning").is_none(), "{saved}");
+    assert_eq!(sandbox.journal_records(), 0);
+    let journaled = ok(
+        &mut engine,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": 2, "name": "D", "advance_width": 200 }),
+    );
+    assert!(journaled.get("journal_warning").is_none(), "{journaled}");
+    assert_eq!(sandbox.journal_records(), 1);
+    let before_crash = state(&mut engine, &doc);
+    drop(engine);
+
+    let (mut engine, doc, recovered) = recover(&sandbox, &path);
+    assert_eq!(recovered, json!(1));
+    assert_eq!(state(&mut engine, &doc), before_crash);
+
+    // A journal stopped by a failure is this session's: discarding the
+    // changes removes it, as it does an active journal.
+    let failed = ok_as(
+        &mut engine,
+        &nameless,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": 0, "name": "E", "advance_width": 100 }),
+    );
+    warning_of(&failed);
+    confirmed(
+        &mut engine,
+        "document_close",
+        json!({ "doc": doc, "discard_changes": true }),
+    );
+    assert!(
+        sandbox.journal_files().is_empty(),
+        "{:?}",
+        sandbox.journal_files()
+    );
+}
+
+/// The coordinator's example: the record that creates a glyph is lost, a
+/// later change of that glyph would be journaled without it.
+#[cfg(unix)]
+#[test]
+fn a_journal_that_cannot_be_opened_stops_journaling_until_the_next_save() {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Makes the folder writable again, even when the test panics.
+    struct Unlock<'a>(&'a std::path::Path);
+    impl Drop for Unlock<'_> {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    let sandbox = Sandbox::new();
+    let path = sandbox.docs.join("font.forma");
+    fs::create_dir(&sandbox.journals).expect("mkdir");
+    let unlock = Unlock(&sandbox.journals);
+    fs::set_permissions(&sandbox.journals, fs::Permissions::from_mode(0o555)).expect("lock");
+    if fs::write(sandbox.journals.join("probe"), b"").is_ok() {
+        return; // Permissions do not apply (running as root): nothing to test.
+    }
+
+    let mut engine = sandbox.engine();
+    let doc = doc_of(&ok(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": "Locked", "path": path }),
+    ));
+    let created = ok(
+        &mut engine,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": 0, "name": "A", "advance_width": 500,
+                "svg_path": SQUARE }),
+    );
+    let warning = warning_of(&created);
+    assert!(warning.contains("could not be opened"), "{warning}");
+
+    // The folder is writable again, but the creation of `A` is not in the
+    // journal: a record of a change to `A` must not be written either.
+    drop(unlock);
+    let changed = ok(
+        &mut engine,
+        "metrics_set",
+        json!({ "doc": doc, "base_rev": 1, "items": [{ "glyph": "A", "lsb": 20 }] }),
+    );
+    warning_of(&changed);
+    assert!(
+        sandbox.journal_files().is_empty(),
+        "{:?}",
+        sandbox.journal_files()
+    );
+
+    // A save starts a new journal; the changes after it are journaled and
+    // recoverable.
+    let saved = ok(
+        &mut engine,
+        "document_save",
+        json!({ "doc": doc, "base_rev": 2 }),
+    );
+    assert!(saved.get("journal_warning").is_none(), "{saved}");
+    let changed = ok(
+        &mut engine,
+        "metrics_set",
+        json!({ "doc": doc, "base_rev": 2, "items": [{ "glyph": "A", "advance_width": 700 }] }),
+    );
+    assert!(changed.get("journal_warning").is_none(), "{changed}");
+    assert_eq!(sandbox.journal_records(), 1);
+    let before_crash = state(&mut engine, &doc);
+    drop(engine);
+
+    let (mut engine, doc, recovered) = recover(&sandbox, &path);
+    assert_eq!(recovered, json!(1));
+    assert_eq!(state(&mut engine, &doc), before_crash);
+}
