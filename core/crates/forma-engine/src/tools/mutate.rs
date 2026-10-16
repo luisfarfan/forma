@@ -25,6 +25,7 @@
 //! [`Document::execute`]: forma_edit::Document::execute
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use forma_edit::Command;
@@ -37,6 +38,7 @@ use serde_json::{Map, Value, json};
 
 use crate::engine::{DocHandle, Engine};
 use crate::errors::{ToolError, from_args_error, from_edit_error};
+use crate::recovery::Committed;
 use crate::registry::ToolOutput;
 use crate::tools::json_output;
 use crate::tools::limits::check_raw_args;
@@ -186,6 +188,10 @@ impl<Op: OpArgs> JsonSchema for Mutation<Op> {
     }
 }
 
+/// The most entities a result lists in its `touched` list; its
+/// `touched_count` counts them all.
+pub const MAX_TOUCHED_ENTRIES: usize = 100;
+
 /// The result of a mutating tool.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MutationResult {
@@ -193,9 +199,76 @@ pub struct MutationResult {
     pub rev: u64,
     /// The transaction id of the change, or `null` when nothing changed.
     pub tx: Option<u64>,
-    /// The entities the change touched: `font_info`,
-    /// `vertical_metrics:<master id>`, `glyph_order` or `glyph:<glyph id>`.
+    /// The entities the change touched, in entity order and at most 100 of
+    /// them (see `touched_count`): `font_info`, `vertical_metrics:<master
+    /// id>`, `glyph_order` or `glyph:<glyph id>`.
     pub touched: Vec<EntityKey>,
+    /// How many entities the change touched.
+    pub touched_count: usize,
+    /// Whether `touched` lists only the first 100 of them.
+    pub touched_truncated: bool,
+    /// Present when the change applied but could not be kept in the
+    /// crash-recovery journal: what went wrong. The change itself is fine;
+    /// save the document to make it safe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_warning: Option<String>,
+}
+
+impl MutationResult {
+    /// The result of a call that changed nothing, at revision `rev`.
+    #[must_use]
+    pub(crate) fn unchanged(rev: Rev) -> MutationResult {
+        MutationResult {
+            rev: rev.0,
+            tx: None,
+            touched: Vec::new(),
+            touched_count: 0,
+            touched_truncated: false,
+            journal_warning: None,
+        }
+    }
+
+    /// The result of a committed change.
+    #[must_use]
+    pub(crate) fn committed(committed: Committed) -> MutationResult {
+        let Committed {
+            outcome,
+            journal_warning,
+        } = committed;
+        let touched = BoundedTouched::of(&outcome.touched);
+        MutationResult {
+            rev: outcome.rev.0,
+            tx: Some(outcome.tx.0),
+            touched: touched.touched,
+            touched_count: touched.count,
+            touched_truncated: touched.truncated,
+            journal_warning,
+        }
+    }
+}
+
+/// A set of touched entities cut to its first [`MAX_TOUCHED_ENTRIES`], with
+/// the full count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BoundedTouched {
+    /// The first entities, in entity order.
+    pub touched: Vec<EntityKey>,
+    /// How many there are in all.
+    pub count: usize,
+    /// Whether `touched` was cut.
+    pub truncated: bool,
+}
+
+impl BoundedTouched {
+    /// The first [`MAX_TOUCHED_ENTRIES`] of `touched`, and their count.
+    #[must_use]
+    pub(crate) fn of(touched: &BTreeSet<EntityKey>) -> BoundedTouched {
+        BoundedTouched {
+            touched: touched.iter().take(MAX_TOUCHED_ENTRIES).copied().collect(),
+            count: touched.len(),
+            truncated: touched.len() > MAX_TOUCHED_ENTRIES,
+        }
+    }
 }
 
 /// One mutation, translated and ready to be applied.
@@ -231,7 +304,9 @@ pub(crate) struct Edit<'a> {
 ///    after); it may answer instead (a dry run returns `{rev, plan}`) or
 ///    refuse (`APPROVAL_REQUIRED` with a plan, `UNSUPPORTED` under the
 ///    `strict` policy);
-/// 4. the commands run as one transaction, marking the document dirty;
+/// 4. the commands run as one transaction, marking the document dirty, and
+///    the change is journaled for crash recovery
+///    (`Engine::commit_change`);
 /// 5. `finish` turns the [`MutationResult`] into the tool's result (adding
 ///    tool-specific fields, such as the new glyph of `glyph_create`);
 ///    [`plain`] keeps it as it is.
@@ -273,12 +348,7 @@ pub(crate) fn mutate<R: Serialize>(
         )));
     }
     if edit.steps.cmds.is_empty() && !edit.dry_run {
-        let unchanged = MutationResult {
-            rev: rev.0,
-            tx: None,
-            touched: Vec::new(),
-        };
-        return json_output(&finish(engine, unchanged)?);
+        return json_output(&finish(engine, MutationResult::unchanged(rev))?);
     }
     open.document
         .check_conflicts(&edit.steps.touched, edit.base_rev)
@@ -305,15 +375,10 @@ pub(crate) fn mutate<R: Serialize>(
     }
 
     let cmds = &edit.steps.cmds;
-    let outcome = engine
-        .doc_mut(edit.doc)?
-        .change(|document| document.execute(actor, edit.base_rev, &edit.label, cmds))?;
-    let applied = MutationResult {
-        rev: outcome.rev.0,
-        tx: Some(outcome.tx.0),
-        touched: outcome.touched.into_iter().collect(),
-    };
-    json_output(&finish(engine, applied)?)
+    let committed = engine.commit_change(edit.doc, actor, |document| {
+        document.execute(actor, edit.base_rev, &edit.label, cmds)
+    })?;
+    json_output(&finish(engine, MutationResult::committed(committed))?)
 }
 
 /// The `finish` of [`mutate`] for tools whose result is the plain

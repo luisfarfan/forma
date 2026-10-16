@@ -121,8 +121,17 @@ pub(crate) fn write_atomic(
     })
 }
 
-/// Atomically replaces `target` with `contents`.
-pub(crate) fn write_file_atomic(target: &Path, contents: &[u8]) -> io::Result<()> {
+/// Atomically replaces `target` with `contents` (creating it if it does not
+/// exist): the bytes go to a temporary file next to `target`, which is
+/// flushed to disk and only then renamed over it, so a reader or a crash sees
+/// either the old file or the new one. On failure the temporary file is
+/// removed and `target` is untouched.
+///
+/// # Errors
+///
+/// The I/O error of creating, writing, flushing or renaming the file (for
+/// example when `target` is a folder).
+pub fn write_file_atomic(target: &Path, contents: &[u8]) -> io::Result<()> {
     write_atomic(target, |file| file.write_all(contents))
 }
 

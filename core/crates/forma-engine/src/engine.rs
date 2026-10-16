@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::audit::AuditEntry;
 use crate::errors::{ToolError, from_edit_error};
 use crate::plans::{Clock, PlanStore, SystemClock};
+use crate::recovery::JournalState;
 use crate::registry::{CommandSpec, ToolOutput, Toolset, find, registry};
 use crate::tools::plans::Committing;
 
@@ -60,9 +62,15 @@ pub struct EngineConfig {
     pub allowed_roots: Vec<PathBuf>,
     /// The approval policy.
     pub policy: Policy,
-    /// Where to append the audit log (wired in Task 16).
+    /// The file to append the audit log to (created if missing; its folder
+    /// must exist): one JSON line per call, with the time, the actor, the
+    /// tool, the document and its revision before and after, the outcome and
+    /// the SHA-256 of the arguments, never the arguments themselves.
     pub audit_log: Option<PathBuf>,
-    /// Where to keep crash-recovery journals (wired in Task 16).
+    /// The folder of the crash-recovery journals (created if missing): every
+    /// change of a document that has a file is journaled there until the
+    /// document is saved, and `document_open` offers to recover what a crash
+    /// left unsaved.
     pub journal_dir: Option<PathBuf>,
     /// Refuse every tool that is not read-only (except `document_close`,
     /// which only changes the engine's in-memory state).
@@ -209,6 +217,9 @@ pub struct Engine {
     /// The plan `plan_commit` is running, for the one pass through the
     /// approval gate it grants; `None` otherwise.
     pub(crate) committing: Option<Committing>,
+    /// The crash-recovery journal state of the open documents that have one
+    /// (see `recovery`).
+    pub(crate) journals: BTreeMap<DocHandle, JournalState>,
 }
 
 impl Engine {
@@ -247,6 +258,7 @@ impl Engine {
             docs: BTreeMap::new(),
             plans: PlanStore::new(clock),
             committing: None,
+            journals: BTreeMap::new(),
         }
     }
 
@@ -321,7 +333,29 @@ impl Engine {
     ///   not read-only when the engine is in read-only mode (`document_close`
     ///   excepted);
     /// * any error of the tool itself.
+    ///
+    /// With [`EngineConfig::audit_log`] set, the call (whatever its outcome)
+    /// is recorded there; failing to write that record never fails the call.
     pub fn call(
+        &mut self,
+        actor: &Actor,
+        tool: &str,
+        args: Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let audit = self
+            .cfg
+            .audit_log
+            .is_some()
+            .then(|| AuditEntry::begin(self, actor, tool, &args));
+        let result = self.dispatch(actor, tool, args);
+        if let Some(entry) = audit {
+            entry.finish(self, &result);
+        }
+        result
+    }
+
+    /// [`Engine::call`] without the audit log.
+    fn dispatch(
         &mut self,
         actor: &Actor,
         tool: &str,
@@ -387,9 +421,11 @@ impl Engine {
     }
 
     /// Closes the document `handle`, returning it. Its pending approval
-    /// plans are dropped.
+    /// plans are dropped, and so is its journal handle (the journal file is
+    /// the business of `document_close`).
     pub(crate) fn remove_doc(&mut self, handle: &DocHandle) -> Option<OpenDoc> {
         self.plans.remove_doc(handle);
+        self.journals.remove(handle);
         self.docs.remove(handle)
     }
 

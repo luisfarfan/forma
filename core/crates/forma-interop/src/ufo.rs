@@ -40,10 +40,12 @@ pub enum InteropError {
     #[error("{} already exists and is not a UFO; it was left untouched", .0.display())]
     DestinationExists(PathBuf),
     /// The font holds data that cannot be written as a UFO, or the UFO library
-    /// failed to write it.
+    /// failed to write it for a reason other than the file system.
     #[error("UFO error: {0}")]
     Norad(String),
-    /// Reading or writing files failed.
+    /// Reading or writing files failed. A write failure of the UFO library
+    /// whose cause is a file system error is reported here too, with the
+    /// library's description and the kind of that error.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 }
@@ -257,7 +259,7 @@ fn install(ufo: &norad::Font, dir: &Path) -> Result<(), InteropError> {
     // gets the staging folder, which did not exist a moment ago.
     if let Err(error) = ufo.save(&staging) {
         discard(&staging);
-        return Err(InteropError::Norad(describe(&error)));
+        return Err(write_failure(&error));
     }
     if let Err(error) = move_into_place(&staging, dir, replacing) {
         discard(&staging);
@@ -300,6 +302,21 @@ fn sibling(dir: &Path, tag: &str) -> io::Result<PathBuf> {
         .to_os_string();
     name.push(format!(".{tag}-{}", Uuid::new_v4()));
     Ok(dir.with_file_name(name))
+}
+
+/// Classifies a failure of norad to write the UFO: one caused by the file
+/// system (an [`io::Error`] somewhere in its chain of causes) is
+/// [`InteropError::Io`], with the kind of that error and the whole
+/// description; anything else is [`InteropError::Norad`].
+fn write_failure(error: &(dyn std::error::Error + 'static)) -> InteropError {
+    let mut cause = Some(error);
+    while let Some(current) = cause {
+        if let Some(io_error) = current.downcast_ref::<io::Error>() {
+            return InteropError::Io(io::Error::new(io_error.kind(), describe(error)));
+        }
+        cause = current.source();
+    }
+    InteropError::Norad(describe(error))
 }
 
 /// An error with the chain of its causes: norad's messages say what failed

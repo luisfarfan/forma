@@ -3,7 +3,10 @@
 
 use std::fmt;
 
+use forma_compile::CompileError;
 use forma_edit::{ConflictInfo, EditError};
+use forma_interop::InteropError;
+use forma_render::RenderError;
 use forma_store::StoreError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -212,6 +215,81 @@ pub fn from_store_error(error: StoreError) -> ToolError {
     }
 }
 
+/// Maps a [`CompileError`] onto a [`ToolError`]; the message is the error
+/// text.
+///
+/// | `CompileError` | code                |
+/// |----------------|---------------------|
+/// | `Preflight`    | `VALIDATION_FAILED` |
+/// | `Fontc`        | `COMPILE_FAILED`    |
+/// | `Woff2`        | `COMPILE_FAILED`    |
+/// | `Io`           | `IO_ERROR`          |
+///
+/// A variant added later is `COMPILE_FAILED`.
+#[must_use]
+pub fn from_compile_error(error: CompileError) -> ToolError {
+    let code = match &error {
+        CompileError::Preflight(_) => ErrorCode::ValidationFailed,
+        CompileError::Io(_) => ErrorCode::IoError,
+        _ => ErrorCode::CompileFailed,
+    };
+    ToolError::new(code, error.to_string())
+}
+
+/// Maps an [`InteropError`] (a UFO export) onto a [`ToolError`]; the message
+/// is the error text.
+///
+/// | `InteropError`                    | code               |
+/// |-----------------------------------|--------------------|
+/// | `Io` (also a write failure of the UFO library caused by the file system) | `IO_ERROR` |
+/// | `DestinationExists`               | `INVALID_ARGUMENT` |
+/// | `Norad`, `MissingLayer`, `UnknownMaster` (data that cannot be exported) | `COMPILE_FAILED` |
+///
+/// A variant added later is `COMPILE_FAILED`.
+#[must_use]
+pub fn from_interop_error(error: InteropError) -> ToolError {
+    let code = match &error {
+        InteropError::Io(_) => ErrorCode::IoError,
+        InteropError::DestinationExists(_) => ErrorCode::InvalidArgument,
+        _ => ErrorCode::CompileFailed,
+    };
+    ToolError::new(code, error.to_string())
+}
+
+/// The prefix of the [`RenderError::Geometry`] message of a preview whose
+/// frame cannot be computed (an extent that is zero, overflows or scales
+/// out of range): a problem of the requested framing, not of an outline.
+const DEGENERATE_FRAMING: &str = "degenerate framing";
+
+/// Maps a [`RenderError`] onto a [`ToolError`].
+///
+/// | `RenderError`                                   | code               |
+/// |-------------------------------------------------|--------------------|
+/// | `InvalidSize`, `InvalidText`                    | `INVALID_ARGUMENT` |
+/// | `GlyphNotFound`, `MissingLayer`                 | `NOT_FOUND`        |
+/// | `Geometry` starting with "degenerate framing"   | `INVALID_ARGUMENT` |
+/// | any other `Geometry`                            | `INVALID_GEOMETRY` |
+/// | `Encode`                                        | `IO_ERROR`         |
+///
+/// The message is the error text, except for a degenerate framing, whose
+/// message is the framing problem itself (not "invalid outline: …").
+#[must_use]
+pub fn from_render_error(error: RenderError) -> ToolError {
+    match error {
+        RenderError::InvalidSize(_) | RenderError::InvalidText => {
+            ToolError::invalid_argument(error.to_string())
+        }
+        RenderError::GlyphNotFound(_) | RenderError::MissingLayer { .. } => {
+            ToolError::not_found(error.to_string())
+        }
+        RenderError::Geometry(message) if message.starts_with(DEGENERATE_FRAMING) => {
+            ToolError::invalid_argument(message)
+        }
+        RenderError::Geometry(_) => ToolError::new(ErrorCode::InvalidGeometry, error.to_string()),
+        RenderError::Encode(_) => ToolError::io(error.to_string()),
+    }
+}
+
 /// Maps a failure to deserialize the arguments of a tool onto
 /// `INVALID_ARGUMENT`, keeping serde's message (which names the offending or
 /// unknown field).
@@ -317,6 +395,100 @@ mod tests {
                 "conflicts": [{ "entity": format!("glyph:{glyph}"), "rev": 6, "actor": "user" }]
             })
         );
+    }
+
+    #[test]
+    fn compile_errors_map_to_codes() {
+        let cases = [
+            (
+                CompileError::Preflight("no".into()),
+                ErrorCode::ValidationFailed,
+            ),
+            (CompileError::Fontc("boom".into()), ErrorCode::CompileFailed),
+            (CompileError::Woff2("bad".into()), ErrorCode::CompileFailed),
+            (
+                CompileError::Io(std::io::Error::other("disk")),
+                ErrorCode::IoError,
+            ),
+        ];
+        for (error, code) in cases {
+            let text = error.to_string();
+            let mapped = from_compile_error(error);
+            assert_eq!(mapped.code, code, "{text}");
+            assert_eq!(mapped.message, text);
+        }
+    }
+
+    #[test]
+    fn interop_errors_map_to_codes() {
+        let master = forma_model::MasterId::new();
+        let cases = [
+            (
+                InteropError::Io(std::io::Error::other("disk")),
+                ErrorCode::IoError,
+            ),
+            (
+                InteropError::DestinationExists("x.ufo".into()),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                InteropError::Norad("bad name".into()),
+                ErrorCode::CompileFailed,
+            ),
+            (
+                InteropError::MissingLayer {
+                    glyph: "a".into(),
+                    master,
+                },
+                ErrorCode::CompileFailed,
+            ),
+            (
+                InteropError::UnknownMaster(master),
+                ErrorCode::CompileFailed,
+            ),
+        ];
+        for (error, code) in cases {
+            let text = error.to_string();
+            let mapped = from_interop_error(error);
+            assert_eq!(mapped.code, code, "{text}");
+            assert_eq!(mapped.message, text);
+        }
+    }
+
+    #[test]
+    fn render_errors_map_to_codes() {
+        let cases = [
+            (RenderError::InvalidSize(4), ErrorCode::InvalidArgument),
+            (RenderError::InvalidText, ErrorCode::InvalidArgument),
+            (RenderError::GlyphNotFound("a".into()), ErrorCode::NotFound),
+            (
+                RenderError::MissingLayer { glyph: "a".into() },
+                ErrorCode::NotFound,
+            ),
+            (
+                RenderError::Geometry("degenerate framing: the extent is 0".into()),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                RenderError::Geometry("contour 2 of 'a' has 1 node".into()),
+                ErrorCode::InvalidGeometry,
+            ),
+            (RenderError::Encode("png".into()), ErrorCode::IoError),
+        ];
+        for (error, code) in cases {
+            let text = error.to_string();
+            assert_eq!(from_render_error(error).code, code, "{text}");
+        }
+        let framing = from_render_error(RenderError::Geometry(
+            "degenerate framing: the extent is 0".into(),
+        ));
+        assert_eq!(framing.message, "degenerate framing: the extent is 0");
+        // Only a message that starts with it is a framing problem.
+        let outline = from_render_error(RenderError::Geometry(
+            "glyph 'degenerate framing' is open".into(),
+        ));
+        assert_eq!(outline.code, ErrorCode::InvalidGeometry);
+        assert!(outline.message.starts_with("invalid outline: "));
     }
 
     fn sqlite(code: std::os::raw::c_int) -> StoreError {

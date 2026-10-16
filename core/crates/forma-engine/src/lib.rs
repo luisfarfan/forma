@@ -9,7 +9,11 @@
 //! The [`Engine`] owns the open documents (addressed by opaque
 //! [`DocHandle`]s), enforces read-only mode and the path sandbox (only paths
 //! inside the allowed roots, see [`Engine::check_allowed`]), and maps every
-//! failure onto a [`ToolError`] with one of the stable [`ErrorCode`]s.
+//! failure onto a [`ToolError`] with one of the stable [`ErrorCode`]s. When
+//! configured, it also appends every call to an audit log
+//! ([`EngineConfig::audit_log`]) and journals every committed change of a
+//! document that has a file for crash recovery
+//! ([`EngineConfig::journal_dir`]).
 
 #![forbid(unsafe_code)]
 
@@ -22,11 +26,13 @@ macro_rules! base_rev_note {
     };
 }
 
+mod audit;
 mod engine;
 pub mod errors;
 pub mod limits;
 pub mod paths;
 pub mod plans;
+mod recovery;
 mod registry;
 pub mod tools;
 

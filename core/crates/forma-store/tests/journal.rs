@@ -95,6 +95,7 @@ impl Sim {
             actor: actor_for(self.records.len()),
             label: label.to_owned(),
             font_info: touched.info.then(|| font.info.clone()),
+            units_per_em: touched.info.then_some(font.units_per_em),
             masters: touched.masters.then(|| font.masters.clone()),
             glyph_order: touched.order.then(|| font.glyph_order.clone()),
             glyphs: touched
@@ -149,6 +150,7 @@ fn empty_record(rev: u64, label: &str) -> JournalRecord {
         actor: Actor::User,
         label: label.to_owned(),
         font_info: None,
+        units_per_em: None,
         masters: None,
         glyph_order: None,
         glyphs: Vec::new(),
@@ -761,6 +763,35 @@ fn apply_records_replaces_font_info() {
     assert_eq!(Some(&font.info), record.font_info.as_ref());
     assert_eq!(font.glyphs, base.glyphs);
     assert_eq!(font.masters, base.masters);
+}
+
+#[test]
+fn units_per_em_is_journaled_and_older_lines_still_read() {
+    let dir = TempDir::new().unwrap();
+    let base = base_font();
+    let mut record = empty_record(1, "upm");
+    record.font_info = Some(base.info.clone());
+    record.units_per_em = Some(2048);
+    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    journal.append(&record).unwrap();
+    journal.append(&empty_record(2, "none")).unwrap();
+    drop(journal);
+
+    let text = fs::read_to_string(journal_file(dir.path(), &base)).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].contains(r#""units_per_em":2048"#), "{}", lines[0]);
+    // A record that does not change it leaves the field out, as records
+    // written before the field existed do.
+    assert!(!lines[1].contains("units_per_em"), "{}", lines[1]);
+
+    let records = replay(dir.path(), base.id).unwrap();
+    assert_eq!(records[0].units_per_em, Some(2048));
+    assert_eq!(records[1].units_per_em, None);
+    let font = apply_records(base.clone(), &records).unwrap();
+    assert_eq!(font.units_per_em, 2048);
+    assert_eq!(font.info, base.info);
+    let unchanged = apply_records(base.clone(), &records[1..]).unwrap();
+    assert_eq!(unchanged.units_per_em, base.units_per_em);
 }
 
 // ---------------------------------------------------------------------------

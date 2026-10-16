@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use forma_model::Font;
 use thiserror::Error;
 
+pub use atomic::write_file_atomic;
 pub use canonical::{to_canonical_json, try_to_canonical_json};
 pub use filenames::glyph_file_name;
 pub use journal::{Journal, JournalRecord, apply_records, remove as remove_journal, replay};

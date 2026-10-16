@@ -631,9 +631,6 @@ fn dry_run_on_non_destructive_returns_committable_plan() {
     for name in PLANNABLE {
         let spec = forma_engine::find(name).expect("registered");
         let schema = (spec.input_schema)();
-        if name == "export_font" && schema.get("properties").is_none() {
-            continue; // Still a placeholder (Task 16).
-        }
         let dry_run = &schema["properties"]["dry_run"];
         assert_eq!(dry_run["type"], json!("boolean"), "{name}: {schema}");
         assert_eq!(dry_run["default"], json!(false), "{name}");
@@ -1410,6 +1407,7 @@ fn descriptions_do_not_promise_approval_unconditionally() {
         "contour_edit",
         "history_revert",
         "history_restore",
+        "export_font",
     ] {
         let spec = forma_engine::find(name).expect("registered");
         assert!(

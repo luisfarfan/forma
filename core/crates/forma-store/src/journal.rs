@@ -57,6 +57,12 @@ pub struct JournalRecord {
     pub label: String,
     /// The new font information, if the edit changed it.
     pub font_info: Option<FontInfo>,
+    /// The new units per em, when the edit changed the font information (the
+    /// units per em are part of it as far as edits are concerned). Absent
+    /// from the line when `None`, so records written before this field
+    /// existed read back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units_per_em: Option<u16>,
     /// The new list of masters, if the edit changed it.
     pub masters: Option<Vec<Master>>,
     /// The new glyph order, if the edit changed it.
@@ -279,10 +285,10 @@ pub fn remove(dir: &Path, font_id: FontId) -> Result<(), StoreError> {
 /// Applies `recs`, oldest first, over `base` (normally the last saved file)
 /// and returns the font as it was at the last record.
 ///
-/// Per record: a present `font_info`, `masters` or `glyph_order` replaces the
-/// font's; a glyph with `Some` state is inserted or replaced and one with
-/// `None` is removed. Other parts of the font (units per em, `lib`) are never
-/// touched by a record and stay as they are in `base`.
+/// Per record: a present `font_info`, `units_per_em`, `masters` or
+/// `glyph_order` replaces the font's; a glyph with `Some` state is inserted
+/// or replaced and one with `None` is removed. Other parts of the font (its
+/// id, `lib`) are never touched by a record and stay as they are in `base`.
 ///
 /// The records are only trusted once the result checks out: it is validated
 /// with [`Font::validate_invariants`] after the last record (an edit that
@@ -298,6 +304,9 @@ pub fn apply_records(base: Font, recs: &[JournalRecord]) -> Result<Font, StoreEr
     for rec in recs {
         if let Some(info) = &rec.font_info {
             font.info = info.clone();
+        }
+        if let Some(units) = rec.units_per_em {
+            font.units_per_em = units;
         }
         if let Some(masters) = &rec.masters {
             font.masters = masters.clone();

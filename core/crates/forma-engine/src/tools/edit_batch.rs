@@ -42,11 +42,13 @@ pub(crate) const SPEC: CommandSpec = CommandSpec {
          nodes_edit, metrics_set or geometry_fix, and `args` are that tool's arguments without \
          `doc` and `base_rev`. Operations run in order, each on the result of the previous \
          ones. A failing operation is named by `details.op_index` (from 0). At most 2000 \
-         operations.",
+         operations. A batch that destroys data (as glyph_delete does) or touches more than \
+         20 glyphs may require approval depending on the server policy (APPROVAL_REQUIRED \
+         with a plan to confirm; with `dry_run: true` the call only returns the plan).",
         base_rev_note!()
     ),
     toolset: Toolset::Core,
-    effects: Effects::WRITE,
+    effects: Effects::DESTRUCTIVE,
     output: OutputKind::Json,
     input_schema: schema_of::<EditBatchArgs>,
     output_schema: Some(schema_of::<OrPlan<MutationResult>>),

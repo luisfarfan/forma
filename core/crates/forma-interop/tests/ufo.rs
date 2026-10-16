@@ -633,8 +633,15 @@ fn unwritable_parent_leaves_an_existing_ufo_untouched() {
     }
 
     let error = write_ufo(&font, font.default_master().id, &dir).expect_err("must fail");
+    // A file system failure inside the UFO library is an I/O error, described
+    // with the library's message and the cause.
     match error {
-        InteropError::Norad(message) => assert!(message.contains("Permission denied"), "{message}"),
+        InteropError::Io(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            let message = error.to_string();
+            assert!(message.contains("Permission denied"), "{message}");
+            assert!(message.contains("failed to"), "{message}");
+        }
         other => panic!("unexpected error {other:?}"),
     }
     assert_eq!(

@@ -50,7 +50,7 @@ pub(crate) const CONTOUR_EDIT: CommandSpec = CommandSpec {
         base_rev_note!()
     ),
     toolset: Toolset::Glyphs,
-    effects: Effects::WRITE,
+    effects: Effects::DESTRUCTIVE,
     output: OutputKind::Json,
     input_schema: schema_of::<ContourEditArgs>,
     output_schema: Some(schema_of::<OrPlan<MutationResult>>),

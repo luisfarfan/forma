@@ -13,8 +13,8 @@ use forma_model::Actor;
 use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::tools::{
-    capabilities, document, edit_batch, font, geometry, glyphs, history, metrics, outlines,
-    placeholders, plans,
+    capabilities, document, edit_batch, export, font, geometry, glyphs, history, metrics, outlines,
+    plans, preview, quality,
 };
 
 /// A group of related tools that a facade can enable or disable together.
@@ -188,13 +188,13 @@ static REGISTRY: [CommandSpec; 35] = [
     metrics::GET,
     metrics::SET,
     // quality
-    placeholders::VALIDATE,
+    quality::VALIDATE,
     // export
-    placeholders::EXPORT_FONT,
+    export::EXPORT_FONT,
     // preview
-    placeholders::PREVIEW_GLYPH,
-    placeholders::PREVIEW_TEXT,
-    placeholders::PREVIEW_COMPARE,
+    preview::GLYPH,
+    preview::TEXT,
+    preview::COMPARE,
     // history
     history::LIST,
     history::UNDO,
@@ -226,8 +226,8 @@ pub fn schema_of<T: JsonSchema>() -> Value {
     schema
 }
 
-/// `{"type": "object"}`: the schema of a tool whose arguments are not
-/// declared yet.
+/// `{"type": "object"}`: a schema that accepts any object (no registered
+/// tool uses it; every one declares its arguments).
 #[must_use]
 pub fn any_object_schema() -> Value {
     serde_json::json!({ "type": "object" })

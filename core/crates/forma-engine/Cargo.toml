@@ -11,6 +11,11 @@ forma-model = { path = "../forma-model" }
 forma-edit = { path = "../forma-edit" }
 forma-geometry = { path = "../forma-geometry" }
 forma-store = { path = "../forma-store" }
+# validate, export_font and the previews.
+forma-validate = { path = "../forma-validate" }
+forma-compile = { path = "../forma-compile" }
+forma-interop = { path = "../forma-interop" }
+forma-render = { path = "../forma-render" }
 # Opaque pagination cursors (and, from Task 15, plan tokens).
 base64 = { workspace = true }
 # Canonical paths without Windows `\\?\` prefixes, for the allowed-roots sandbox.

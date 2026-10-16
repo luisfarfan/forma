@@ -407,6 +407,14 @@ impl PlanStore {
         result
     }
 
+    /// The document of the pending plan of `token`, if the token is valid for
+    /// `actor` (expired or not); the plan stays in the store. For the audit
+    /// log of `plan_commit`.
+    pub(crate) fn doc_of(&self, token: &str, actor: &Actor) -> Option<DocHandle> {
+        let id = self.verify(token, actor).ok()?;
+        self.plans.get(&id).map(|plan| plan.doc.clone())
+    }
+
     /// Drops every plan of the document `doc`.
     pub(crate) fn remove_doc(&mut self, doc: &DocHandle) {
         self.plans.retain(|_, plan| plan.doc != *doc);

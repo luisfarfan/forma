@@ -913,7 +913,8 @@ fn geometry_fix_noop_returns_same_rev() {
     );
     assert_eq!(
         fixed,
-        json!({ "rev": 1, "tx": null, "touched": [], "fixed": 0 })
+        json!({ "rev": 1, "tx": null, "touched": [], "touched_count": 0,
+                "touched_truncated": false, "fixed": 0 })
     );
     assert_eq!(rev_of(&mut engine, &doc), 1);
 
@@ -923,7 +924,11 @@ fn geometry_fix_noop_returns_same_rev() {
         "edit_batch",
         json!({ "doc": doc, "base_rev": 1, "ops": [{ "tool": "geometry_fix", "args": {} }] }),
     );
-    assert_eq!(batch, json!({ "rev": 1, "tx": null, "touched": [] }));
+    assert_eq!(
+        batch,
+        json!({ "rev": 1, "tx": null, "touched": [], "touched_count": 0,
+                "touched_truncated": false })
+    );
     assert_eq!(rev_of(&mut engine, &doc), 1);
 }
 
@@ -1217,7 +1222,11 @@ fn font_info_and_vertical_metrics() {
         json!({ "doc": doc, "base_rev": 0, "family_name": "Renamed", "designer": "Ana",
                 "version_major": 2, "units_per_em": 2048 }),
     );
-    assert_eq!(done, json!({ "rev": 1, "tx": 1, "touched": ["font_info"] }));
+    assert_eq!(
+        done,
+        json!({ "rev": 1, "tx": 1, "touched": ["font_info"], "touched_count": 1,
+                "touched_truncated": false })
+    );
     let inspect = ok(&mut engine, "document_inspect", json!({ "doc": doc }));
     assert_eq!(inspect["info"]["family_name"], json!("Renamed"));
     assert_eq!(inspect["info"]["designer"], json!("Ana"));
@@ -1524,7 +1533,7 @@ fn mutating_schemas_are_flat_and_strict() {
         let required = input["required"].as_array().expect("required");
         assert_eq!(&required[..2], [json!("doc"), json!("base_rev")], "{name}");
         let output = spec.output_schema.expect("output schema")();
-        for field in ["rev", "tx", "touched"] {
+        for field in ["rev", "tx", "touched", "touched_count", "touched_truncated"] {
             assert!(output["properties"][field].is_object(), "{name}: {output}");
         }
     }

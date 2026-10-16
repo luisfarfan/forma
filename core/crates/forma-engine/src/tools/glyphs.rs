@@ -276,8 +276,16 @@ pub struct GlyphCreateResult {
     pub rev: u64,
     /// The transaction id of the change.
     pub tx: Option<u64>,
-    /// The entities the change touched.
+    /// The entities the change touched, at most 100 of them.
     pub touched: Vec<EntityKey>,
+    /// How many entities the change touched.
+    pub touched_count: usize,
+    /// Whether `touched` lists only the first 100 of them.
+    pub touched_truncated: bool,
+    /// Present when the change could not be kept in the crash-recovery
+    /// journal: what went wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_warning: Option<String>,
     /// The new glyph.
     pub glyph: CreatedGlyph,
 }
@@ -542,6 +550,9 @@ fn glyph_create(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
             rev: result.rev,
             tx: result.tx,
             touched: result.touched,
+            touched_count: result.touched_count,
+            touched_truncated: result.touched_truncated,
+            journal_warning: result.journal_warning,
             glyph,
         })
     })

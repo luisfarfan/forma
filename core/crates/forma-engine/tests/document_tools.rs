@@ -63,14 +63,6 @@ fn write_font(path: &Path, family: &str) {
     forma_store::save(&Font::new(family, 1000), path).expect("save fixture");
 }
 
-const PLACEHOLDERS: [&str; 5] = [
-    "validate",
-    "export_font",
-    "preview_glyph",
-    "preview_text",
-    "preview_compare",
-];
-
 // ----------------------------------------------------------------- registry
 
 #[test]
@@ -181,6 +173,8 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "history_revert",
         "history_restore",
         "document_diff",
+        "validate",
+        "export_font",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");
@@ -196,6 +190,14 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         assert_eq!(output["type"], json!("object"), "{name}: {output}");
         assert!(output.get("$schema").is_none(), "{name}: $schema kept");
     }
+    // Image tools declare their arguments too, and no result schema.
+    for name in ["preview_glyph", "preview_text", "preview_compare"] {
+        let spec = forma_engine::find(name).expect("registered");
+        let input = (spec.input_schema)();
+        assert_eq!(input["additionalProperties"], json!(false), "{name}");
+        assert!(spec.output_schema.is_none(), "{name}");
+    }
+    assert_eq!(implemented.len() + 3, registry().len());
     let create = (forma_engine::find("document_create")
         .expect("registered")
         .input_schema)();
@@ -248,11 +250,20 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "history_list",
         "document_diff",
     ];
+    // Every tool that can require approval for being destructive (MCP's
+    // "may perform destructive updates"); the engine enforces approvals
+    // itself, by measuring each call.
     let destructive = [
+        "document_save",
+        "document_close",
+        "edit_batch",
+        "plan_commit",
         "glyph_delete",
         "glyph_set_outline",
+        "contour_edit",
+        "export_font",
+        "history_revert",
         "history_restore",
-        "plan_commit",
     ];
     let images = ["preview_glyph", "preview_text", "preview_compare"];
     for spec in registry() {
@@ -300,8 +311,8 @@ fn descriptions_are_bounded_and_mutating_tools_explain_base_rev() {
             assert!(spec.description.contains("base_rev"), "{name}: base_rev");
         }
     }
-    // The placeholders of mutating tools that will take `base_rev` already
-    // explain it.
+    // Mutating tools that take `base_rev` explain the conflict it guards
+    // against.
     for name in [
         "font_set_info",
         "glyph_create",
@@ -310,24 +321,6 @@ fn descriptions_are_bounded_and_mutating_tools_explain_base_rev() {
     ] {
         let spec = forma_engine::find(name).expect("registered");
         assert!(spec.description.contains("REVISION_CONFLICT"), "{name}");
-    }
-}
-
-#[test]
-fn placeholder_tools_return_unsupported() {
-    let root = TempDir::new().expect("tempdir");
-    let mut engine = engine_with(&[root.path()]);
-    for name in PLACEHOLDERS {
-        let error = err(&mut engine, name, json!({}));
-        assert_eq!(
-            error,
-            ToolError {
-                code: ErrorCode::Unsupported,
-                message: "not implemented yet".into(),
-                details: Value::Null,
-            },
-            "{name}"
-        );
     }
 }
 

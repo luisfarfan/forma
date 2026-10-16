@@ -175,8 +175,16 @@ pub struct GeometryFixResult {
     /// The transaction id of the change, or `null` when nothing needed
     /// fixing.
     pub tx: Option<u64>,
-    /// The glyphs the fixes changed.
+    /// The glyphs the fixes changed, at most 100 of them.
     pub touched: Vec<EntityKey>,
+    /// How many glyphs the fixes changed.
+    pub touched_count: usize,
+    /// Whether `touched` lists only the first 100 of them.
+    pub touched_truncated: bool,
+    /// Present when the change could not be kept in the crash-recovery
+    /// journal: what went wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_warning: Option<String>,
     /// The number of fixable issues of the requested kinds found before the
     /// fix.
     pub fixed: usize,
@@ -304,6 +312,9 @@ fn geometry_fix(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
             rev: result.rev,
             tx: result.tx,
             touched: result.touched,
+            touched_count: result.touched_count,
+            touched_truncated: result.touched_truncated,
+            journal_warning: result.journal_warning,
             fixed,
         })
     })

@@ -37,8 +37,9 @@ pub(crate) fn build(font: &Font) -> Result<Vec<u8>, CompileError> {
 ///
 /// The preflight has already rejected every font that `write_ufo` refuses
 /// (missing layers, invalid names, code points or contours), so what is left is
-/// the file system. norad reports its write failures as text
-/// ([`InteropError::Norad`]); they are I/O failures too.
+/// the file system: [`InteropError::Io`], and the rare write failure of norad
+/// that has no file system cause ([`InteropError::Norad`]), which is treated
+/// as an I/O failure too.
 fn ufo_error(error: InteropError) -> CompileError {
     match error {
         InteropError::Io(error) => CompileError::Io(error),

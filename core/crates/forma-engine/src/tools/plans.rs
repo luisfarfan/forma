@@ -646,7 +646,10 @@ mod tests {
         assert_eq!(schema["required"], json!(["rev"]));
         assert_eq!(
             schema["oneOf"],
-            json!([{ "required": ["rev", "touched"] }, { "required": ["rev", "plan"] }])
+            json!([
+                { "required": ["rev", "touched", "touched_count", "touched_truncated"] },
+                { "required": ["rev", "plan"] }
+            ])
         );
         assert_eq!(schema["properties"]["plan"]["$ref"], json!("#/$defs/Plan"));
         assert!(schema["$defs"]["Plan"]["properties"]["diff"].is_object());
