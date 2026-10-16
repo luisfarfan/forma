@@ -49,8 +49,9 @@ struct Step {
 ///
 /// Commits, reverts and restores are undoable. An actor can only undo the
 /// last undoable change of the document, and only when it made that change;
-/// other changes are taken back with [`Document::revert`], which restores the
-/// entities of one transaction as long as nobody changed them since.
+/// any other entry of the history is taken back with [`Document::revert`],
+/// which restores the entities of one transaction as long as nobody changed
+/// them since.
 #[derive(Clone)]
 pub struct Document {
     /// The current state; always the last element of `snapshots`.
@@ -281,9 +282,14 @@ impl Document {
         Ok(outcome)
     }
 
-    /// Takes back the transaction `tx` (a commit, revert or restore) by
-    /// setting each entity it touched back to its value before it, as a new
-    /// undoable revision by `actor`.
+    /// Takes back the transaction `tx` by setting each entity it touched back
+    /// to its value right before it, as a new undoable revision by `actor`.
+    ///
+    /// Any history entry can be reverted: reverting a commit, revert or
+    /// restore takes that change back, reverting an undo re-applies what was
+    /// undone, and reverting a redo takes the redone change back again. This
+    /// is how an actor takes back a change it cannot [`undo`](Self::undo)
+    /// because another actor made it.
     ///
     /// Glyphs the transaction created are removed and glyphs it deleted come
     /// back. The glyph order is reconciled rather than copied: glyphs that no
@@ -294,9 +300,9 @@ impl Document {
     /// # Errors
     ///
     /// * [`EditError::NotFound`] if there is no transaction `tx`.
-    /// * [`EditError::InvalidArgument`] if `tx` is an undo or a redo, or if
-    ///   the result would break a font invariant (for example, a restored
-    ///   glyph whose name or code point has been taken since).
+    /// * [`EditError::InvalidArgument`] if the result would break a font
+    ///   invariant (for example, a restored glyph whose name or code point has
+    ///   been taken since).
     /// * [`EditError::Conflict`] if any entity of `tx` other than the glyph
     ///   order changed after `tx`.
     pub fn revert(&mut self, actor: &Actor, tx: TxId) -> Result<TxOutcome, EditError> {
@@ -306,16 +312,6 @@ impl Document {
             .ok()
             .and_then(|index| self.history.get(index))
             .ok_or_else(|| EditError::NotFound(format!("transaction {tx}")))?;
-        if !entry.kind.is_undoable() {
-            let what = if entry.kind == EntryKind::Undo {
-                "an undo"
-            } else {
-                "a redo"
-            };
-            return Err(EditError::InvalidArgument(format!(
-                "transaction {tx} is {what}; only commits, reverts and restores can be reverted"
-            )));
-        }
         let (target_rev, touched) = (entry.rev, entry.touched.clone());
         let label = format!("Revert tx {tx}: {}", entry.label);
 

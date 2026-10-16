@@ -43,14 +43,6 @@ pub enum EntryKind {
     Restore,
 }
 
-impl EntryKind {
-    /// Whether entries of this kind go on the undo stack and can be reverted.
-    #[must_use]
-    pub fn is_undoable(self) -> bool {
-        matches!(self, Self::Commit | Self::Revert | Self::Restore)
-    }
-}
-
 /// One change of state of a document, attributed to the actor who made it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryEntry {

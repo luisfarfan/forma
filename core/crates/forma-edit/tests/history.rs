@@ -310,19 +310,58 @@ fn revert_restores_font_info_and_vertical_metrics() {
 }
 
 #[test]
-fn revert_rejects_unknown_and_non_revertible_transactions() {
+fn revert_rejects_an_unknown_transaction() {
     let mut doc = new_doc();
     let err = doc.revert(&user(), TxId(99)).unwrap_err();
     assert!(matches!(err, EditError::NotFound(_)), "{err:?}");
+    assert_eq!(doc.rev(), Rev(0));
+}
 
+#[test]
+fn revert_of_a_redo_restores_the_pre_commit_state() {
+    let mut doc = new_doc();
+    let original = Arc::clone(doc.font());
+    let a = key(&doc, "A");
+    commit(&mut doc, &user(), "Widen A", vec![advance("A", 650.0)]);
+    doc.undo(&user()).expect("undoes");
+    let redo = doc.redo(&user()).expect("redoes");
+    assert_eq!(width(&doc, "A"), 650.0);
+
+    // Another actor takes the redone change back.
+    let out = doc.revert(&agent(), redo.tx).expect("reverts the redo");
+    assert_eq!(out.rev, Rev(4));
+    assert_eq!(out.touched, BTreeSet::from([a]));
+    assert_eq!(**doc.font(), *original);
+    let entry = doc.last_entry().unwrap();
+    assert_eq!(entry.kind, EntryKind::Revert);
+    assert_eq!(entry.actor, agent());
+}
+
+#[test]
+fn revert_of_an_undo_reapplies_the_commit() {
+    let mut doc = new_doc();
+    commit(&mut doc, &user(), "Widen A", vec![advance("A", 650.0)]);
+    let committed = Arc::clone(doc.font());
+    let undo = doc.undo(&user()).expect("undoes");
+    assert_eq!(width(&doc, "A"), 600.0);
+
+    let out = doc.revert(&agent(), undo.tx).expect("reverts the undo");
+    assert_eq!(out.rev, Rev(3));
+    assert_eq!(**doc.font(), *committed);
+    assert_eq!(doc.last_entry().unwrap().kind, EntryKind::Revert);
+}
+
+#[test]
+fn revert_of_an_undo_conflicts_when_entity_changed_later() {
+    let mut doc = new_doc();
+    let a = key(&doc, "A");
     commit(&mut doc, &user(), "Widen A", vec![advance("A", 650.0)]);
     let undo = doc.undo(&user()).expect("undoes");
-    let err = doc.revert(&user(), undo.tx).unwrap_err();
-    assert!(matches!(err, EditError::InvalidArgument(_)), "{err:?}");
-    let redo = doc.redo(&user()).expect("redoes");
-    let err = doc.revert(&user(), redo.tx).unwrap_err();
-    assert!(matches!(err, EditError::InvalidArgument(_)), "{err:?}");
-    assert_eq!(doc.rev(), Rev(3));
+    commit(&mut doc, &agent(), "Narrow A", vec![advance("A", 550.0)]);
+
+    let info = conflict(doc.revert(&user(), undo.tx).unwrap_err());
+    assert_eq!(info.conflicts, vec![(a, Rev(3), agent())]);
+    assert_eq!(width(&doc, "A"), 550.0);
 }
 
 #[test]
