@@ -14,9 +14,13 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request cancels the run it supersedes. A push to main or
+# hito1 gets a group of its own (the run id), so it is neither cancelled nor
+# dropped as a "pending" run behind another one: every commit there keeps its
+# own result.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -145,25 +149,31 @@ jobs:
           retention-days: 7
 
       # ---- MCP Inspector (Ubuntu only) ----
-      # The official client lists the tools of the release binary, as an
-      # external check that `forma mcp` speaks MCP. The binary is built with
-      # `-p forma-cli` alone: a `--workspace` build would unify the
-      # `test-no-fsync` feature of forma-store into it.
+      # The official client lists the tools of the release binary and calls
+      # one (`forma_capabilities`), as an external check that `forma mcp`
+      # speaks MCP and executes a tool. The binary is built with `-p forma-cli`
+      # alone: a `--workspace` build would unify the `test-no-fsync` feature of
+      # forma-store into it.
 
       - uses: actions/setup-node@v4
         if: runner.os == 'Linux'
         with:
           node-version: "24" # the Inspector needs Node >= 22.19
 
-      - name: MCP Inspector smoke run (tools/list)
+      - name: MCP Inspector smoke run (tools/list and tools/call)
         if: runner.os == 'Linux'
         run: |
           cargo build --release -p forma-cli --locked
+          forma="$GITHUB_WORKSPACE/core/target/release/forma"
           npx -y @modelcontextprotocol/inspector@2.11.0 --cli \
-            "$GITHUB_WORKSPACE/core/target/release/forma" mcp \
-            --allow-dir "$RUNNER_TEMP" --no-journal \
+            "$forma" mcp --allow-dir "$RUNNER_TEMP" --no-journal \
             --method tools/list > "$RUNNER_TEMP/tools-list.json"
           python -I -c 'import json, sys; names = [t["name"] for t in json.load(open(sys.argv[1]))["tools"]]; assert "forma_capabilities" in names, names; print(len(names), "tools listed")' "$RUNNER_TEMP/tools-list.json"
+          npx -y @modelcontextprotocol/inspector@2.11.0 --cli \
+            "$forma" mcp --allow-dir "$RUNNER_TEMP" --no-journal \
+            --method tools/call --tool-name forma_capabilities > "$RUNNER_TEMP/tools-call.json"
+          cat "$RUNNER_TEMP/tools-call.json"
+          python -I -c 'import json, sys; r = json.load(open(sys.argv[1])); assert r.get("isError") is False and "api_version" in r["structuredContent"], r; print("forma_capabilities answered, api_version", r["structuredContent"]["api_version"])' "$RUNNER_TEMP/tools-call.json"
 
       # ---- coverage (Ubuntu only) ----
       # Runs the whole workspace test suite instrumented, then requires 80 %
