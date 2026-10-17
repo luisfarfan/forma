@@ -1,0 +1,33 @@
+[package]
+name = "forma-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA document persistence: the .forma (SQLite) and .formapackage (canonical JSON) formats"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+# `float_roundtrip` makes parsing an f64 exact, so a saved coordinate always
+# loads back bit-for-bit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+# The crash-recovery journal file of a document is named by the SHA-256 of its
+# path (MIT OR Apache-2.0, RustCrypto; already used by forma-engine).
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[features]
+# TEST ONLY: skips every fsync. It exists so that this crate's own property
+# tests do not spend minutes flushing thousands of files, and is enabled only
+# by the self dev-dependency below, which Cargo applies to tests and never to a
+# regular or release build of the crate. A build with this feature can lose a
+# saved font on power failure; never enable it anywhere else.
+test-no-fsync = []
+
+[dev-dependencies]
+forma-store = { path = ".", features = ["test-no-fsync"] }
+proptest = { workspace = true }
+tempfile = { workspace = true }

@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The cargo-fuzz crate needs nightly; it has its own lockfile and is built by
+# .github/workflows/nightly.yml only.
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.99"
+
+[workspace.dependencies]
+fontc = "1.0.0"
+# Official MCP Rust SDK. No default features: the macros are not used (FORMA's tools
+# are generated from the command registry at runtime); each crate enables what it needs.
+rmcp = { version = "3.5.1", default-features = false }
+norad = "0.19.2"
+kurbo = "0.13.1"
+vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "png", "u8_pipeline"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+schemars = { version = "1.2.3", features = ["uuid1"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = "1.0.154"
+tokio = { version = "1.53.3", features = ["full"] }
+ttf2woff2 = { version = "0.14.0", default-features = false }
+woff2-patched = "0.4.0"
+read-fonts = "0.43.3"
+thiserror = "2.0.21"
+# Structured logging facade; only `std` (no proc-macro attributes).
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+# The `forma` binary's stderr subscriber (`FORMA_LOG` filter); no ANSI colors.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "env-filter"] }
+# OS-conventional data directory (the default crash-recovery journal folder).
+directories = "6.0.0"
+uuid = { version = "1.28.0", features = ["v4", "serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+proptest = "1.12.0"
+insta = { version = "1.49.0", features = ["json"] }
+tempfile = "3.27.0"
+hmac = "0.13.0"
+sha2 = "0.11.1"
+dunce = "1.0.5"
+base64 = "0.23.1"
+getrandom = "0.4.3"
+anyhow = "1.0.104"
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+rstest = "0.27.0"
+# TEST ONLY: validates tool results against their output schemas (MIT; no
+# default features: no HTTP or file resolution of references).
+jsonschema = { version = "0.58.6", default-features = false }

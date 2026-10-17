@@ -96,7 +96,8 @@ pub struct CommandSpec {
 - **Todo resultado de lectura incluye `rev`.** **Toda herramienta mutante exige `base_rev`.**
 - **Control de concurrencia optimista por entidad:**
   - Si las entidades que toca el comando no cambiaron desde `base_rev`, se aplica (rebase automático, aunque el documento haya avanzado por cambios en *otras* entidades).
-  - Si alguna cambió, devuelve `isError: true` con `{"code":"REVISION_CONFLICT","current_rev":…,"conflicts":[{"entity":"glyph:a","changed_at_rev":…,"by":"user"}]}`. El agente debe releer y reintentar.
+  - Si alguna cambió, devuelve `isError: true` con `{"code":"REVISION_CONFLICT","message":"…","details":{"current_rev":…,"conflicts":[{"entity":"glyph:<id>","rev":…,"actor":"user","name":"a"}]}}`: `entity` es la clave de la entidad, `rev` la revisión de su último cambio, `actor` quién lo hizo y, si es un glifo, `name` su nombre actual (o el que tenía antes de borrarse). El agente debe releer y reintentar.
+  - Lo mismo ocurre si la llamada nombra un glifo que existía en `base_rev` y otro actor renombró o borró después: `REVISION_CONFLICT` sobre ese glifo, no `NOT_FOUND`.
 - Esto impide que un agente sobrescriba cambios recientes del usuario (ni de otro agente), sin bloquear la edición concurrente de entidades distintas.
 - **Atribución:** cada transacción registra su actor (`user`, `agent:<clientInfo.name>`, `script`, `plugin:<id>`) y una etiqueta legible. La UI muestra la autoría en el historial y puede resaltar cambios recientes de agentes.
 

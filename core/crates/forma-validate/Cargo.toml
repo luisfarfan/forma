@@ -1,0 +1,18 @@
+[package]
+name = "forma-validate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA validation: model and compiled-binary checks behind a stable, machine-readable report"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+forma-geometry = { path = "../forma-geometry" }
+forma-compile = { path = "../forma-compile" }
+read-fonts = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

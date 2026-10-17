@@ -1,0 +1,38 @@
+[package]
+name = "forma-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA command registry, document lifecycle and path sandbox shared by every facade (MCP, CLI, UI, agent)"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+forma-edit = { path = "../forma-edit" }
+forma-geometry = { path = "../forma-geometry" }
+forma-store = { path = "../forma-store" }
+# validate, export_font and the previews.
+forma-validate = { path = "../forma-validate" }
+forma-compile = { path = "../forma-compile" }
+forma-interop = { path = "../forma-interop" }
+forma-render = { path = "../forma-render" }
+# Opaque pagination cursors (and, from Task 15, plan tokens).
+base64 = { workspace = true }
+# Canonical paths without Windows `\\?\` prefixes, for the allowed-roots sandbox.
+dunce = { workspace = true }
+# Approval plans: the per-process key and plan ids (getrandom), signed tokens
+# (HMAC-SHA256) and argument digests (SHA-256).
+getrandom = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# Only to construct SQLite errors in the error-mapping tests.
+rusqlite = { workspace = true }
+tempfile = { workspace = true }

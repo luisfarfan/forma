@@ -252,6 +252,7 @@ sequenceDiagram
   `forma mcp` detecta el endpoint y actúa como **proxy**, de modo que el agente edita el mismo documento en vivo.
 - **Sin app:** `forma mcp` (o la CLI) aloja el motor en su propio proceso. Es el modo headless de CI y del Hito 1.
 - Si el documento está bloqueado por un proceso sin IPC, se abre **solo lectura**.
+- *Hito 1:* el bloqueo es `File::try_lock` sobre `<datos de la app>/locks/<sha256 de la ruta canónica>.lock` (configurable con `EngineConfig::lock_dir`, `--lock-dir` o `FORMA_LOCK_DIR`); el diario de recuperación se nombra por fuente y ruta, y solo lo toca quien tiene el bloqueo (ADR 0004).
 - **Protocolo IPC:** los mismos sobres JSON del registro de comandos (no hay una segunda API que mantener). Detalle en `07-mcp-ai-architecture.md §3`.
 
 ## 8. Persistencia, autosave y recuperación
@@ -365,7 +366,7 @@ forma/
   .github/workflows/    # CI con matriz macOS · Windows · Ubuntu 24.04
 ```
 
-## 15. ADRs iniciales (se crean al aprobar el Hito 1)
+## 15. ADRs iniciales (0001–0007 están en `docs/adr/`; el 0008 espera al spike del Hito 2)
 
 | ADR | Decisión |
 |---|---|
@@ -374,6 +375,6 @@ forma/
 | 0003 | Documento inmutable con revisiones por entidad; concurrencia optimista; historial por snapshots con actores |
 | 0004 | Formatos `.forma` (SQLite) y `.formapackage` (carpeta) con esquema de entidades común |
 | 0005 | MCP con rmcp, stdio, ambas eras del protocolo; planes y tokens de aprobación |
-| 0006 | Compilación con fontc mediante designspace+UFO intermedios; fontmake como oráculo |
+| 0006 | Compilación con fontc mediante UFO intermedio (designspace con varios masters); fontmake como oráculo. Validación propia en el producto; OTS, fontspector y HarfBuzz como oráculos de CI en el Hito 1 |
 | 0007 | Política de ingeniería inversa y sala limpia |
 | 0008 | Toolkit de UI (tras el spike del Hito 2) y modelo de licencia correspondiente |

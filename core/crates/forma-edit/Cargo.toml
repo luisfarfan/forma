@@ -1,0 +1,19 @@
+[package]
+name = "forma-edit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA typed edit commands, documents, revisions and history"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+forma-geometry = { path = "../forma-geometry" }
+kurbo = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }

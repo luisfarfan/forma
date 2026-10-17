@@ -1,0 +1,16 @@
+[package]
+name = "forma-interop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA interchange with other font tools: UFO export"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+norad = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

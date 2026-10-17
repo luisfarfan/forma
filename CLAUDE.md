@@ -4,7 +4,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 
 **FORMA es open source, sin fines comerciales, bajo `MIT OR Apache-2.0`.**
 
-**Estado: Hito 1 aprobado y en curso** (núcleo headless + MCP + CLI en 3 SO; ver `docs/04-roadmap.md`).
+**Estado: Hito 1 completado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`): CI en verde en macOS, Windows y Ubuntu (PR #1, 2026-10-17). Falta la primera ejecución del fuzzing nocturno, que solo corre desde `main`. **El Hito 2 requiere aprobación.** Repositorio público: `github.com/luisfarfan/forma`.
 - **Aprobado:** Rust como núcleo, licencia MIT OR Apache-2.0, Hito 1, instalación justificada de sus dependencias.
 - **No aprobado aún:** el toolkit de UI. No construyas el editor gráfico ni instales Qt o Slint hasta aprobar el Hito 2.
 
@@ -21,7 +21,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 ## Nombres y formatos
 - Producto: **FORMA**. Repositorio: `forma`. Crates: `forma-*`. Binario: `forma` (subcomandos, incluido `forma mcp`).
 - Documento nativo: **`.forma`** (archivo único SQLite) y **`.formapackage`** (carpeta con JSON canónico, pensada para git). Conversión con `forma pack` / `forma unpack`.
-- ⚠ La marca FORMA tiene un riesgo legal pendiente de revisión (ver `docs/06-risks.md`, L7). No uses el nombre en comunicaciones públicas hasta que el responsable lo autorice.
+- ⚠ La marca FORMA tiene un riesgo legal pendiente de revisión (ver `docs/06-risks.md`, L7). El responsable autorizó publicar el repositorio (2026-10-17); anuncios, releases y logotipos siguen pendientes de esa revisión.
 
 ## Stack (resumen; detalle en 02)
 - **Núcleo:** Rust, workspace en `core/`. Crates principales:
@@ -96,8 +96,9 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 - Si un cambio contradice `docs/03-architecture.md` o `docs/07-mcp-ai-architecture.md`, propón un ADR y pide aprobación.
 - IA en el producto: las propuestas de IA son transacciones; nada se aplica sin pasar por el motor y sus políticas. La IA es opt-in y es transparente sobre los datos que se envían. Ningún proveedor LLM es obligatorio.
 
-## Entorno conocido (2026-10-16, máquina del responsable)
+## Entorno conocido (2026-10-17, máquina del responsable)
 - macOS 27.0, Xcode 27.0, Swift 6.4, Node 24, HarfBuzz `hb-shape`.
 - REA 6.5.0, con Ghidra 12.1.4 y Hopper disponibles (uso restringido por la política).
-- **No instalados:** toolchain de Rust, fontTools/fontmake, fontc, OTS, fontspector, Qt, Slint.
-- La CI de los 3 SO se configura en el Hito 1.
+- Instalados para el Hito 1: rustup (toolchain fijada en `rust-toolchain.toml`), venv de oráculos en `tools/oracle/.venv` (fontTools, fontmake, opentype-sanitizer, uharfbuzz), fontspector, cargo-deny, cargo-llvm-cov y `forma` en `~/.cargo/bin`. `cargo` no está en el `PATH` de los shells no interactivos: usar `export PATH="$HOME/.cargo/bin:$PATH"`.
+- **No instalados:** Qt, Slint.
+- La CI de los 3 SO está en `.github/workflows/` (`ci.yml` en cada push y PR; `nightly.yml` con el fuzzing).

@@ -1,0 +1,42 @@
+[package]
+name = "forma-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The `forma` command-line tool: a thin facade over the FORMA command registry, plus the MCP server (`forma mcp`)"
+
+[[bin]]
+name = "forma"
+path = "src/main.rs"
+
+[dependencies]
+forma-engine = { path = "../forma-engine" }
+forma-mcp = { path = "../forma-mcp" }
+forma-model = { path = "../forma-model" }
+# `pack` and `unpack` are pure format conversions with no registry tool.
+forma-store = { path = "../forma-store" }
+clap = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+directories = { workspace = true }
+# The runtime of `forma mcp` (multi-thread: the engine runs on blocking threads).
+tokio = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+# The stdio MCP integration tests drive the real `forma mcp` binary with rmcp's own
+# client (both lifecycle eras) over its child-process transport.
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+# One test case per protocol era.
+rstest = { workspace = true }
+# Image results carry the PNG as base64.
+base64 = { workspace = true }
+# Reads the exported TTF (cmap, post names, hmtx) independently of the engine.
+read-fonts = { workspace = true }
+# Decodes the preview PNG (the same decoder forma-render's tests use).
+vello_cpu = { workspace = true }

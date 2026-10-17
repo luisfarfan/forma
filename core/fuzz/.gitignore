@@ -1,0 +1,6 @@
+# cargo-fuzz output: the evolving corpus, crashes and coverage. The inputs worth
+# keeping are copied into seeds/ by hand.
+target/
+corpus/
+artifacts/
+coverage/

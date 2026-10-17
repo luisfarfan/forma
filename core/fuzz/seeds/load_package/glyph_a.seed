@@ -1,0 +1,75 @@
+{
+  "export": true,
+  "id": "63337ea0-07ab-485e-8805-888c14937ceb",
+  "layers": {
+    "6ed423bf-085a-4e6b-b17b-08d4f0c77cfa": {
+      "advance_width": 600.0,
+      "paths": [
+        {
+          "closed": true,
+          "id": 0,
+          "nodes": [
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 100.0,
+              "y": 0.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 500.0,
+              "y": 0.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 500.0,
+              "y": 700.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 100.0,
+              "y": 700.0
+            }
+          ]
+        },
+        {
+          "closed": true,
+          "id": 1,
+          "nodes": [
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 200.0,
+              "y": 100.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 200.0,
+              "y": 600.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 400.0,
+              "y": 600.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 400.0,
+              "y": 100.0
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "name": "A",
+  "unicodes": [
+    65
+  ]
+}
