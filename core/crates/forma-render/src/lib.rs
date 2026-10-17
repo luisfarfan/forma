@@ -8,6 +8,8 @@
 //! * [`glyph_png`] and [`glyph_svg`] draw one glyph, optionally with metric
 //!   guides and nodes;
 //! * [`text_png`] lays out a line of text with the font's cmap and advances;
+//! * [`coverage_mask`] and [`mask_iou`] rasterize outlines to numeric
+//!   coverage and compare them;
 //! * [`compare_png`] overlays two versions of a glyph.
 //!
 //! Outlines are filled with the non-zero winding rule, like font rasterizers
@@ -19,11 +21,13 @@
 mod compare;
 mod draw;
 mod glyph;
+mod mask;
 mod svg;
 mod text;
 
 pub use compare::compare_png;
 pub use glyph::glyph_png;
+pub use mask::{MAX_MASK_PIXELS, Mask, coverage_mask, mask_iou};
 pub use svg::glyph_svg;
 pub use text::text_png;
 

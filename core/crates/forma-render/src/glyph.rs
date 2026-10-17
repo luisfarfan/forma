@@ -3,7 +3,8 @@
 use forma_model::{Font, Glyph, MasterId};
 
 use crate::draw::{
-    BLACK, Canvas, Frame, check_size, draw_metrics, draw_nodes, layer_of, metrics_of, outline,
+    BLACK, Canvas, Frame, check_size, draw_metrics, draw_nodes, flat_paths, layer_of, metrics_of,
+    outline,
 };
 use crate::{PreviewOptions, RenderError};
 
@@ -17,6 +18,10 @@ use crate::{PreviewOptions, RenderError};
 /// ascender and descender are unusable (not finite, or the ascender is not
 /// above the descender), proportional metrics are used instead: ascender 80%
 /// and descender -20% of the units per em.
+///
+/// Components are expanded, so a composite glyph is drawn as it looks. Nodes
+/// (with `show_nodes`) are drawn only for the glyph's own contours: the
+/// nodes of a component belong to its base glyph and would mislead here.
 ///
 /// # Errors
 ///
@@ -34,7 +39,7 @@ pub fn glyph_png(
 ) -> Result<Vec<u8>, RenderError> {
     let size = check_size(opts.size)?;
     let layer = layer_of(glyph, master)?;
-    let path = outline(&glyph.name, layer)?;
+    let path = outline(&glyph.name, &flat_paths(font, glyph, master)?)?;
 
     let metrics = metrics_of(font, Some(master));
     let frame = Frame::new(&metrics, layer.advance_width, size)?;

@@ -9,9 +9,13 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use forma_geometry::path_to_svg;
-use forma_model::{Font, Glyph, GlyphId, Layer, MasterId, Node, NodeKind, Path, PathId};
+use forma_model::{
+    Component, Font, Glyph, GlyphId, KernRef, Layer, MasterId, Node, NodeKind, Path, PathId,
+    Transform,
+};
 use forma_render::{
-    DEFAULT_SIZE, PreviewOptions, RenderError, compare_png, glyph_png, glyph_svg, text_png,
+    DEFAULT_SIZE, Mask, PreviewOptions, RenderError, compare_png, coverage_mask, glyph_png,
+    glyph_svg, mask_iou, text_png,
 };
 use vello_cpu::Pixmap;
 
@@ -770,4 +774,193 @@ fn normal_fonts_still_render() {
         assert_eq!(png_size(&text).1, 64);
         assert!(dark_fraction(&text) > 0.0, "upm {upm}: text is drawn");
     }
+}
+
+// ------------------------------------------------- components, kerning, masks
+
+fn with_components(font: &Font, name: &str, advance: f64, components: Vec<Component>) -> Glyph {
+    let mut g = glyph(font, name, &[], advance, Vec::new());
+    let m = font.masters[0].id;
+    if let Some(layer) = g.layers.get_mut(&m) {
+        layer.components = components;
+    }
+    g
+}
+
+fn shift(dx: f64, dy: f64) -> Transform {
+    Transform {
+        dx,
+        dy,
+        ..Transform::IDENTITY
+    }
+}
+
+#[test]
+fn composite_glyph_renders_like_decomposed() {
+    let mut font = Font::new("Test", 1000);
+    let a = glyph(
+        &font,
+        "A",
+        &[0x41],
+        600.0,
+        vec![rect(0, 50.0, 0.0, 550.0, 600.0, true)],
+    );
+    let a = add(&mut font, a);
+    let acute = glyph(
+        &font,
+        "acute",
+        &[],
+        300.0,
+        vec![rect(0, 0.0, 0.0, 100.0, 150.0, true)],
+    );
+    let acute = add(&mut font, acute);
+    let composite = with_components(
+        &font,
+        "Aacute",
+        600.0,
+        vec![
+            Component {
+                base: a.id,
+                transform: Transform::IDENTITY,
+            },
+            Component {
+                base: acute.id,
+                transform: shift(250.0, 700.0),
+            },
+        ],
+    );
+    let composite = add(&mut font, composite);
+    let decomposed = glyph(
+        &font,
+        "Aacute.flat",
+        &[],
+        600.0,
+        vec![
+            rect(0, 50.0, 0.0, 550.0, 600.0, true),
+            rect(1, 250.0, 700.0, 350.0, 850.0, true),
+        ],
+    );
+    let decomposed = add(&mut font, decomposed);
+
+    let m = master(&font);
+    // Nodes are drawn for a glyph's own contours only, so only the plain
+    // and metrics views are comparable.
+    let options = PreviewOptions {
+        size: 256,
+        show_nodes: false,
+        show_metrics: true,
+    };
+    let png = glyph_png(&font, &composite, m, &options).expect("renders");
+    let flat = glyph_png(&font, &decomposed, m, &options).expect("renders");
+    assert_eq!(pixels(&png), pixels(&flat));
+    let png = glyph_png(&font, &composite, m, &opts(256)).expect("renders");
+    let base_only = glyph_png(&font, &a, m, &opts(256)).expect("renders");
+    assert_ne!(pixels(&png), pixels(&base_only), "the accent must be drawn");
+    let svg = glyph_svg(&font, &composite, m, &opts(256)).expect("svg");
+    assert_eq!(
+        svg.matches('M').count(),
+        2,
+        "both contours in the SVG: {svg}"
+    );
+}
+
+#[test]
+fn text_applies_kerning() {
+    let mut font = Font::new("Test", 1000);
+    let a = glyph(
+        &font,
+        "A",
+        &[0x41],
+        600.0,
+        vec![rect(0, 0.0, 0.0, 500.0, 700.0, true)],
+    );
+    let a = add(&mut font, a);
+    let v = glyph(
+        &font,
+        "V",
+        &[0x56],
+        650.0,
+        vec![rect(0, 0.0, 0.0, 500.0, 700.0, true)],
+    );
+    let v = add(&mut font, v);
+    let m = master(&font);
+    let height = 100u32;
+    let plain = png_size(&text_png(&font, "AV", height).expect("renders")).0;
+
+    font.kerning
+        .set_pair(m, KernRef::Glyph(a.id), KernRef::Glyph(v.id), Some(-100.0));
+    let kerned = png_size(&text_png(&font, "AV", height).expect("renders")).0;
+
+    // Scale: height / (ascender - descender) = 100 / 1000 px per unit.
+    let scale = 0.1;
+    let expected = (600.0 + 650.0 - 100.0) * scale + 2.0 * 10.0;
+    assert!(
+        (f64::from(kerned) - expected).abs() <= 1.0,
+        "{kerned} vs {expected}"
+    );
+    assert!((f64::from(plain) - f64::from(kerned) - 10.0).abs() <= 1.0);
+}
+
+fn identity_scale() -> Transform {
+    // 1 pixel per font unit, y down: y' = -y.
+    Transform {
+        yy: -1.0,
+        ..Transform::IDENTITY
+    }
+}
+
+fn lit(mask: &Mask) -> usize {
+    mask.data.iter().filter(|&&v| v >= 128).count()
+}
+
+#[test]
+fn coverage_mask_of_square() {
+    // A 100 x 100 square placed at y -100..0 so that it lands in 0..100 once y is flipped.
+    let square = rect(0, 0.0, -100.0, 100.0, 0.0, true);
+    let mask = coverage_mask(&[square], &identity_scale(), 150, 150).expect("mask");
+    assert_eq!((mask.width, mask.height), (150, 150));
+    assert_eq!(mask.data.len(), 150 * 150);
+    assert!(lit(&mask).abs_diff(10_000) <= 200, "{}", lit(&mask));
+    // Rows run top to bottom; the square occupies the top-left corner.
+    assert_eq!(mask.data[50 * 150 + 50], 255);
+    assert_eq!(mask.data[120 * 150 + 120], 0);
+    // Same input, same coverage values.
+    let again = coverage_mask(
+        &[rect(0, 0.0, -100.0, 100.0, 0.0, true)],
+        &identity_scale(),
+        150,
+        150,
+    )
+    .expect("mask");
+    assert_eq!(mask, again);
+}
+
+#[test]
+fn coverage_mask_limits() {
+    let t = identity_scale();
+    assert!(matches!(
+        coverage_mask(&[], &t, 0, 10),
+        Err(RenderError::InvalidSize(_))
+    ));
+    assert!(matches!(
+        coverage_mask(&[], &t, 10_000, 10_000),
+        Err(RenderError::InvalidSize(_))
+    ));
+    let empty = coverage_mask(&[], &t, 8, 8).expect("mask");
+    assert!(empty.data.iter().all(|&v| v == 0));
+}
+
+#[test]
+fn iou_identical_is_one_and_disjoint_is_zero() {
+    let t = identity_scale();
+    let a = coverage_mask(&[rect(0, 0.0, -50.0, 50.0, 0.0, true)], &t, 200, 200).expect("a");
+    let b = coverage_mask(&[rect(0, 100.0, -150.0, 150.0, -100.0, true)], &t, 200, 200).expect("b");
+    assert_eq!(mask_iou(&a, &a, 128).expect("iou"), 1.0);
+    assert_eq!(mask_iou(&a, &b, 128).expect("iou"), 0.0);
+    let empty = coverage_mask(&[], &t, 200, 200).expect("e");
+    assert_eq!(mask_iou(&empty, &empty, 128).expect("iou"), 1.0);
+    let half = coverage_mask(&[rect(0, 0.0, -50.0, 25.0, 0.0, true)], &t, 200, 200).expect("h");
+    assert!((mask_iou(&a, &half, 128).expect("iou") - 0.5).abs() < 0.01);
+    let small = coverage_mask(&[], &t, 10, 10).expect("s");
+    assert!(mask_iou(&a, &small, 128).is_err());
 }

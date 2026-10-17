@@ -4,7 +4,7 @@
 //! compilation target, so a given build renders the same input to the same
 //! bytes on any machine of that platform, whatever CPU extensions it has.
 
-use forma_geometry::to_bezpath;
+use forma_geometry::{flatten_layer, to_bezpath};
 use forma_model::{Font, Glyph, Layer, MasterId, Node, NodeKind, Path, VerticalMetrics};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Stroke};
@@ -82,11 +82,21 @@ pub(crate) fn layer_of(glyph: &Glyph, master: MasterId) -> Result<&Layer, Render
         })
 }
 
-/// All contours of a layer as one path, so that the fill rule sees them
-/// together.
-pub(crate) fn outline(glyph_name: &str, layer: &Layer) -> Result<BezPath, RenderError> {
+/// The contours of `glyph` in `master` with its components expanded
+/// ([`flatten_layer`]), so composite glyphs are drawn as what they look like.
+pub(crate) fn flat_paths(
+    font: &Font,
+    glyph: &Glyph,
+    master: MasterId,
+) -> Result<Vec<Path>, RenderError> {
+    flatten_layer(font, glyph.id, master)
+        .map_err(|e| RenderError::Geometry(format!("glyph {:?}: {e}", glyph.name)))
+}
+
+/// All contours as one path, so that the fill rule sees them together.
+pub(crate) fn outline(glyph_name: &str, paths: &[Path]) -> Result<BezPath, RenderError> {
     let mut all = BezPath::new();
-    for path in &layer.paths {
+    for path in paths {
         let bez = to_bezpath(path).map_err(|e| {
             RenderError::Geometry(format!("glyph {glyph_name:?}, contour {}: {e}", path.id.0))
         })?;
@@ -277,6 +287,20 @@ impl Canvas {
         path.move_to(from);
         path.line_to(to);
         self.stroke(&path, Affine::IDENTITY, 1.0, color);
+    }
+
+    /// Rasterizes the scene onto a transparent background and returns the
+    /// alpha channel, row by row from the top: the coverage of what was drawn.
+    pub(crate) fn finish_alpha(mut self) -> Vec<u8> {
+        let mut pixmap = Pixmap::new(self.width, self.height);
+        self.ctx.flush();
+        let settings = RasterizerSettings {
+            target_init: TargetInit::Clear(Color::from_rgba8(0, 0, 0, 0)),
+            ..RasterizerSettings::default()
+        };
+        self.ctx
+            .render_with(&mut pixmap, &mut Resources::new(), settings);
+        pixmap.data().iter().map(|p| p.a).collect()
     }
 
     /// Rasterizes the scene and encodes it as a PNG.

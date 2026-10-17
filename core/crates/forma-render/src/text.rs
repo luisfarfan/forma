@@ -2,10 +2,12 @@
 
 use std::collections::HashMap;
 
-use forma_model::{Font, Glyph, MasterId};
+use forma_model::{Font, Glyph, GlyphId, MasterId};
 use vello_cpu::kurbo::{Affine, BezPath, Point};
 
-use crate::draw::{BLACK, Canvas, check_scale, check_size, degenerate, metrics_of, outline};
+use crate::draw::{
+    BLACK, Canvas, check_scale, check_size, degenerate, flat_paths, metrics_of, outline,
+};
 use crate::{MAX_TEXT_WIDTH, RenderError};
 
 /// The blank space at each end of the line, as a fraction of its height.
@@ -18,6 +20,8 @@ const MAX_LAID_OUT_CHARS: usize = 4096;
 
 /// A glyph ready to draw: its outline in font units and its advance.
 struct Placed {
+    /// `None` for the synthetic missing-character box, which never kerns.
+    id: Option<GlyphId>,
     path: BezPath,
     advance: f64,
 }
@@ -37,6 +41,10 @@ struct Placed {
 /// If the default master's ascender and descender are unusable (not finite,
 /// or the ascender is not above the descender), proportional metrics are used
 /// instead: ascender 80% and descender -20% of the units per em.
+///
+/// Components are expanded. Consecutive glyphs are spaced by the font's
+/// kerning in the default master (`Kerning::effective`), scaled like the
+/// advances; the missing-character box takes no kerning.
 ///
 /// # Errors
 ///
@@ -75,7 +83,7 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
 
     let cmap = cmap(font);
     let fallback = match font.glyph_by_name(".notdef") {
-        Some(glyph) => place(glyph, master)?,
+        Some(glyph) => place(font, glyph, master)?,
         None => None,
     }
     .unwrap_or_else(|| missing_box(font, metrics.cap_height));
@@ -85,6 +93,7 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
     let mut index_of: HashMap<char, usize> = HashMap::new();
     let mut items: Vec<(usize, f64)> = Vec::new();
     let mut pen = margin;
+    let mut previous: Option<usize> = None;
     for ch in text.chars().take(MAX_LAID_OUT_CHARS) {
         if pen >= max_width {
             break;
@@ -93,7 +102,7 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
             Some(&index) => index,
             None => {
                 let found = match cmap.get(&u32::from(ch)) {
-                    Some(glyph) => place(glyph, master)?,
+                    Some(glyph) => place(font, glyph, master)?,
                     None => None,
                 };
                 let index = found.map_or(0, |p| {
@@ -104,6 +113,20 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
                 index
             }
         };
+        // Kerning adjusts the gap between consecutive glyphs of the default
+        // master; a non-finite value is ignored.
+        let pair = (
+            previous.and_then(|p| placed[p].id),
+            placed[index].id,
+            master,
+        );
+        if let (Some(prev), Some(id), Some(m)) = pair {
+            let kern = font.kerning.effective(m, prev, id);
+            if kern.is_finite() {
+                pen += kern * scale;
+            }
+        }
+        previous = Some(index);
         items.push((index, pen));
         pen += placed[index].advance * scale;
     }
@@ -142,13 +165,18 @@ fn cmap(font: &Font) -> HashMap<u32, &Glyph> {
 }
 
 /// The glyph in the default master, or `None` if it has no layer there.
-fn place(glyph: &Glyph, master: Option<MasterId>) -> Result<Option<Placed>, RenderError> {
-    let Some(layer) = master.and_then(|m| glyph.layers.get(&m)) else {
+fn place(
+    font: &Font,
+    glyph: &Glyph,
+    master: Option<MasterId>,
+) -> Result<Option<Placed>, RenderError> {
+    let Some((layer, master)) = master.and_then(|m| Some((glyph.layers.get(&m)?, m))) else {
         return Ok(None);
     };
     let advance = layer.advance_width;
     Ok(Some(Placed {
-        path: outline(&glyph.name, layer)?,
+        id: Some(glyph.id),
+        path: outline(&glyph.name, &flat_paths(font, glyph, master)?)?,
         advance: if advance.is_finite() && advance > 0.0 {
             advance
         } else {
@@ -180,5 +208,9 @@ fn missing_box(font: &Font, cap_height: f64) -> Placed {
     path.line_to(Point::new(advance - 2.0 * inset, top - inset));
     path.line_to(Point::new(advance - 2.0 * inset, inset));
     path.close_path();
-    Placed { path, advance }
+    Placed {
+        id: None,
+        path,
+        advance,
+    }
 }
