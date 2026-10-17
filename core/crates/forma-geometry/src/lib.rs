@@ -3,7 +3,11 @@
 //! Converts model contours to and from [`kurbo`] Bezier paths, imports SVG
 //! path data, computes signed area, bounding boxes, contour nesting and
 //! contour direction, and checks contours for common outline problems with
-//! safe automatic fixes ([`check_paths`], [`fix_paths`]).
+//! safe automatic fixes ([`check_paths`], [`fix_paths`]). It also applies
+//! affine transforms to contours ([`transform_paths`]), expands glyph
+//! components into plain contours ([`flatten_layer`], [`layer_bbox`]), fits
+//! cubic Beziers through points ([`fit_cubics`]) and simplifies contours by
+//! refitting the stretches between corners ([`simplify_path`]).
 //!
 //! # Contour convention
 //!
@@ -33,14 +37,20 @@
 #![forbid(unsafe_code)]
 
 mod checks;
+mod components;
 mod convert;
 mod direction;
+mod fit;
 mod svg;
+mod transform;
 
 pub use checks::{GeometryIssue, IssueKind, check_paths, fix_paths};
+pub use components::{flatten_layer, layer_bbox};
 pub use convert::{bbox, from_bezpath, to_bezpath};
 pub use direction::{contour_depths, directed_area, normalize_direction, signed_area};
+pub use fit::{fit_cubics, simplify_path};
 pub use svg::{CoordinateSystem, path_to_svg, paths_from_svg};
+pub use transform::transform_paths;
 
 /// Tolerance, in font units, used when flattening curves for area and
 /// containment computations.
