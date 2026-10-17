@@ -11,7 +11,10 @@ use directories::ProjectDirs;
 use forma_engine::{CommandSpec, EngineConfig, ErrorCode, ToolError, ToolOutput, Toolset, find};
 use serde_json::{Value, json};
 
-use crate::cli::{CallArgs, Command, ConvertArgs, ExportArgs, McpArgs, NewArgs, PathArg};
+use crate::cli::{
+    CallArgs, Command, ConvertArgs, ExportArgs, GenDocsArgs, McpArgs, NewArgs, PathArg,
+};
+use crate::docs;
 use crate::output::{EXIT_FAILURE, Exit, Failure, print_json, report};
 use crate::session::{OpenedDoc, Session, path_value};
 
@@ -26,6 +29,7 @@ pub fn run(command: Command) -> ExitCode {
         Command::Unpack(args) => convert("unpack", &args, forma_store::unpack),
         Command::Call(args) => call(&args),
         Command::Mcp(args) => mcp(args),
+        Command::GenDocs(args) => gen_docs(&args),
     };
     ExitCode::from(result.unwrap_or_else(report))
 }
@@ -232,6 +236,14 @@ fn save_if_changed(
         json!({ "doc": doc.handle, "base_rev": rev }),
     )?;
     Ok(Some(saved))
+}
+
+/// `forma gen-docs` (hidden): writes the tool reference generated from the
+/// registry. It touches no document, so there is no session.
+fn gen_docs(args: &GenDocsArgs) -> Exit {
+    let (path, tools) = docs::generate(&args.out_dir)?;
+    print_json(&json!({ "path": path.display().to_string(), "tools": tools }))?;
+    Ok(0)
 }
 
 /// `forma mcp`: serves MCP on stdio until the client goes away.

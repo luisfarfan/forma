@@ -13,6 +13,7 @@
 
 mod cli;
 mod commands;
+mod docs;
 mod output;
 mod session;
 

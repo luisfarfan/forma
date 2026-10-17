@@ -55,6 +55,11 @@ pub enum Command {
     ///
     /// Nothing but the protocol is written to stdout; logs go to stderr.
     Mcp(McpArgs),
+    /// Write the reference of every tool (docs/api/tools.md) from the registry.
+    ///
+    /// For the repository's maintainers: `forma gen-docs docs/api`.
+    #[command(hide = true)]
+    GenDocs(GenDocsArgs),
 }
 
 /// A document path.
@@ -171,6 +176,13 @@ impl From<PolicyArg> for Policy {
             PolicyArg::Strict => Policy::Strict,
         }
     }
+}
+
+/// Arguments of `forma gen-docs`.
+#[derive(Debug, Args)]
+pub struct GenDocsArgs {
+    /// The folder to write `tools.md` into (created if missing).
+    pub out_dir: PathBuf,
 }
 
 /// Arguments of `forma mcp`.

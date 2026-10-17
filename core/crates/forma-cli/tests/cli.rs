@@ -1024,3 +1024,48 @@ fn mcp_default_journal_dir_is_in_the_os_data_dir() {
         found.display()
     );
 }
+
+// ------------------------------------------------------- generated API docs
+
+/// `docs/api/tools.md` is generated from the command registry by the hidden
+/// `forma gen-docs`: this fails when a tool, a description or a schema changed
+/// and the file was not regenerated. From the repository root:
+/// `cargo run --manifest-path core/Cargo.toml -p forma-cli -- gen-docs docs/api`.
+#[test]
+fn api_docs_up_to_date() {
+    let committed_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/tools.md");
+    let committed = fs::read_to_string(&committed_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", committed_path.display()))
+        // A Windows checkout may have turned the line endings into CRLF
+        // (`.gitattributes` asks for LF, but do not depend on it).
+        .replace("\r\n", "\n");
+
+    let out = temp();
+    let generated_dir = out.path().join("api");
+    let run = forma(out.path())
+        .arg("gen-docs")
+        .arg(&generated_dir)
+        .assert()
+        .success();
+    assert_eq!(
+        stdout_json(&run)["tools"],
+        json!(registry().len()),
+        "gen-docs reports how many tools it documented"
+    );
+    let generated = fs::read_to_string(generated_dir.join("tools.md")).expect("generated tools.md");
+
+    assert!(
+        generated == committed,
+        "docs/api/tools.md is out of date: regenerate it, from the repository root, with \
+         `cargo run --manifest-path core/Cargo.toml -p forma-cli -- gen-docs docs/api`"
+    );
+    // Every tool of the registry is documented, once, in registry order.
+    let mut from = 0;
+    for spec in registry() {
+        let heading = format!("### `{}`", spec.name);
+        let at = committed[from..]
+            .find(&heading)
+            .unwrap_or_else(|| panic!("{} is missing or out of order in tools.md", spec.name));
+        from += at + heading.len();
+    }
+}

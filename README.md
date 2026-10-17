@@ -16,6 +16,8 @@ FORMA is an open-source, cross-platform (macOS, Windows, Linux) professional fon
 Design documents (in Spanish) live in [`docs/`](docs/):
 research, tech stack, architecture, roadmap, reverse-engineering policy, risks and the MCP/AI architecture.
 
+To connect Claude Code or Codex to `forma mcp`, see [`docs/guides/connect-agents.md`](docs/guides/connect-agents.md). The tool reference is generated from the command registry ([`docs/api/tools.md`](docs/api/tools.md)), and architecture decisions are recorded in [`docs/adr/`](docs/adr/).
+
 ## License
 
 Licensed under either of
