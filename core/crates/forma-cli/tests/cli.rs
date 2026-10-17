@@ -764,17 +764,18 @@ fn opening() -> Vec<String> {
 fn mcp_stdout_is_protocol_only() {
     let dir = temp();
     let allowed = dir.path().to_str().expect("utf-8");
-    // A root that does not exist makes the engine log a warning: logs must
-    // reach stderr and never stdout.
-    let missing = dir.path().join("missing");
+    // A journal folder that cannot be created (a file is in the way) makes
+    // the server log a warning: logs must reach stderr and never stdout.
+    let blocker = dir.path().join("blocker");
+    fs::write(&blocker, b"a file").expect("write");
+    let journal = blocker.join("journal");
     let run = run_mcp(
         dir.path(),
         &[
             "--allow-dir",
             allowed,
-            "--allow-dir",
-            missing.to_str().expect("utf-8"),
-            "--no-journal",
+            "--journal-dir",
+            journal.to_str().expect("utf-8"),
         ],
         &opening(),
     );
@@ -795,13 +796,10 @@ fn mcp_stdout_is_protocol_only() {
 #[test]
 fn mcp_logging_follows_forma_log() {
     let dir = temp();
-    let missing = dir.path().join("missing");
-    let args = [
-        "mcp",
-        "--allow-dir",
-        missing.to_str().expect("utf-8"),
-        "--no-journal",
-    ];
+    let blocker = dir.path().join("blocker");
+    fs::write(&blocker, b"a file").expect("write");
+    let journal = blocker.join("journal");
+    let args = ["mcp", "--journal-dir", journal.to_str().expect("utf-8")];
     let mut stdin = opening().join("\n");
     stdin.push('\n');
     let stderr_with = |filter: Option<&str>| {
@@ -816,7 +814,28 @@ fn mcp_logging_follows_forma_log() {
     // `warn` is the default; a stricter filter silences the warning.
     assert!(stderr_with(None).contains("WARN"));
     assert!(!stderr_with(Some("error")).contains("WARN"));
-    assert!(stderr_with(Some("forma_engine=warn")).contains("WARN"));
+    assert!(stderr_with(Some("forma=warn")).contains("WARN"));
+}
+
+#[test]
+fn mcp_refuses_an_allow_dir_that_is_not_a_folder() {
+    let dir = temp();
+    let missing = dir.path().join("missing");
+    let file = dir.path().join("file.txt");
+    fs::write(&file, b"x").expect("write");
+    for bad in [&missing, &file] {
+        let assert = forma(dir.path())
+            .args(["mcp", "--allow-dir", dir.path().to_str().expect("utf-8")])
+            .arg("--allow-dir")
+            .arg(bad)
+            .write_stdin(format!("{INITIALIZE}\n"))
+            .assert()
+            .code(2)
+            .stdout(predicate::str::is_empty());
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+        assert!(stderr.contains("--allow-dir"), "{stderr}");
+        assert!(stderr.contains(bad.to_str().expect("utf-8")), "{stderr}");
+    }
 }
 
 #[test]

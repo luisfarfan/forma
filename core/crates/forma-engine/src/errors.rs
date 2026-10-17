@@ -4,8 +4,9 @@
 use std::fmt;
 
 use forma_compile::CompileError;
-use forma_edit::{ConflictInfo, EditError};
+use forma_edit::{ConflictInfo, Document, EditError};
 use forma_interop::InteropError;
+use forma_model::{EntityKey, Rev};
 use forma_render::RenderError;
 use forma_store::StoreError;
 use serde::{Deserialize, Serialize};
@@ -159,7 +160,7 @@ impl ToolError {
 ///
 /// The details of a conflict are
 /// `{ "current_rev": n, "conflicts": [{ "entity", "rev", "actor" }] }`, see
-/// [`conflict_details`].
+/// [`conflict_details`]; [`from_edit_error_in`] also names the glyphs.
 #[must_use]
 pub fn from_edit_error(error: EditError) -> ToolError {
     match error {
@@ -175,8 +176,54 @@ pub fn from_edit_error(error: EditError) -> ToolError {
     }
 }
 
+/// [`from_edit_error`] for the error of a change of `document` (which a
+/// failed change leaves as it was): the details of a conflict also name each
+/// glyph, see [`conflict_details_in`].
+#[must_use]
+pub fn from_edit_error_in(error: EditError, document: &Document) -> ToolError {
+    match error {
+        EditError::Conflict(ref info) => {
+            let details = conflict_details_in(info, document);
+            ToolError::new(ErrorCode::RevisionConflict, error.to_string()).with_details(details)
+        }
+        other => from_edit_error(other),
+    }
+}
+
+/// [`conflict_details`] plus, for each conflicting glyph, its `name`: the
+/// name it has in `document` now or, for a glyph the conflicting change
+/// deleted, the name it had just before that change.
+/// `{ "current_rev": n, "conflicts": [{ "entity": "glyph:<uuid>", "rev": n,
+/// "actor": "user", "name": "a" }] }`.
+#[must_use]
+pub fn conflict_details_in(info: &ConflictInfo, document: &Document) -> Value {
+    let mut details = conflict_details(info);
+    if let Some(Value::Array(conflicts)) = details.get_mut("conflicts") {
+        for (conflict, (entity, rev, _)) in conflicts.iter_mut().zip(&info.conflicts) {
+            let EntityKey::Glyph(id) = entity else {
+                continue;
+            };
+            let name = document
+                .font()
+                .glyphs
+                .get(id)
+                .map(|glyph| glyph.name.clone())
+                .or_else(|| {
+                    let before = rev.0.checked_sub(1).map(Rev)?;
+                    let font = document.snapshot_at(before)?;
+                    font.glyphs.get(id).map(|glyph| glyph.name.clone())
+                });
+            if let (Some(name), Some(conflict)) = (name, conflict.as_object_mut()) {
+                conflict.insert("name".into(), Value::String(name));
+            }
+        }
+    }
+    details
+}
+
 /// The `details` of a `REVISION_CONFLICT`:
-/// `{ "current_rev": n, "conflicts": [{ "entity": "glyph:<uuid>", "rev": n, "actor": "user" }] }`.
+/// `{ "current_rev": n, "conflicts": [{ "entity": "glyph:<uuid>", "rev": n, "actor": "user" }] }`
+/// (the engine adds each glyph's `name`, see [`conflict_details_in`]).
 #[must_use]
 pub fn conflict_details(info: &ConflictInfo) -> Value {
     let conflicts: Vec<Value> = info

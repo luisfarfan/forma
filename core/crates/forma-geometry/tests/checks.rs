@@ -477,6 +477,53 @@ fn zero_area_contours_are_never_wrongly_directed() {
     );
 }
 
+#[test]
+fn near_zero_area_contours_have_no_direction() {
+    // A degenerate sliver: almost collinear, its area (about -1e-10) is
+    // float noise that a reversal cannot be trusted to flip, so flagging it
+    // would make an agent loop on geometry_fix.
+    let sliver = closed(
+        1,
+        vec![line(0.0, 0.0), line(1000.0, 1e-13), line(2000.0, 0.0)],
+    );
+    let area = signed_area(&sliver);
+    assert!(area < 0.0 && area.abs() < 1e-9, "{area}");
+    assert!(
+        !kinds_of(&check_paths(std::slice::from_ref(&sliver), 0.0))
+            .contains(&IssueKind::WrongDirection),
+        "below 1e-9 absolute"
+    );
+
+    // A bow tie whose lobes almost cancel: tiny next to its bounding box.
+    let bow_tie = closed(
+        1,
+        vec![
+            line(0.0, 0.0),
+            line(100.0, 100.0),
+            line(100.0, 0.0),
+            line(0.0, 100.0001),
+        ],
+    );
+    let area = signed_area(&bow_tie);
+    assert!(area != 0.0 && area.abs() < 1e-6 * 100.0 * 100.0, "{area}");
+    assert!(
+        !kinds_of(&check_paths(std::slice::from_ref(&bow_tie), 0.0))
+            .contains(&IssueKind::WrongDirection),
+        "below 1e-6 of the bounding box"
+    );
+    // Nothing for geometry_fix to do with them either.
+    let paths = vec![sliver, bow_tie];
+    assert_eq!(fix_paths(&paths, &[IssueKind::WrongDirection], 0.0), paths);
+
+    // A thin but real triangle keeps its direction check.
+    let thin = closed(1, vec![line(0.0, 0.0), line(0.0, 1.0), line(1000.0, 0.5)]);
+    assert!(signed_area(&thin) < 0.0);
+    assert!(
+        kinds_of(&check_paths(&[thin], 0.0)).contains(&IssueKind::WrongDirection),
+        "a clockwise outer contour"
+    );
+}
+
 // --------------------------------------------------------- duplicate points
 
 #[test]

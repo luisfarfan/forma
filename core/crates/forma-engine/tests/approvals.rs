@@ -1009,10 +1009,10 @@ fn a_commit_that_fails_early_grants_nothing() {
     let second = token_of(&plan_of(&err(&mut engine, "glyph_delete", delete_g00)));
     commit(&mut engine, &second).expect("commit");
 
-    // The first plan's call now fails before it reaches the gate (`g00` is
-    // gone) ...
+    // The first plan's call now fails before it reaches the gate (`g00` was
+    // deleted after the plan's base revision: a conflict) ...
     let error = commit(&mut engine, &first).expect_err("no glyph to delete");
-    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(error.code, ErrorCode::RevisionConflict, "{error:?}");
     // ... and the pass it carried does not linger for the next call.
     let error = err(
         &mut engine,

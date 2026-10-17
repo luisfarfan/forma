@@ -161,20 +161,43 @@ pub(crate) fn reversed_nodes(path: &Path) -> Result<Vec<Node>, GeometryError> {
     Ok(nodes)
 }
 
+/// The fraction of its bounding box area under which a contour's signed
+/// area is treated as noise: the contour has no direction.
+const NOISE_AREA_RATIO: f64 = 1e-6;
+
+/// The absolute area under which a contour has no direction.
+const NOISE_AREA: f64 = 1e-9;
+
+/// The signed area of `path` (see [`signed_area`]) when it is large enough to
+/// give the contour a direction; `None` for a contour whose area is below
+/// 1e-6 of its bounding box area, or below 1e-9 absolute (a degenerate sliver
+/// or a self-overlapping contour whose lobes cancel), or not a number. The
+/// sign of such an area is float noise: a reversal cannot be trusted to
+/// change it, so reporting a direction for it would never be fixed.
+#[must_use]
+pub fn directed_area(path: &Path) -> Option<f64> {
+    let area = signed_area(path);
+    if area.is_nan() {
+        return None;
+    }
+    let bbox = crate::bbox(std::slice::from_ref(path)).map_or(0.0, |rect| rect.area());
+    let noise = (NOISE_AREA_RATIO * bbox).max(NOISE_AREA);
+    (area.abs() >= noise).then_some(area)
+}
+
 /// Gives every closed contour its PostScript direction according to its
 /// nesting depth (see [`contour_depths`]): even depth counter-clockwise
 /// (positive area), odd depth clockwise.
 ///
 /// Reversing a contour keeps its shape, its id and its smooth flags. Open
-/// contours, contours that cannot be converted, and contours with zero area
-/// are left untouched.
+/// contours, contours that cannot be converted, and contours without a
+/// direction (see [`directed_area`]) are left untouched.
 pub fn normalize_direction(paths: &mut [Path]) {
     let depths = contour_depths(paths);
     for (path, depth) in paths.iter_mut().zip(depths) {
-        let area = signed_area(path);
-        if area == 0.0 || area.is_nan() {
+        let Some(area) = directed_area(path) else {
             continue;
-        }
+        };
         let wants_counter_clockwise = depth % 2 == 0;
         if (area > 0.0) != wants_counter_clockwise
             && let Ok(nodes) = reversed_nodes(path)

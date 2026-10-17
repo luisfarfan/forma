@@ -39,7 +39,7 @@ mod svg;
 
 pub use checks::{GeometryIssue, IssueKind, check_paths, fix_paths};
 pub use convert::{bbox, from_bezpath, to_bezpath};
-pub use direction::{contour_depths, normalize_direction, signed_area};
+pub use direction::{contour_depths, directed_area, normalize_direction, signed_area};
 pub use svg::{CoordinateSystem, path_to_svg, paths_from_svg};
 
 /// Tolerance, in font units, used when flattening curves for area and

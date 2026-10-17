@@ -87,10 +87,14 @@ fn is_glyph_file_name(name: &str) -> bool {
 }
 
 /// The glyph documents in `glyphs_dir`, sorted by name: the regular files
-/// whose names end in `.json`. Anything else in the folder (editor leftovers,
-/// notes, temporary files of an interrupted save) is not a glyph. A folder
-/// that does not exist holds no glyphs: version control does not keep empty
-/// folders, so a font without glyphs may lose it.
+/// whose names end in `.json` and do not start with `.`. Anything else in
+/// the folder (editor leftovers, notes, temporary files of an interrupted
+/// save, hidden files such as the AppleDouble `._a.json` companions macOS
+/// writes on some file systems or `.DS_Store`) is not a glyph: it is neither
+/// read nor deleted. Glyph file names never start with `.` (a leading `.` of a
+/// glyph name becomes `_`). A folder that does not exist holds no glyphs:
+/// version control does not keep empty folders, so a font without glyphs may
+/// lose it.
 fn glyph_files(glyphs_dir: &Path) -> Result<Vec<(String, PathBuf)>, StoreError> {
     let entries = match fs::read_dir(glyphs_dir) {
         Ok(entries) => entries,
@@ -104,7 +108,7 @@ fn glyph_files(glyphs_dir: &Path) -> Result<Vec<(String, PathBuf)>, StoreError> 
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if is_glyph_file_name(&name) {
+        if is_glyph_file_name(&name) && !name.starts_with('.') {
             files.push((name, entry.path()));
         }
     }

@@ -71,3 +71,14 @@ fn nothing_is_looked_at_through_a_link_in_a_package() {
         "{error:?}"
     );
 }
+
+#[test]
+fn hidden_files_of_a_package_do_not_count() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("font.formapackage");
+    save(&Font::new("Disk", 1000), &path).expect("save");
+    let saved = disk_state(&path).expect("state");
+    fs::write(path.join("glyphs").join("._a.json"), b"AppleDouble").expect("write");
+    fs::write(path.join("glyphs").join(".DS_Store"), b"Finder").expect("write");
+    assert_eq!(disk_state(&path).expect("state"), saved);
+}

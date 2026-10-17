@@ -35,6 +35,7 @@ pub mod paths;
 pub mod plans;
 mod recovery;
 mod registry;
+mod stale;
 pub mod tools;
 
 pub use engine::{DocHandle, DocSummary, Engine, EngineConfig, OpenDoc, Policy};

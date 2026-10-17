@@ -651,6 +651,26 @@ fn preview_text_summary_reports_dimensions() {
         json!({ "doc": doc, "text": "A", "height": 2048 }),
     );
     assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    // At most 4096 characters (not bytes): more is refused, never cut.
+    let longest = "Á".repeat(4096);
+    let (_, summary) = image(
+        &mut engine,
+        "preview_text",
+        json!({ "doc": doc, "text": longest, "height": 16 }),
+    );
+    assert_eq!(summary["text"], json!(longest));
+    let error = err(
+        &mut engine,
+        "preview_text",
+        json!({ "doc": doc, "text": "A".repeat(4097), "height": 16 }),
+    );
+    assert_eq!(error.code, ErrorCode::LimitExceeded, "{error:?}");
+    assert_eq!(error.details, json!({ "limit": 4096, "actual": 4097 }));
+    let schema = (forma_engine::find("preview_text")
+        .expect("tool")
+        .input_schema)();
+    assert_eq!(schema["properties"]["text"]["maxLength"], json!(4096));
 }
 
 #[test]

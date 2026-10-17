@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::engine::{DocHandle, Engine};
-use crate::errors::{ToolError, from_args_error, from_edit_error};
+use crate::errors::{ToolError, from_args_error, from_edit_error_in};
 use crate::recovery::Committed;
 use crate::registry::ToolOutput;
 use crate::tools::json_output;
@@ -360,7 +360,7 @@ pub(crate) fn mutate<R: Serialize>(
     }
     open.document
         .check_conflicts(&edit.steps.touched, edit.base_rev)
-        .map_err(from_edit_error)?;
+        .map_err(|error| from_edit_error_in(error, &open.document))?;
 
     let proposal = Proposal {
         actor,

@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::engine::{DocHandle, Engine};
-use crate::errors::{ToolError, from_edit_error};
+use crate::errors::{ToolError, from_edit_error_in};
 use crate::plans::BoundedDiff;
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::json_output;
@@ -413,7 +413,7 @@ fn gated_change(
     }
     let before = Arc::clone(open.font());
     let mut scratch = open.document.clone();
-    let measured = change(&mut scratch).map_err(from_edit_error)?;
+    let measured = change(&mut scratch).map_err(|error| from_edit_error_in(error, &scratch))?;
     let affected: BTreeSet<GlyphId> = measured
         .touched
         .iter()

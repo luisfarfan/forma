@@ -15,7 +15,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::audit::AuditEntry;
-use crate::errors::{ToolError, from_edit_error};
+use crate::errors::{ToolError, from_edit_error_in};
 use crate::locks::FileLock;
 use crate::plans::{Clock, PlanStore, SystemClock};
 use crate::recovery::JournalState;
@@ -216,7 +216,7 @@ impl OpenDoc {
 
     /// Runs a state change on the document (`execute`, `undo`, `redo`,
     /// `revert`, `restore`), marks the document dirty if it succeeds and maps
-    /// a failure with [`from_edit_error`]. A failed change leaves the
+    /// a failure with [`from_edit_error_in`]. A failed change leaves the
     /// document untouched.
     ///
     /// # Errors
@@ -226,7 +226,8 @@ impl OpenDoc {
         &mut self,
         change: impl FnOnce(&mut Document) -> Result<T, EditError>,
     ) -> Result<T, ToolError> {
-        let result = change(&mut self.document).map_err(from_edit_error)?;
+        let result = change(&mut self.document)
+            .map_err(|error| from_edit_error_in(error, &self.document))?;
         self.dirty = true;
         Ok(result)
     }
@@ -438,7 +439,10 @@ impl Engine {
         // argument is parsed; tools that take outlines also count their nodes.
         check_raw_args(&args)?;
         self.check_handle_writable(spec, &args)?;
+        let doc = args.get("doc").and_then(Value::as_str).map(str::to_owned);
+        let base_rev = args.get("base_rev").and_then(Value::as_u64);
         (spec.handler)(self, actor, args)
+            .map_err(|error| self.stale_reference(doc.as_deref(), base_rev, error))
     }
 
     /// Refuses a tool that changes the document `args.doc` when that handle

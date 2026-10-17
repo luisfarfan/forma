@@ -251,6 +251,19 @@ fn mcp(args: McpArgs) -> Exit {
     let allowed_roots = if args.allow_dir.is_empty() {
         vec![std::env::current_dir().context("cannot determine the current directory")?]
     } else {
+        // A root that is not a folder would leave the server running with
+        // fewer roots than asked (or none, refusing every path): say so now.
+        if let Some(bad) = args.allow_dir.iter().find(|dir| !dir.is_dir()) {
+            let what = if bad.exists() {
+                "is not a folder"
+            } else {
+                "does not exist"
+            };
+            return Err(Failure::Usage(format!(
+                "--allow-dir '{}' {what}; pass existing folders",
+                bad.display()
+            )));
+        }
         args.allow_dir
     };
     let cfg = EngineConfig {

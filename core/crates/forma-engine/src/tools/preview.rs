@@ -17,10 +17,11 @@ use crate::errors::{ToolError, from_render_error};
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::inputs::{find_glyph, find_master};
 use crate::tools::json_output;
-use crate::tools::limits::parse_checked;
+use crate::tools::limits::{limit_exceeded, parse_checked};
 
-/// The most characters of the text that `preview_text` lays out, and so
-/// echoes in its summary (the renderer's limit).
+/// The most characters (Unicode scalar values) of the text of
+/// `preview_text`, the renderer's limit; longer text is refused with
+/// `LIMIT_EXCEEDED`, never cut.
 const MAX_TEXT_CHARS: usize = 4096;
 
 /// `preview_glyph`.
@@ -51,9 +52,9 @@ pub(crate) const TEXT: CommandSpec = CommandSpec {
                   characters mapped through the glyphs' code points, spaced by their advance \
                   widths) as a PNG image `height` pixels tall (16 to 1024, default 128) and as \
                   wide as the line (at most 2048 pixels; the rest is clipped). A character \
-                  without a glyph is drawn as .notdef, or as an empty box. At most the first \
-                  4096 characters are laid out. The image comes with a summary `{rev, text, \
-                  width, height}`.",
+                  without a glyph is drawn as .notdef, or as an empty box. At most 4096 \
+                  characters: longer text fails with LIMIT_EXCEEDED. The image comes with a \
+                  summary `{rev, text, width, height}`.",
     toolset: Toolset::Preview,
     effects: Effects::READ,
     output: OutputKind::Image,
@@ -161,7 +162,8 @@ pub struct GlyphSvgResult {
 pub struct PreviewTextArgs {
     /// The document handle.
     pub doc: DocHandle,
-    /// The text to set; not empty.
+    /// The text to set: from 1 to 4096 characters.
+    #[schemars(length(max = MAX_TEXT_CHARS))]
     pub text: String,
     /// The height of the image, in pixels.
     #[serde(default = "default_height")]
@@ -174,7 +176,7 @@ pub struct PreviewTextArgs {
 pub struct TextPreviewSummary {
     /// The current revision, which is drawn.
     pub rev: u64,
-    /// The text laid out (at most its first 4096 characters).
+    /// The text laid out.
     pub text: String,
     /// The width of the image, in pixels.
     pub width: u32,
@@ -292,6 +294,17 @@ fn preview_glyph(
 
 fn preview_text(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
     let args: PreviewTextArgs = parse_checked(args)?;
+    let chars = args.text.chars().count();
+    if chars > MAX_TEXT_CHARS {
+        return Err(limit_exceeded(
+            format!(
+                "the text has {chars} characters; preview_text sets at most {MAX_TEXT_CHARS}: \
+                 preview a shorter sample"
+            ),
+            MAX_TEXT_CHARS,
+            chars,
+        ));
+    }
     let open = engine.doc(&args.doc)?;
     let png =
         forma_render::text_png(open.font(), &args.text, args.height).map_err(from_render_error)?;
@@ -299,7 +312,7 @@ fn preview_text(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<Tool
         .ok_or_else(|| ToolError::io("internal error: the rendered preview is not a PNG"))?;
     let summary = TextPreviewSummary {
         rev: open.rev().0,
-        text: args.text.chars().take(MAX_TEXT_CHARS).collect(),
+        text: args.text,
         width,
         height,
     };

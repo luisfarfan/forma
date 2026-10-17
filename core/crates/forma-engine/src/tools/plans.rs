@@ -529,6 +529,7 @@ fn plan_commit(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
     {
         object.insert("base_rev".into(), Value::from(plan.base_rev.0));
     }
+    let (doc, base_rev) = (plan.doc.clone(), plan.base_rev.0);
     engine.committing = Some(Committing {
         tool: plan.tool,
         doc: plan.doc,
@@ -537,7 +538,8 @@ fn plan_commit(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
         fingerprint: plan.fingerprint,
         pinned_rev: plan.pinned_rev,
     });
-    let result = (spec.handler)(engine, actor, call);
+    let result = (spec.handler)(engine, actor, call)
+        .map_err(|error| engine.stale_reference(Some(doc.as_str()), Some(base_rev), error));
     // The pass is for this call only, used or not.
     engine.committing = None;
     match result? {

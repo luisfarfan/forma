@@ -188,8 +188,8 @@ pub struct GenDocsArgs {
 /// Arguments of `forma mcp`.
 #[derive(Debug, Args)]
 pub struct McpArgs {
-    /// A directory documents may be read from and written to (repeatable).
-    /// Default: the current directory only.
+    /// A directory documents may be read from and written to (repeatable);
+    /// it must exist. Default: the current directory only.
     #[arg(long = "allow-dir", value_name = "DIR")]
     pub allow_dir: Vec<PathBuf>,
     /// How destructive or massive operations are approved.

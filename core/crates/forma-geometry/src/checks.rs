@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::convert::{Outline, Segment, outline, point};
-use crate::direction::{contour_depths, reversed_nodes, signed_area};
+use crate::direction::{contour_depths, directed_area, reversed_nodes};
 
 /// Segments shorter than this, in font units, are reported as tiny.
 const TINY_SEGMENT_LENGTH: f64 = 1.0;
@@ -267,12 +267,10 @@ fn check_path(
 
 /// Describes the direction problem of a closed contour, if it has one.
 ///
-/// Contours without area have no direction and are never reported.
+/// Contours without a meaningful area (see [`directed_area`]) have no
+/// direction and are never reported.
 fn direction_problem(path: &Path, depth: usize) -> Option<String> {
-    let area = signed_area(path);
-    if area == 0.0 || area.is_nan() {
-        return None;
-    }
+    let area = directed_area(path)?;
     let wants_counter_clockwise = depth.is_multiple_of(2);
     if (area > 0.0) == wants_counter_clockwise {
         return None;

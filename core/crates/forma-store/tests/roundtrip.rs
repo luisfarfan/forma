@@ -486,6 +486,33 @@ fn load_ignores_files_that_are_not_glyph_json() {
 }
 
 #[test]
+fn dot_files_in_the_glyphs_folder_are_not_glyphs() {
+    // macOS writes AppleDouble companions (`._a.json`) on file systems
+    // without extended attributes, and Finder `.DS_Store`: neither is a
+    // glyph, whatever its extension.
+    let dir = TempDir::new().unwrap();
+    let path = package_in(&dir);
+    let font = sample_font();
+    save(&font, &path).unwrap();
+    let glyphs = path.join("glyphs");
+    let first = glyph_files(&path).into_iter().next().expect("a glyph file");
+    let apple_double = glyphs.join(format!("._{first}"));
+    fs::write(&apple_double, b"\x00\x05\x16\x07 AppleDouble").unwrap();
+    fs::write(glyphs.join(".hidden.json"), b"{ not json").unwrap();
+
+    assert_eq!(load(&path).unwrap(), font);
+    // A save neither reads them nor deletes them as stale glyph files.
+    let mut changed = font.clone();
+    changed.info.family_name = "Changed".to_owned();
+    save(&changed, &path).unwrap();
+    assert_eq!(load(&path).unwrap(), changed);
+    save(&Font::new("Emptied", 1000), &path).unwrap();
+    assert!(apple_double.is_file());
+    assert!(glyphs.join(".hidden.json").is_file());
+    assert!(load(&path).unwrap().glyphs.is_empty());
+}
+
+#[test]
 fn package_without_a_glyphs_folder_loads_as_a_font_without_glyphs() {
     // Git does not track empty folders, so a cloned empty font has no
     // `glyphs/` directory.
