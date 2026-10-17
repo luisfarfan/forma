@@ -100,6 +100,14 @@
 45. **Paridad con fontmake definida geométricamente:** glifos, cmap y avances exactos; bbox ±1; área ±0,5 %.
 46. **Cobertura medida (≥ 95 %).** Un test de handle retenido no es observable en Unix, así que lo cubre el job de Windows en CI.
 
+## Tras publicar el repositorio (primera CI en Windows)
+47. **La primera ejecución en Windows falló con "Access is denied (os error 5)" al compilar.** Windows no deja renombrar una carpeta mientras un archivo dentro está abierto, y los antivirus abren los archivos recién escritos.
+    - La compilación escribe su UFO directamente en su carpeta temporal privada (`write_ufo_unstaged`), sin renombrar nada.
+    - La exportación UFO para el usuario conserva el staging todo-o-nada, pero reintenta el renombrado en Windows durante unos 2 s.
+    - La CI usa `cargo test --no-fail-fast`: el primer fallo había ocultado el resto del workspace en Windows.
+    - Costo si es incorrecta: un renombrado legítimamente prohibido tarda unos 2 s más en fallar.
+48. **Los tests de symlinks se ignoran en Windows** (crear symlinks exige privilegios). Ahí los cubren los tests de junctions, que pasan.
+
 ## Diferido al Hito 2 (sin pérdida de datos)
 - Save-as libera el lock antiguo antes de borrar su journal.
 - Un `stat` fallido tras guardar cuenta como "cambiado".

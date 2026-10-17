@@ -193,7 +193,7 @@ Para correr la suite de aceptación en local: `scripts/acceptance.sh`, o `script
 | Etapa | Objetivo | Estado |
 |---|---|---|
 | Fase 0 | Investigación, arquitectura, política legal y de propiedad intelectual | ✅ Hecho |
-| **Hito 1** | Núcleo sin interfaz + CLI + servidor MCP en 3 SO | ✅ Implementado · la CI en los 3 SO es la última verificación |
+| **Hito 1** | Núcleo sin interfaz + CLI + servidor MCP en 3 SO | ✅ Hecho · CI en verde en macOS, Windows y Linux |
 | Hito 2 | Spike del toolkit de UI: Qt 6 vs Slint, decidido con medidas | Siguiente |
 | Hito 3 | Editor mínimo en 3 SO; edición simultánea en vivo entre tú y un agente | |
 | Hito 4 | Instaladores firmados, recuperación tras caídas → **v0.1 MVP** | |

@@ -193,7 +193,7 @@ Run the acceptance suite locally with `scripts/acceptance.sh`, or `scripts/accep
 | Stage | Goal | Status |
 |---|---|---|
 | Phase 0 | Research, architecture, legal and IP policy | ✅ Done |
-| **Milestone 1** | Headless core + CLI + MCP server on 3 OSes | ✅ Implemented · cross-OS CI is the closing gate |
+| **Milestone 1** | Headless core + CLI + MCP server on 3 OSes | ✅ Done · CI green on macOS, Windows and Linux |
 | Milestone 2 | UI toolkit spike: Qt 6 vs Slint, decided by measurements | Next |
 | Milestone 3 | Minimal editor on 3 OSes; live co-editing between you and an agent | |
 | Milestone 4 | Signed installers, crash recovery → **v0.1 MVP** | |

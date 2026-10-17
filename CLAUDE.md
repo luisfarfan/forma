@@ -4,7 +4,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 
 **FORMA es open source, sin fines comerciales, bajo `MIT OR Apache-2.0`.**
 
-**Estado: Hito 1 implementado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`). Verificado en macOS; se cierra con la CI verde en los 3 SO. Repositorio público: `github.com/luisfarfan/forma`.
+**Estado: Hito 1 completado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`): CI en verde en macOS, Windows y Ubuntu (PR #1, 2026-10-17). Falta la primera ejecución del fuzzing nocturno, que solo corre desde `main`. **El Hito 2 requiere aprobación.** Repositorio público: `github.com/luisfarfan/forma`.
 - **Aprobado:** Rust como núcleo, licencia MIT OR Apache-2.0, Hito 1, instalación justificada de sus dependencias.
 - **No aprobado aún:** el toolkit de UI. No construyas el editor gráfico ni instales Qt o Slint hasta aprobar el Hito 2.
 

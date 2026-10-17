@@ -1,6 +1,6 @@
 # 04 — Roadmap
 
-> Estado: revisión 3 (open source MIT OR Apache-2.0; Hito 1 implementado, pendiente de la CI en los 3 SO) · 2026-10-17
+> Estado: revisión 3 (open source MIT OR Apache-2.0; Hito 1 completado, CI en verde en los 3 SO) · 2026-10-17
 > Tamaños relativos: **S** < 2 sem · **M** 2–5 sem · **L** 5–10 sem · **XL** > 10 sem, para un equipo pequeño (1–2 ingenieros + agentes). Son **estimaciones [H]**, no compromisos.
 > **Regla general:** una fase no se cierra sin que pasen sus criterios de aceptación automatizados **en macOS, Windows y Ubuntu 24.04**, y, cuando se indica, una prueba manual con un diseñador.
 
