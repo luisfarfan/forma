@@ -95,12 +95,11 @@ Todos están automatizados en la CI de los 3 SO, salvo el 8, que es la demo manu
   - Las filas nuevas siguen el mismo esquema de entidades.
   - La **migración v1 → v2** es pura y testeada (agrega componentes vacíos, sin kerning).
   - Un documento v1 se abre, se migra en memoria y se guarda como v2. Un documento de una versión futura se rechaza con un error claro.
-- `.formapackage`:
-  - `kerning/groups.json` lleva todos los grupos;
-  - `kerning/<master-uuid>.json` lleva los pares de ese master en orden canónico.
-  - Hay un archivo por master, y no uno por par, para que git no se llene de archivos.
-  - JSON canónico, como el resto.
-- Journal: los comandos nuevos se registran igual que los existentes.
+- **El kerning (grupos y pares) es un campo de `Font` (`kerning`).** Viaja dentro del documento de fuente: la fila `font` en `.forma` y `font.json` en `.formapackage`.
+  - Se serializa en JSON canónico, con los pares de cada master como una lista ordenada por `(first, second)`.
+  - El guardado atómico lo cubre sin archivos nuevos, y git muestra un diff legible por par.
+  - La granularidad de persistencia (un documento) no cambia la de concurrencia (una entidad por par).
+- Journal: `JournalRecord` gana `kerning`, el kerning completo cuando la transacción toca alguna entidad de kerning.
 
 ## 6. Crates
 
@@ -170,12 +169,18 @@ Usa algoritmos propios a partir de principios publicados. No se copia código de
 - `forma-edit`: comandos nuevos (§7.2) con efectos y entidades tocadas, y deshacer/rehacer como el resto.
 - `forma-interop`: el UFO lleva componentes (`norad::Component`), `kerning.plist` y `groups.plist`.
 - `forma-compile`: fontc compila componentes y kerning a `glyf` compuesto y `GPOS kern`. Preflight nuevo: ciclos y bases inexistentes (defensa en profundidad).
-- `forma-validate`: chequeos nuevos `component.missing_base` y `kerning.missing_reference` (errores), y `glyph.mixed_contours_components` (aviso: fontc descompone esos glifos).
-- `forma-render`: renderiza componentes, y añade el rasterizado a un buffer de máscara para el IoU.
+- `forma-validate`: chequeos nuevos y perfiles de juego de caracteres (`charset`).
+  - Las referencias rotas ya las impiden las invariantes del modelo.
+  - `glyph.mixed_contours_components` (aviso: fontc descompone esos glifos).
+  - `kerning.unexported_reference` (aviso: el par apunta a un glifo que no se exporta).
+  - `binary.gpos` (error: el modelo tiene kerning y el binario no tiene tabla GPOS).
+- `forma-render`: renderiza componentes, aplica el kerning del master por defecto en `preview_text` y añade el rasterizado a una máscara de cobertura para el IoU.
 
 ## 7. Herramientas del registro
 
-### 7.1 Herramientas nuevas (15, en este orden al final del registro)
+### 7.1 Herramientas nuevas (15)
+
+El orden de registro es: `component_set`, `glyph_compose`, `glyph_decompose`, `glyph_stroke`, `remove_overlap`, `spacing_auto`, `kerning_get`, `kerning_set`, `kerning_auto`, `kerning_check`, `charset_check`, `image_inspect`, `image_trace`, `trace_compare`, `glyph_measure`. Van detrás de las 35 del Hito 1 y siguen el orden en que se construyen.
 
 | Herramienta | Conjunto | Efectos | Qué hace |
 |---|---|---|---|
@@ -192,16 +197,16 @@ Usa algoritmos propios a partir de principios publicados. No se copia código de
 | `kerning_get` | `kerning` | lectura | Devuelve los grupos y los pares de un master, con filtros y límites de respuesta como en el Hito 1. |
 | `kerning_set` | `kerning` | escritura | Fija o quita pares y grupos en una transacción. |
 | `kerning_auto` | `kerning` | escritura; destructiva si reemplaza kerning existente; masiva si > 20 pares | Calcula los grupos y pares de §6.2. Con `dry_run`, devuelve el plan. |
-| `kerning_check` | `kerning` | lectura | Lista las colisiones. Opcionalmente, una muestra visual en PNG de los peores pares. |
+| `kerning_check` | `kerning` | lectura | Lista las colisiones (pares, distancia mínima), las peores primero. Solo JSON: para verlas, el agente usa `preview_text`. |
 
-La 15.ª herramienta es `charset_check`, en `quality` (lectura). Recibe `profile` (`"unicase-es"`) o una lista explícita `codepoints`, e informa de los códigos faltantes y de qué glifos son compuestos y cuáles tienen contornos. El total pasa de 35 a **50 herramientas**. El orden de registro es el de esta tabla, con `charset_check` al final.
+La 15.ª herramienta es `charset_check`, en `quality` (lectura). Recibe `profile` (`"unicase-es"`) o una lista explícita `codepoints`, e informa de los códigos faltantes y de qué glifos son compuestos y cuáles tienen contornos. El total pasa de 35 a **50 herramientas**.
 
 - Los conjuntos nuevos `trace`, `components` y `kerning` se suman a los de `--toolsets`.
 - Los cambios en el snapshot de `tools/list` son **aditivos**.
 - Se actualizan las instrucciones del servidor con el flujo imagen → fuente (§8).
 
 ### 7.2 Comandos nuevos en `forma-edit`
-`SetComponents`, `Decompose`, `SetKerningPair` (valor 0 = quitar), `SetKerningGroup` (crear, renombrar o cambiar miembros) y `DeleteKerningGroup`. `glyph_compose` se expresa como `CreateGlyph` + `SetComponents` en una sola transacción. `glyph_stroke`, `remove_overlap` e `image_trace` calculan la geometría en el motor y la aplican con el comando de contorno existente.
+`SetComponents`, `Decompose`, `RemoveOverlap` (no destructivo), `SetKerningPair` (valor 0 = quitar), `SetKerningGroup` (crear o cambiar miembros) y `DeleteKerningGroup`. `glyph_compose` se expresa como `CreateGlyph` + `SetComponents` en una sola transacción. `glyph_stroke` e `image_trace` calculan la geometría en el motor y la aplican con el comando de contorno existente (`SetOutline`, destructivo si reemplaza un contorno dibujado).
 
 Todos están disponibles en `edit_batch`.
 
