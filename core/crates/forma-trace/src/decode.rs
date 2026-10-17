@@ -11,7 +11,8 @@ pub const MAX_IMAGE_BYTES: u64 = 67_108_864;
 /// The most pixels an image may declare.
 pub const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 
-/// Decodes a PNG or JPEG into RGB (alpha is dropped, composited over nothing).
+/// Decodes a PNG or JPEG into RGB. Transparent pixels are composited over
+/// white.
 ///
 /// The declared dimensions are read from the header and checked against
 /// [`MAX_IMAGE_PIXELS`] before any pixel memory is reserved.
@@ -58,5 +59,14 @@ pub fn decode(bytes: &[u8]) -> Result<RgbImage, TraceError> {
     let img = reader
         .decode()
         .map_err(|e| TraceError::Decode(e.to_string()))?;
-    Ok(img.to_rgb8())
+    let rgba = img.to_rgba8();
+    let mut out = RgbImage::new(rgba.width(), rgba.height());
+    for (dst, src) in out.pixels_mut().zip(rgba.pixels()) {
+        let a = u32::from(src.0[3]);
+        for i in 0..3 {
+            let c = u32::from(src.0[i]);
+            dst.0[i] = ((c * a + 255 * (255 - a) + 127) / 255) as u8;
+        }
+    }
+    Ok(out)
 }

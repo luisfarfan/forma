@@ -9,21 +9,28 @@ use crate::mask::{binary_mask, effective_upsample};
 use crate::palette::{PaletteEntry, background, palette, pick_ink};
 use crate::{MAX_CANDIDATES, TraceError};
 
-/// Pieces smaller than this fraction of the median area are noise.
+/// Pieces below this fraction of the median piece area are micro-noise and
+/// dropped at once.
+const MICRO_FRACTION: f64 = 0.005;
+/// Pieces from this fraction of the median piece area define the rows; final
+/// candidates below this fraction of the median candidate area are noise.
 const NOISE_FRACTION: f64 = 0.02;
-/// Pieces merge if they overlap horizontally by this much of the narrower.
+/// Pieces in a row merge if they overlap horizontally by this much of the
+/// narrower one.
 const MERGE_OVERLAP: f64 = 0.5;
-/// ... and their vertical gap is at most this fraction of the taller one.
-const MERGE_GAP: f64 = 0.35;
-/// The most raw components examined before giving up.
-const MAX_RAW_COMPONENTS: usize = 10_000;
+/// A small piece joins a row if its vertical centre is within the row band
+/// expanded by this fraction of the row height on each side.
+const BAND_MARGIN: f64 = 0.35;
+/// Memory-safety cap on raw connected components, far above any real
+/// alphabet.
+const MAX_RAW_COMPONENTS: usize = 1_000_000;
 
 /// Options of [`analyze`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TraceOptions {
     /// The ink color; `None` picks the most common non-background color.
     pub color: Option<[u8; 3]>,
-    /// Color tolerance, in RGB distance.
+    /// Color tolerance: CIE76 ΔE in Lab (D65).
     pub tolerance: f64,
     /// Upsampling factor of the mask used to find shapes.
     pub upsample: u32,
@@ -120,7 +127,7 @@ impl Piece {
     }
 }
 
-fn components(mask: &forma_render::Mask, u: u32) -> Vec<Piece> {
+fn components(mask: &forma_render::Mask, u: u32) -> Result<Vec<Piece>, TraceError> {
     let (w, h) = (mask.width as usize, mask.height as usize);
     let mut seen: Vec<bool> = mask.data.iter().map(|v| *v == 0).collect();
     let mut out = Vec::new();
@@ -155,9 +162,8 @@ fn components(mask: &forma_render::Mask, u: u32) -> Vec<Piece> {
             }
         }
         let u = u as usize;
-        // Below one original pixel of ink: always noise.
-        if area < (u * u) as u64 {
-            continue;
+        if out.len() >= MAX_RAW_COMPONENTS {
+            return Err(TraceError::TooManyCandidates(out.len() + 1));
         }
         out.push(Piece {
             x0: (minx / u) as u32,
@@ -167,40 +173,53 @@ fn components(mask: &forma_render::Mask, u: u32) -> Vec<Piece> {
             area,
         });
     }
-    out
+    Ok(out)
 }
 
-fn should_merge(a: &Piece, b: &Piece) -> bool {
-    let ov = f64::from(a.x1.min(b.x1)) - f64::from(a.x0.max(b.x0));
-    if ov <= 0.0 || ov < MERGE_OVERLAP * a.w().min(b.w()) {
-        return false;
+fn find(parent: &mut [usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
     }
-    let gap = (f64::from(a.y0.max(b.y0)) - f64::from(a.y1.min(b.y1))).max(0.0);
-    gap <= MERGE_GAP * a.h().max(b.h())
+    i
 }
 
-fn merge_pieces(mut pieces: Vec<Piece>) -> Vec<Piece> {
-    loop {
-        let mut merged = false;
-        'scan: for i in 0..pieces.len() {
-            for j in (i + 1)..pieces.len() {
-                if should_merge(&pieces[i], &pieces[j]) {
-                    let b = pieces.remove(j);
-                    let a = &mut pieces[i];
-                    a.x0 = a.x0.min(b.x0);
-                    a.y0 = a.y0.min(b.y0);
-                    a.x1 = a.x1.max(b.x1);
-                    a.y1 = a.y1.max(b.y1);
-                    a.area += b.area;
-                    merged = true;
-                    break 'scan;
+/// Merges the pieces of one row whose horizontal overlap is at least
+/// [`MERGE_OVERLAP`] of the narrower one: sweep by x with union-find.
+fn merge_row(mut pieces: Vec<Piece>) -> Vec<Piece> {
+    pieces.sort_by_key(|p| (p.x0, p.y0, p.x1, p.y1, p.area));
+    let n = pieces.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut active: Vec<usize> = Vec::new();
+    for j in 0..n {
+        active.retain(|&i| pieces[i].x1 > pieces[j].x0);
+        for &i in &active {
+            let (a, b) = (&pieces[i], &pieces[j]);
+            let ov = f64::from(a.x1.min(b.x1)) - f64::from(a.x0.max(b.x0));
+            if ov > 0.0 && ov >= MERGE_OVERLAP * a.w().min(b.w()) {
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                if ri != rj {
+                    parent[rj.max(ri)] = rj.min(ri);
                 }
             }
         }
-        if !merged {
-            return pieces;
-        }
+        active.push(j);
     }
+    let mut merged: Vec<Option<Piece>> = vec![None; n];
+    for (i, p) in pieces.iter().enumerate() {
+        let r = find(&mut parent, i);
+        merged[r] = Some(match merged[r] {
+            None => *p,
+            Some(m) => Piece {
+                x0: m.x0.min(p.x0),
+                y0: m.y0.min(p.y0),
+                x1: m.x1.max(p.x1),
+                y1: m.y1.max(p.y1),
+                area: m.area + p.area,
+            },
+        });
+    }
+    merged.into_iter().flatten().collect()
 }
 
 fn median(values: &mut [f64]) -> f64 {
@@ -215,10 +234,11 @@ fn median(values: &mut [f64]) -> f64 {
     }
 }
 
-fn group_rows(pieces: &[Piece]) -> Vec<Vec<Piece>> {
+/// Rows of `pieces` by vertical overlap: `(top, bottom, members)`, top to
+/// bottom.
+fn group_rows(pieces: &[Piece]) -> Vec<(u32, u32, Vec<Piece>)> {
     let mut sorted: Vec<Piece> = pieces.to_vec();
     sorted.sort_by_key(|p| (p.y0, p.x0, p.y1, p.x1));
-    // (ymin, ymax, members)
     let mut rows: Vec<(u32, u32, Vec<Piece>)> = Vec::new();
     for p in sorted {
         let found = rows.iter().position(|(lo, hi, _)| {
@@ -236,18 +256,14 @@ fn group_rows(pieces: &[Piece]) -> Vec<Vec<Piece>> {
         }
     }
     rows.sort_by_key(|(lo, hi, _)| (*lo, *hi));
-    rows.into_iter()
-        .map(|(_, _, mut m)| {
-            m.sort_by_key(|p| (p.x0, p.y0, p.x1, p.y1, p.area));
-            m
-        })
-        .collect()
+    rows
 }
 
 /// Finds the glyph candidates of `image`. Deterministic.
 ///
-/// Noise is removed after nearby pieces are merged (so the dot of an "i" is
-/// not mistaken for noise).
+/// Rows come from the large pieces; small pieces join the row whose band holds
+/// them; pieces merge only within a row (so ":" and "i" stay whole and nothing
+/// cascades across rows).
 ///
 /// # Errors
 ///
@@ -287,37 +303,89 @@ pub fn analyze(image: &RgbImage, opts: &TraceOptions) -> Result<Analysis, TraceE
     analysis.ink = ink;
     let u = effective_upsample(width, height, opts.upsample);
     let mask = binary_mask(image, analysis.background, ink, opts.tolerance, u);
-    let raw = components(&mask, u);
+    let raw = components(&mask, u)?;
     drop(mask);
-    if raw.len() > MAX_RAW_COMPONENTS {
-        return Err(TraceError::TooManyCandidates(raw.len()));
-    }
-    let merged = merge_pieces(raw);
-    let mut areas: Vec<f64> = merged.iter().map(|p| p.area as f64).collect();
-    let floor = median(&mut areas) * NOISE_FRACTION;
-    let kept: Vec<Piece> = merged
+    let mut areas: Vec<f64> = raw.iter().map(|p| p.area as f64).collect();
+    let median_piece = median(&mut areas);
+    let solid: Vec<Piece> = raw
         .into_iter()
-        .filter(|p| p.area as f64 >= floor)
+        .filter(|p| p.area as f64 >= median_piece * MICRO_FRACTION)
         .collect();
-    if kept.is_empty() {
+    let (large, small): (Vec<Piece>, Vec<Piece>) = solid
+        .into_iter()
+        .partition(|p| p.area as f64 >= median_piece * NOISE_FRACTION);
+    let mut rows = group_rows(&large);
+    // Small pieces join the row whose expanded band holds their centre
+    // (nearest band centre wins); the rest are noise.
+    let large_per_row: Vec<Vec<Piece>> = rows.iter().map(|r| r.2.clone()).collect();
+    for p in small {
+        let cy = (f64::from(p.y0) + f64::from(p.y1)) / 2.0;
+        let mut best: Option<(f64, usize)> = None;
+        for (i, (lo, hi, _)) in rows.iter().enumerate() {
+            let (lo, hi) = (f64::from(*lo), f64::from(*hi));
+            let margin = (hi - lo) * BAND_MARGIN;
+            if cy >= lo - margin && cy <= hi + margin {
+                let dist = (cy - (lo + hi) / 2.0).abs();
+                if best.is_none_or(|(d, _)| dist < d) {
+                    best = Some((dist, i));
+                }
+            }
+        }
+        if let Some((_, i)) = best {
+            rows[i].2.push(p);
+        }
+    }
+    let merged: Vec<(usize, Vec<Piece>)> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, (_, _, members))| (i, merge_row(members)))
+        .collect();
+    let mut areas: Vec<f64> = merged
+        .iter()
+        .flat_map(|(_, c)| c.iter().map(|p| p.area as f64))
+        .collect();
+    let floor = median(&mut areas) * NOISE_FRACTION;
+    let kept: Vec<(usize, Vec<Piece>)> = merged
+        .into_iter()
+        .map(|(i, c)| {
+            (
+                i,
+                c.into_iter()
+                    .filter(|p| p.area as f64 >= floor)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .filter(|(_, c)| !c.is_empty())
+        .collect();
+    let total: usize = kept.iter().map(|(_, c)| c.len()).sum();
+    if total == 0 {
         analysis.note = Some("no ink found: no shape has the ink color".into());
         return Ok(analysis);
     }
-    if kept.len() > MAX_CANDIDATES {
-        return Err(TraceError::TooManyCandidates(kept.len()));
+    if total > MAX_CANDIDATES {
+        return Err(TraceError::TooManyCandidates(total));
     }
     let uu = u64::from(u) * u64::from(u);
-    for (ri, row) in group_rows(&kept).into_iter().enumerate() {
-        let mut tops: Vec<f64> = row.iter().map(|p| f64::from(p.y0)).collect();
-        let mut bottoms: Vec<f64> = row.iter().map(|p| f64::from(p.y1)).collect();
+    for (ri, (orig, cands)) in kept.into_iter().enumerate() {
+        let mut tops: Vec<f64> = large_per_row[orig]
+            .iter()
+            .map(|p| f64::from(p.y0))
+            .collect();
+        let mut bottoms: Vec<f64> = large_per_row[orig]
+            .iter()
+            .map(|p| f64::from(p.y1))
+            .collect();
         analysis.rows.push(Row {
             index: ri,
-            top: tops.iter().copied().fold(f64::MAX, f64::min),
+            top: cands
+                .iter()
+                .map(|p| f64::from(p.y0))
+                .fold(f64::MAX, f64::min),
             cap_px: median(&mut tops),
             baseline_px: median(&mut bottoms),
-            bottom: bottoms.iter().copied().fold(0.0, f64::max),
+            bottom: cands.iter().map(|p| f64::from(p.y1)).fold(0.0, f64::max),
         });
-        for p in row {
+        for p in cands {
             analysis.candidates.push(Candidate {
                 index: analysis.candidates.len(),
                 row: ri,

@@ -85,7 +85,7 @@ pub fn annotated_png(image: &RgbImage, analysis: &Analysis) -> Result<Vec<u8>, T
     let mut img = image.clone();
     for row in &analysis.rows {
         for x in 0..i64::from(img.width()) {
-            put(&mut img, x, row.baseline_px.round() as i64, BASELINE);
+            put(&mut img, x, row.baseline_px.round() as i64 - 1, BASELINE);
             put(&mut img, x, row.cap_px.round() as i64, CAP);
         }
     }

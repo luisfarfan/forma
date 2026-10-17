@@ -32,6 +32,37 @@ pub(crate) fn to_f(c: [u8; 3]) -> [f64; 3] {
     [f64::from(c[0]), f64::from(c[1]), f64::from(c[2])]
 }
 
+/// sRGB (0-255, gamma-encoded) to CIE Lab under D65.
+pub(crate) fn lab(c: [u8; 3]) -> [f64; 3] {
+    let lin = |v: u8| {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (r, g, b) = (lin(c[0]), lin(c[1]), lin(c[2]));
+    let x = (0.412_456_4 * r + 0.357_576_1 * g + 0.180_437_5 * b) / 0.950_47;
+    let y = 0.212_672_9 * r + 0.715_152_2 * g + 0.072_175_0 * b;
+    let z = (0.019_333_9 * r + 0.119_192_0 * g + 0.950_304_1 * b) / 1.088_83;
+    let f = |t: f64| {
+        const D: f64 = 6.0 / 29.0;
+        if t > D * D * D {
+            t.cbrt()
+        } else {
+            t / (3.0 * D * D) + 4.0 / 29.0
+        }
+    };
+    let (fx, fy, fz) = (f(x), f(y), f(z));
+    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+/// CIE76 color difference between two sRGB colors.
+pub(crate) fn delta_e(a: [u8; 3], b: [u8; 3]) -> f64 {
+    dist2(lab(a), lab(b)).sqrt()
+}
+
 fn to_u8(c: [f64; 3]) -> [u8; 3] {
     let r = |v: f64| v.round().clamp(0.0, 255.0) as u8;
     [r(c[0]), r(c[1]), r(c[2])]
@@ -88,9 +119,8 @@ impl Lcg {
 
 fn sample(image: &RgbImage) -> Vec<[f64; 3]> {
     let (w, h) = image.dimensions();
-    let n = u64::from(w) * u64::from(h);
     let mut step = 1u32;
-    while n.div_ceil(u64::from(step) * u64::from(step)) > MAX_SAMPLES {
+    while u64::from(w.div_ceil(step)) * u64::from(h.div_ceil(step)) > MAX_SAMPLES {
         step += 1;
     }
     let mut out = Vec::new();
@@ -206,9 +236,35 @@ pub(crate) fn pick_ink(
     if let Some(c) = explicit {
         return Some(c);
     }
-    let bg = to_f(background);
     palette
         .iter()
-        .find(|e| dist2(to_f(e.color), bg).sqrt() > tolerance * 2.0)
+        .find(|e| delta_e(e.color, background) > tolerance)
         .map(|e| e.color)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(got: [f64; 3], want: [f64; 3]) {
+        for i in 0..3 {
+            assert!((got[i] - want[i]).abs() < 0.1, "{got:?} vs {want:?}");
+        }
+    }
+
+    #[test]
+    fn lab_matches_known_values() {
+        close(lab([255, 255, 255]), [100.0, 0.0, 0.0]);
+        close(lab([0, 0, 0]), [0.0, 0.0, 0.0]);
+        close(lab([255, 0, 0]), [53.24, 80.09, 67.20]);
+        close(lab([0, 0, 255]), [32.30, 79.19, -107.86]);
+    }
+
+    #[test]
+    fn delta_e_is_symmetric_and_zero_on_equal() {
+        assert_eq!(delta_e([10, 20, 30], [10, 20, 30]), 0.0);
+        let d = delta_e([0, 0, 0], [255, 255, 255]);
+        assert!((d - 100.0).abs() < 0.1);
+        assert_eq!(d, delta_e([255, 255, 255], [0, 0, 0]));
+    }
 }

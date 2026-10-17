@@ -3,7 +3,7 @@
 use forma_render::{MAX_MASK_PIXELS, Mask};
 use image::RgbImage;
 
-use crate::palette::{dist2, to_f};
+use crate::palette::{dist2, lab};
 
 /// The largest mask side accepted by the renderer.
 const MAX_SIDE: u64 = 65_535;
@@ -25,21 +25,20 @@ pub(crate) fn effective_upsample(width: u32, height: u32, requested: u32) -> u32
     u
 }
 
-/// How much of `ink` a pixel holds, 0 to 1: its position along the
-/// background-to-ink line, zero if it lies too far from that line (another
-/// color).
-fn soft(p: [u8; 3], bg: [f64; 3], d: [f64; 3], len2: f64, tolerance: f64) -> f32 {
-    let v = [
-        f64::from(p[0]) - bg[0],
-        f64::from(p[1]) - bg[1],
-        f64::from(p[2]) - bg[2],
-    ];
-    let t = (v[0] * d[0] + v[1] * d[1] + v[2] * d[2]) / len2;
-    let proj = [d[0] * t, d[1] * t, d[2] * t];
-    if dist2(v, proj).sqrt() > tolerance * 2.0 {
+/// How much of `ink` a pixel holds, 0 to 1: full inside the tolerance of the
+/// ink; for other pixels near the background-to-ink segment (an anti-aliased
+/// edge) the distance to the background over the sum of both distances; zero
+/// for any other color.
+fn soft(p: [f64; 3], bg: [f64; 3], ink: [f64; 3], span: f64, tolerance: f64) -> f32 {
+    let d_ink = dist2(p, ink).sqrt();
+    if d_ink <= tolerance {
+        return 1.0;
+    }
+    let d_bg = dist2(p, bg).sqrt();
+    if d_bg + d_ink > span + tolerance {
         return 0.0;
     }
-    t.clamp(0.0, 1.0) as f32
+    (d_bg / (d_bg + d_ink)) as f32
 }
 
 /// Binary ink mask (0 or 255) at `upsample` times the image size (reduced if
@@ -54,14 +53,11 @@ pub(crate) fn binary_mask(
 ) -> Mask {
     let (w, h) = image.dimensions();
     let u = effective_upsample(w, h, upsample);
-    let bg = to_f(background);
-    let d = {
-        let i = to_f(ink);
-        [i[0] - bg[0], i[1] - bg[1], i[2] - bg[2]]
-    };
-    let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    let bg = lab(background);
+    let ink_lab = lab(ink);
+    let span = dist2(bg, ink_lab).sqrt();
     let (mw, mh) = (w * u, h * u);
-    if len2 <= tolerance * tolerance || w == 0 || h == 0 {
+    if span <= tolerance || w == 0 || h == 0 {
         return Mask {
             width: mw,
             height: mh,
@@ -70,7 +66,7 @@ pub(crate) fn binary_mask(
     }
     let mut s = vec![0f32; w as usize * h as usize];
     for (i, px) in image.pixels().enumerate() {
-        s[i] = soft(px.0, bg, d, len2, tolerance);
+        s[i] = soft(lab(px.0), bg, ink_lab, span, tolerance);
     }
     let at = |x: i64, y: i64| -> f32 {
         let xi = x.clamp(0, i64::from(w) - 1) as usize;
