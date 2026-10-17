@@ -1002,7 +1002,7 @@ fn metrics_get_lsb_rsb_null_for_empty() {
         metrics,
         json!({ "rev": 1, "metrics": [
             { "glyph": "space", "advance_width": 250.0, "lsb": null, "rsb": null }
-        ] })
+        ], "total": 1, "truncated": false })
     );
     let glyph = get(&mut engine, &doc, "space");
     assert_eq!(glyph["bbox"], Value::Null);

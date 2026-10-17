@@ -15,6 +15,16 @@ pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MASS_THRESHOLD: usize = 20;
 /// How long an approval plan token stays valid, in seconds.
 pub const PLAN_TTL_SECS: u64 = 300;
+/// The most entries the lists of `geometry_check` (issues), `validate`
+/// (findings) and `metrics_get` (glyphs) hold, so that one response stays
+/// within about 10 000 tokens; the results count every entry (`total`) and
+/// say when the list was cut (`truncated`).
+pub const MAX_RESULT_ENTRIES: usize = 200;
+/// The most bytes of compact JSON those lists hold: a list stops before the
+/// entry that would pass this, even under [`MAX_RESULT_ENTRIES`] (entries
+/// with long glyph names are larger), so that the whole response stays well
+/// under 40 KB.
+pub const MAX_RESULT_LIST_BYTES: usize = 32 * 1024;
 
 /// The limits as reported by `forma_capabilities`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
