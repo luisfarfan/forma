@@ -26,6 +26,10 @@ pub enum TraceError {
         /// How many candidates exist.
         count: usize,
     },
+    /// An argument is outside its allowed range (e.g. a cap height that is
+    /// not a positive number).
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
     /// Vectorization failed.
     #[error("vectorization failed: {0}")]
     Vectorize(String),

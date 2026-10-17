@@ -4,10 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "FORMA image tracing: decode, palette, ink mask and glyph candidates"
+description = "FORMA image tracing: decode, palette, ink mask, glyph candidates, vectorization and style measures"
 
 [dependencies]
+forma-model = { path = "../forma-model" }
+forma-geometry = { path = "../forma-geometry" }
 forma-render = { path = "../forma-render" }
+kurbo = { workspace = true }
+visioncortex = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

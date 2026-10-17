@@ -57,3 +57,6 @@ jsonschema = { version = "0.58.6", default-features = false }
 # Decodes the PNG/JPEG source images of the image-to-font pipeline (ADR 0009). Only
 # the two formats are enabled; MIT OR Apache-2.0.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# Turns the binary mask of each traced glyph into cubic splines (ADR 0009); FORMA
+# does its own color analysis and mask. MIT OR Apache-2.0.
+visioncortex = "0.9.3"
