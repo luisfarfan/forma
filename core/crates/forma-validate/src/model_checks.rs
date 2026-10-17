@@ -2,7 +2,7 @@
 //! vertical metrics. They run on a font that satisfies the model invariants.
 
 use forma_geometry::{IssueKind, check_paths};
-use forma_model::{Font, Glyph, MasterId};
+use forma_model::{Font, Glyph, GlyphId, KernRef, MasterId};
 
 use crate::{Finding, Severity};
 
@@ -17,6 +17,8 @@ pub(crate) fn check_model(font: &Font) -> Vec<Finding> {
     let mut findings = check_geometry(font);
     findings.extend(check_unicode(font));
     findings.extend(check_vertical_metrics(font));
+    findings.extend(check_mixed_glyphs(font));
+    findings.extend(check_kerning_references(font));
     findings
 }
 
@@ -130,6 +132,87 @@ fn check_vertical_metrics(font: &Font) -> Vec<Finding> {
             )
         })
         .collect()
+}
+
+/// Exported glyphs with contours of their own and components in the same
+/// layer. TrueType cannot hold a simple part in a composite glyph, so such a
+/// glyph is rarely what was intended.
+fn check_mixed_glyphs(font: &Font) -> Vec<Finding> {
+    let several_masters = font.masters.len() > 1;
+    let mut findings = Vec::new();
+    for glyph in exported_glyphs(font) {
+        for (master, layer) in &glyph.layers {
+            if layer.paths.is_empty() || layer.components.is_empty() {
+                continue;
+            }
+            let prefix = if several_masters {
+                format!("master {:?}: ", master_name(font, *master))
+            } else {
+                String::new()
+            };
+            findings.push(Finding::new(
+                "glyph.mixed_contours_components",
+                Severity::Warning,
+                Some(&glyph.name),
+                format!(
+                    "{prefix}the layer has {} contour(s) and {} component(s); \
+                     a glyph should be made of one or the other",
+                    layer.paths.len(),
+                    layer.components.len()
+                ),
+            ));
+        }
+    }
+    findings
+}
+
+/// Kerning that mentions glyphs which are not exported: they are left out of
+/// the binary, so their pairs and group memberships are dropped from it.
+fn check_kerning_references(font: &Font) -> Vec<Finding> {
+    let unexported = |id: GlyphId| {
+        font.glyphs
+            .get(&id)
+            .filter(|glyph| !glyph.export)
+            .map(|glyph| glyph.name.as_str())
+    };
+    let mut findings = Vec::new();
+    let mut warn = |glyph: &str, message: String| {
+        findings.push(Finding::new(
+            "kerning.unexported_reference",
+            Severity::Warning,
+            Some(glyph),
+            message,
+        ));
+    };
+    for group in font.kerning.groups.values() {
+        for name in group.members.iter().filter_map(|&id| unexported(id)) {
+            warn(
+                name,
+                format!(
+                    "the glyph is in the kerning group {:?} but is not exported",
+                    group.name
+                ),
+            );
+        }
+    }
+    for (master, pairs) in font.kerning.pairs.iter() {
+        for &(first, second) in pairs.keys() {
+            for reference in [first, second] {
+                if let KernRef::Glyph(id) = reference
+                    && let Some(name) = unexported(id)
+                {
+                    warn(
+                        name,
+                        format!(
+                            "a kerning pair of master {:?} uses the glyph, which is not exported",
+                            master_name(font, *master)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    findings
 }
 
 #[cfg(test)]
