@@ -83,7 +83,7 @@ forma new demo.forma --family "Demo Sans"
 
 forma call glyph_create --doc-path demo.forma --save --args '{
   "name": "H", "unicodes": ["U+0048"], "advance_width": 680,
-  "svg_path": "M80 0 L180 0 L180 310 L500 310 L500 0 L600 0 L600 700 L500 700 L500 400 L180 400 L180 700 L80 700 Z"}'
+  "svg_path": "M80 0H180V310H500V0H600V700H500V400H180V700H80Z"}'
 
 forma validate demo.forma                        # sale con 0: sin errores
 forma export demo.forma --format ttf --out demo.ttf
@@ -124,22 +124,13 @@ Un motor, varias puertas de entrada. Toda la lógica vive en el núcleo Rust. La
 
 ```mermaid
 flowchart TB
-  subgraph clients [" "]
-    direction LR
-    CC["Claude Code"]
-    CX["Codex"]
-    ANY["cualquier cliente MCP"]
-    CLI["CLI forma"]
-    APP["app de escritorio<br/>(Hito 3)"]
-  end
-
-  CC & CX & ANY -- "stdio · JSON-RPC" --> MCP["forma-mcp<br/>fachada del protocolo"]
-  MCP --> ENG
-  CLI --> ENG
-  APP -.-> ENG
-
-  ENG["forma-engine<br/>registro de comandos · políticas · aprobaciones · sandbox"]
-  ENG --> EDIT["forma-edit<br/>transacciones · revisiones · historial"]
+  CC["Claude Code"] -->|stdio| MCP
+  CX["Codex"] -->|stdio| MCP
+  ANY["cualquier cliente MCP"] -->|stdio| MCP
+  MCP["forma-mcp<br/>fachada del protocolo"] --> ENG
+  CLI["CLI forma"] --> ENG
+  APP["app de escritorio<br/>(Hito 3)"] -.-> ENG
+  ENG["forma-engine<br/>registro de comandos · políticas · aprobaciones · sandbox"] --> EDIT["forma-edit<br/>transacciones · revisiones · historial"]
   EDIT --> MODEL["forma-model"]
   ENG --> STORE["forma-store<br/>.forma · .formapackage"]
   ENG --> GEO["forma-geometry"]
