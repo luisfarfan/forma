@@ -170,12 +170,25 @@ def check_fonttools(check: Check, font: TTFont, expected: dict) -> None:
 
 def compile_with_fontmake(check: Check, ufo: Path, work_dir: Path) -> Path | None:
     out = work_dir / "fontmake.ttf"
+    # A TTF left by an earlier run (--work-dir is reused) must not pass for the
+    # output of this one if fontmake fails to write a new file.
+    out.unlink(missing_ok=True)
     # The same head timestamps as fontc gets from scripts/acceptance.*.
     env = dict(os.environ, SOURCE_DATE_EPOCH="0")
     command = [sys.executable, "-I", "-m", "fontmake", "-u", str(ufo), "-o", "ttf"]
     command += ["--output-path", str(out)]
+    # The output is only shown in a failure message: decode it as UTF-8 and
+    # never fail on bytes that are not (otherwise `text=True` uses the locale's
+    # code page, and on Windows a message with a non-ASCII path can crash).
     result = subprocess.run(
-        command, cwd=work_dir, env=env, capture_output=True, text=True, check=False
+        command,
+        cwd=work_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if result.returncode != 0 or not out.is_file():
         check.fail(f"fontmake failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")

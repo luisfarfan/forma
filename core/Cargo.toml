@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The cargo-fuzz crate needs nightly; it has its own lockfile and is built by
+# .github/workflows/nightly.yml only.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"

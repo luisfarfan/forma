@@ -1,0 +1,29 @@
+{
+  "glyph_order": [
+    "63337ea0-07ab-485e-8805-888c14937ceb",
+    "118723cb-b0eb-4236-aadd-d691bc6cd22b"
+  ],
+  "id": "36572393-700e-4a1e-854f-89655a574bc1",
+  "info": {
+    "copyright": null,
+    "designer": null,
+    "family_name": "Seed Sans",
+    "style_name": "Regular",
+    "version_major": 1,
+    "version_minor": 0
+  },
+  "lib": {},
+  "masters": [
+    {
+      "id": "6ed423bf-085a-4e6b-b17b-08d4f0c77cfa",
+      "metrics": {
+        "ascender": 800.0,
+        "cap_height": 700.0,
+        "descender": -200.0,
+        "x_height": 500.0
+      },
+      "name": "Regular"
+    }
+  ],
+  "units_per_em": 1000
+}

@@ -7,9 +7,11 @@
 //! a crash sees either the old file or the new one, never a mixture. Whatever
 //! goes wrong, the temporary file is removed and the target is left alone.
 
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use uuid::Uuid;
 
@@ -42,18 +44,43 @@ pub(crate) fn is_temp_name(name: &str) -> bool {
 /// feature (through the self dev-dependency in `Cargo.toml`) to avoid spending
 /// minutes in `fsync` on a property test. Nothing else may enable it: a build
 /// without durability can lose a saved font on power failure.
-const FSYNC: bool = !cfg!(feature = "test-no-fsync");
+///
+/// In such a test build, `FORMA_REAL_FSYNC=1` in the environment turns the
+/// flushes back on, so CI can also run this crate's tests with the real calls
+/// (see `.github/workflows/ci.yml`). Without the feature the environment is
+/// never read and the answer is a constant `true`.
+fn fsync_enabled() -> bool {
+    if !cfg!(feature = "test-no-fsync") {
+        return true;
+    }
+    static REAL_FSYNC: OnceLock<bool> = OnceLock::new();
+    *REAL_FSYNC.get_or_init(|| real_fsync_requested(std::env::var_os("FORMA_REAL_FSYNC")))
+}
+
+/// Whether the value of `FORMA_REAL_FSYNC` asks for the real flushes: any
+/// value but empty and `0`.
+fn real_fsync_requested(value: Option<OsString>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
 
 /// Flushes an open file's data to the storage device.
 pub(crate) fn sync_file(file: &File) -> io::Result<()> {
-    if FSYNC { file.sync_all() } else { Ok(()) }
+    if fsync_enabled() {
+        file.sync_all()
+    } else {
+        Ok(())
+    }
 }
 
 /// Flushes the data of an open file (and the metadata needed to read it back,
 /// such as its length) to the storage device. Cheaper than [`sync_file`] when
 /// only the contents changed, as when appending to a log.
 pub(crate) fn sync_file_data(file: &File) -> io::Result<()> {
-    if FSYNC { file.sync_data() } else { Ok(()) }
+    if fsync_enabled() {
+        file.sync_data()
+    } else {
+        Ok(())
+    }
 }
 
 /// Creates a new file at `path`, which must not exist, holding `contents`
@@ -99,7 +126,7 @@ where
 /// Data must be on disk before the rename makes the file visible, or a power
 /// failure could leave an empty file under the final name.
 fn flush_file(path: &Path) -> io::Result<()> {
-    if FSYNC {
+    if fsync_enabled() {
         OpenOptions::new().write(true).open(path)?.sync_all()
     } else {
         Ok(())
@@ -152,7 +179,9 @@ pub(crate) fn sync_parent(path: &Path) {
 /// its metadata.
 #[cfg(unix)]
 pub(crate) fn sync_dir(dir: &Path) {
-    if FSYNC && let Ok(dir) = File::open(dir) {
+    if fsync_enabled()
+        && let Ok(dir) = File::open(dir)
+    {
         let _ = dir.sync_all();
     }
 }
@@ -174,7 +203,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{write_atomic, write_atomic_at, write_file_atomic};
+    use super::{real_fsync_requested, write_atomic, write_atomic_at, write_file_atomic};
 
     fn names(dir: &std::path::Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)
@@ -183,6 +212,16 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn real_fsync_is_requested_by_any_value_but_empty_and_zero() {
+        let value = |text: &str| Some(text.into());
+        assert!(!real_fsync_requested(None));
+        assert!(!real_fsync_requested(value("")));
+        assert!(!real_fsync_requested(value("0")));
+        assert!(real_fsync_requested(value("1")));
+        assert!(real_fsync_requested(value("true")));
     }
 
     #[test]

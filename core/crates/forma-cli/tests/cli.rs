@@ -6,7 +6,9 @@
 //! `--yes`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use assert_cmd::Command;
 use assert_cmd::assert::Assert;
@@ -972,7 +974,9 @@ fn mcp_journal_dir_is_created() {
     assert!(journal.is_dir());
 }
 
-/// `…/recovery` somewhere under `root`.
+/// `…/recovery` somewhere under `root`. Only the Unix-only test of the default journal
+/// folder uses it (it redirects `HOME`), so it is not built elsewhere.
+#[cfg(unix)]
 fn find_recovery_dir(root: &Path) -> Option<PathBuf> {
     for entry in fs::read_dir(root).ok()?.flatten() {
         let path = entry.path();

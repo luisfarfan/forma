@@ -12,6 +12,8 @@
 #   python -m venv tools/oracle/.venv
 #   tools/oracle/.venv/Scripts/pip install -r tools/oracle/requirements.txt
 # fontspector is optional: cargo install fontspector --locked
+# With FORMA_REQUIRE_FONTSPECTOR=1 (CI sets it) a missing fontspector is a
+# failure instead of a SKIPPED line, so a broken install cannot pass unnoticed.
 #
 # Artefacts go to out/acceptance/, which is recreated on every run.
 
@@ -145,6 +147,10 @@ if ($Fontspector) {
     }
 }
 else {
+    $Required = [Environment]::GetEnvironmentVariable('FORMA_REQUIRE_FONTSPECTOR')
+    if ($Required -and $Required -ne '0') {
+        Stop-Acceptance "fontspector is required (FORMA_REQUIRE_FONTSPECTOR=$Required) but is not on the PATH; install it with: cargo install fontspector --locked"
+    }
     Write-Host 'fontspector: SKIPPED (not on the PATH; install it with: cargo install fontspector --locked)'
 }
 

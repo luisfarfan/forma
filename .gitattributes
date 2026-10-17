@@ -1,0 +1,13 @@
+# Text files are LF in every checkout, Windows included. Some files are
+# compared byte for byte (the generated docs/api/tools.md, insta snapshots,
+# canonical JSON), and a CRLF checkout (core.autocrlf) would make them differ.
+* text=auto eol=lf
+
+# Never touched: binary fonts, images and documents.
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.png binary
+*.forma binary
+*.seed binary

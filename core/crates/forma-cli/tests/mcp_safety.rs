@@ -186,6 +186,8 @@ async fn path_outside_allow_dir_rejected(#[case] mode: ClientLifecycleMode) {
         let root = root.path();
         let outside = TempDir::new().expect("a folder outside the root");
 
+        // Only the Unix-only symlink case below pushes to it.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut targets = vec![
             outside.path().join("elsewhere.forma"),
             root.join("..").join("escaped.forma"),
