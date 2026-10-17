@@ -8,6 +8,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use forma_model::{Font, Glyph, Layer, Master, MasterId, Node, NodeKind, Path as Contour};
 use norad::fontinfo::NonNegativeIntegerOrFloat;
@@ -81,6 +83,28 @@ pub fn write_ufo(font: &Font, master: MasterId, dir: &Path) -> Result<(), Intero
     // system is touched.
     let ufo = build_ufo(font, master)?;
     install(&ufo, dir)
+}
+
+/// Writes the same UFO as [`write_ufo`] straight into `dir`, which must not
+/// exist yet, with no staging folder and no folder rename.
+///
+/// For private scratch folders, such as the compiler's, where a half-written
+/// UFO left behind by a failure does not matter. Skipping the rename matters on
+/// Windows: renaming a folder fails while any file inside it is open, and virus
+/// scanners open freshly written files.
+///
+/// # Errors
+///
+/// As [`write_ufo`], and [`InteropError::DestinationExists`] if anything is
+/// already at `dir`. On failure `dir` may hold part of the UFO.
+pub fn write_ufo_unstaged(font: &Font, master: MasterId, dir: &Path) -> Result<(), InteropError> {
+    let ufo = build_ufo(font, master)?;
+    match fs::symlink_metadata(dir) {
+        Ok(_) => return Err(InteropError::DestinationExists(dir.to_path_buf())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    ufo.save(dir).map_err(|error| write_failure(&error))
 }
 
 // ---------------------------------------------------------------------------
@@ -275,18 +299,44 @@ fn install(ufo: &norad::Font, dir: &Path) -> Result<(), InteropError> {
 /// is put back, so a failure never leaves `dir` without a UFO.
 fn move_into_place(staging: &Path, dir: &Path, replacing: bool) -> io::Result<()> {
     if !replacing {
-        return fs::rename(staging, dir);
+        return rename_folder(staging, dir);
     }
     let backup = sibling(dir, "old")?;
-    fs::rename(dir, &backup)?;
-    if let Err(error) = fs::rename(staging, dir) {
+    rename_folder(dir, &backup)?;
+    if let Err(error) = rename_folder(staging, dir) {
         // Best effort: if even this fails the old UFO is still intact in `backup`.
-        let _ = fs::rename(&backup, dir);
+        let _ = rename_folder(&backup, dir);
         return Err(error);
     }
     // The export succeeded; a leftover backup is not worth failing it for.
     discard(&backup);
     Ok(())
+}
+
+/// The pauses between attempts of [`rename_folder`] on Windows: about two
+/// seconds in all.
+const RENAME_PAUSES_MS: [u64; 8] = [10, 20, 40, 80, 160, 320, 500, 800];
+
+/// Renames the folder `from` to `to`.
+///
+/// On Windows a folder cannot be renamed while any file inside it is open,
+/// and the rename fails with "Access is denied": virus scanners and the search
+/// indexer routinely open files right after they are written. So there a
+/// `PermissionDenied` failure is retried after a growing pause (see
+/// [`RENAME_PAUSES_MS`]) before it is returned. Elsewhere this is `fs::rename`.
+fn rename_folder(from: &Path, to: &Path) -> io::Result<()> {
+    let mut pauses = RENAME_PAUSES_MS.iter();
+    loop {
+        match fs::rename(from, to) {
+            Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied => {
+                match pauses.next() {
+                    Some(&ms) => thread::sleep(Duration::from_millis(ms)),
+                    None => return Err(error),
+                }
+            }
+            result => return result,
+        }
+    }
 }
 
 /// A path next to `dir`, named `<dir name>.<tag>-<uuid>`.

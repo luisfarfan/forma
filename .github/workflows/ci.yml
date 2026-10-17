@@ -75,8 +75,10 @@ jobs:
 
       # ---- tests (all three systems) ----
 
+      # --no-fail-fast: one failing test binary must not hide the results of
+      # the others (a Windows-only failure would otherwise mask the rest).
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
       # Intel Macs are still a supported target: the runner is Apple silicon,
       # so this only checks that everything compiles for x86_64.

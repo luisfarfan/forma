@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use forma_interop::{InteropError, write_ufo};
+use forma_interop::{InteropError, write_ufo, write_ufo_unstaged};
 use forma_model::{
     Font, Glyph, GlyphId, Layer, Master, MasterId, Node, NodeKind, Path as Contour, PathId,
     VerticalMetrics,
@@ -734,4 +734,66 @@ fn existing_file_is_refused() {
     );
     assert_eq!(fs::read_to_string(&dir).expect("read file"), "just a file");
     assert_eq!(entries(tmp.path()), ["Out.ufo"]);
+}
+
+// ---------------------------------------------------------------------------
+// Writing without a staging folder (the compiler's scratch UFO)
+// ---------------------------------------------------------------------------
+
+/// Every file under `dir`, as (path relative to `dir`, contents), sorted.
+fn tree(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                let relative = path.strip_prefix(root).expect("under root").to_path_buf();
+                out.push((relative, fs::read(&path).expect("read file")));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+#[test]
+fn unstaged_write_gives_the_same_ufo_with_nothing_beside_it() {
+    let font = sample_font();
+    let (_staged_tmp, staged) = destination();
+    export(&font, &staged);
+    let (tmp, unstaged) = destination();
+
+    write_ufo_unstaged(&font, font.default_master().id, &unstaged).expect("write the UFO");
+
+    assert_eq!(tree(&unstaged), tree(&staged));
+    assert_eq!(entries(tmp.path()), ["Out.ufo"]);
+    load(&unstaged);
+}
+
+#[test]
+fn unstaged_write_refuses_anything_at_the_destination() {
+    let font = sample_font();
+    let master = font.default_master().id;
+
+    let (_tmp, dir) = destination();
+    fs::create_dir(&dir).expect("create dir");
+    let error = write_ufo_unstaged(&font, master, &dir).expect_err("an empty folder is refused");
+    assert!(
+        matches!(&error, InteropError::DestinationExists(path) if path == &dir),
+        "{error:?}"
+    );
+    assert!(entries(&dir).is_empty());
+
+    let (_tmp, ufo) = destination();
+    export(&font, &ufo);
+    let before = tree(&ufo);
+    let error = write_ufo_unstaged(&font, master, &ufo).expect_err("even a UFO is refused");
+    assert!(
+        matches!(&error, InteropError::DestinationExists(_)),
+        "{error:?}"
+    );
+    assert_eq!(tree(&ufo), before);
 }

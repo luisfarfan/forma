@@ -8,4 +8,4 @@
 
 mod ufo;
 
-pub use ufo::{InteropError, write_ufo};
+pub use ufo::{InteropError, write_ufo, write_ufo_unstaged};

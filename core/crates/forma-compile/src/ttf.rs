@@ -7,7 +7,7 @@ use std::panic;
 use std::path::Path;
 
 use fontc::{Input, Options};
-use forma_interop::{InteropError, write_ufo};
+use forma_interop::{InteropError, write_ufo_unstaged};
 use forma_model::Font;
 
 use crate::CompileError;
@@ -29,13 +29,16 @@ pub(crate) fn build(font: &Font) -> Result<Vec<u8>, CompileError> {
         .prefix("forma-compile-")
         .tempdir()?;
     let ufo = workspace.path().join(UFO_NAME);
-    write_ufo(font, master, &ufo).map_err(ufo_error)?;
+    // The folder is private and fresh, so the UFO goes straight into it: no
+    // staging folder to rename, which on Windows can fail while a virus
+    // scanner still holds one of the files just written.
+    write_ufo_unstaged(font, master, &ufo).map_err(ufo_error)?;
     run_fontc(&ufo)
 }
 
 /// Classifies a failure to write the UFO.
 ///
-/// The preflight has already rejected every font that `write_ufo` refuses
+/// The preflight has already rejected every font that `write_ufo_unstaged` refuses
 /// (missing layers, invalid names, code points or contours), so what is left is
 /// the file system: [`InteropError::Io`], and the rare write failure of norad
 /// that has no file system cause ([`InteropError::Norad`]), which is treated
