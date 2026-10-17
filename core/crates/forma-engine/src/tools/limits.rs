@@ -15,8 +15,10 @@
 //! [`check_nodes`], and `edit_batch` counts its operations with
 //! [`check_batch_ops`].
 
+use std::collections::BTreeSet;
+
 use forma_edit::{Command, ContourAction};
-use forma_model::Path;
+use forma_model::{Font, GlyphId, Path};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -80,15 +82,32 @@ pub(crate) fn check_batch_ops(count: usize) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// The number of nodes of the contours a command brings into the font.
+/// The number of outline nodes a command, applied to `font`, brings or
+/// works on: the nodes of the contours it brings into the font and, for
+/// `RemoveOverlap`, the current nodes of the layers it unites (each listed
+/// glyph once). Other commands count 0.
 #[must_use]
-pub(crate) fn command_nodes(cmd: &Command) -> usize {
+pub(crate) fn command_nodes(font: &Font, cmd: &Command) -> usize {
     match cmd {
         Command::CreateGlyph { paths, .. } | Command::SetOutline { paths, .. } => path_nodes(paths),
         Command::ContourEdit {
             action: ContourAction::Add { path },
             ..
         } => path.nodes.len(),
+        Command::RemoveOverlap { glyphs, master } => {
+            let Some(master) = master.or_else(|| font.masters.first().map(|master| master.id))
+            else {
+                return 0;
+            };
+            let ids: BTreeSet<GlyphId> = glyphs
+                .iter()
+                .filter_map(|glyph| glyph.resolve(font))
+                .collect();
+            ids.iter()
+                .filter_map(|id| font.glyphs.get(id)?.layers.get(&master))
+                .map(|layer| path_nodes(&layer.paths))
+                .fold(0, usize::saturating_add)
+        }
         _ => 0,
     }
 }
@@ -363,26 +382,36 @@ mod tests {
             ],
         };
         let glyph = GlyphRef::Name("a".into());
+        let font = Font::new("Test", 1000);
         assert_eq!(
-            command_nodes(&Command::SetOutline {
-                glyph: glyph.clone(),
-                master: None,
-                paths: vec![path.clone(), path.clone()],
-            }),
+            command_nodes(
+                &font,
+                &Command::SetOutline {
+                    glyph: glyph.clone(),
+                    master: None,
+                    paths: vec![path.clone(), path.clone()],
+                }
+            ),
             6
         );
         assert_eq!(
-            command_nodes(&Command::ContourEdit {
-                glyph: glyph.clone(),
-                master: None,
-                action: ContourAction::Add { path },
-            }),
+            command_nodes(
+                &font,
+                &Command::ContourEdit {
+                    glyph: glyph.clone(),
+                    master: None,
+                    action: ContourAction::Add { path },
+                }
+            ),
             3
         );
         assert_eq!(
-            command_nodes(&Command::DeleteGlyphs {
-                glyphs: vec![glyph]
-            }),
+            command_nodes(
+                &font,
+                &Command::DeleteGlyphs {
+                    glyphs: vec![glyph]
+                }
+            ),
             0
         );
         assert!(check_nodes(MAX_NODES).is_ok());

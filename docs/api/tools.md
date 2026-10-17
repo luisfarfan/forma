@@ -2980,7 +2980,7 @@ Redo your own last undone transaction in `doc`, as a new revision. A new transac
 
 _Destructiva significa que la llamada puede exigir un plan aprobado: el servidor lo decide midiendo la llamada, no por esta marca._
 
-Take back the transaction `tx` of `doc` (see history_list), even one of another actor, as a new undoable transaction: the entities it touched go back to their values before it. It fails with REVISION_CONFLICT if any of them changed since. A revert that deletes a glyph, replaces or empties a drawn layer, or touches more than 20 glyphs may require approval depending on the server policy (APPROVAL_REQUIRED with a plan to confirm); with `dry_run: true` the call only returns the plan. Pass the latest `rev` you received as `base_rev`; if an entity this call touches changed after it, the call fails with REVISION_CONFLICT: re-read and retry.
+Take back the transaction `tx` of `doc` (see history_list), even one of another actor, as a new undoable transaction: the entities it touched go back to their values before it. It fails with REVISION_CONFLICT if any of them changed since. A revert that deletes a glyph, replaces or empties a drawn layer, replaces components, removes a kerning pair or group, or touches more than 20 glyphs, kerning pairs and groups may require approval depending on the server policy (APPROVAL_REQUIRED with a plan to confirm); with `dry_run: true` the call only returns the plan. Pass the latest `rev` you received as `base_rev`; if an entity this call touches changed after it, the call fails with REVISION_CONFLICT: re-read and retry.
 
 <details>
 <summary>Esquema de entrada</summary>

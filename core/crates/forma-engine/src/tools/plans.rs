@@ -7,12 +7,15 @@
 //! A call **needs approval** when it is destructive or massive (it touches
 //! more than [`MASS_THRESHOLD`] distinct glyphs, kerning pairs and kerning
 //! groups, counted together; see `is_affected`). Destructive are: deleting
-//! glyphs; replacing a drawn layer of a glyph that existed before the call;
-//! removing the last contour of a layer that was drawn when the call started;
-//! a singular contour transform; a revert that deletes a glyph or replaces or
-//! empties a drawn layer; restoring an earlier revision; overwriting an
-//! existing file other than the document's own; closing a document with
-//! unsaved changes, discarding them. Then, by [`Policy`]:
+//! glyphs; replacing a drawn layer, or a non-empty component list, of a
+//! glyph that existed before the call; removing the last contour of a layer
+//! that was drawn when the call started; a singular contour transform;
+//! removing a kerning pair that existed before the call; deleting a kerning
+//! group; a revert that deletes a glyph, replaces or empties a drawn layer,
+//! replaces components or removes a kerning pair or group; restoring an
+//! earlier revision; overwriting an existing file other than the document's
+//! own; closing a document with unsaved changes, discarding them. Then, by
+//! [`Policy`]:
 //!
 //! * `prompted` (the default): `APPROVAL_REQUIRED`, with a plan in
 //!   `details.plan`;

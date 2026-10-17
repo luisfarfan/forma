@@ -4,8 +4,10 @@
 //! the clone copy-on-write and returns it, so the input is never modified and a
 //! failing command leaves nothing behind.
 
+mod components;
 mod fontwide;
 mod glyphs;
+mod kerning;
 mod nodes;
 mod outlines;
 mod segments;
@@ -117,6 +119,29 @@ pub fn apply(font: &Font, cmd: &Command) -> Result<(Font, BTreeSet<EntityKey>), 
             kinds,
             grid,
         } => outlines::apply_geometry_fixes(&mut next, glyphs, kinds, *grid)?,
+        Command::SetComponents {
+            glyph,
+            master,
+            components,
+        } => components::set_components(&mut next, glyph, *master, components)?,
+        Command::Decompose { glyphs, master } => components::decompose(&mut next, glyphs, *master)?,
+        Command::RemoveOverlap { glyphs, master } => {
+            components::remove_overlaps(&mut next, glyphs, *master)?
+        }
+        Command::SetKerningPair {
+            master,
+            first,
+            second,
+            value,
+        } => kerning::set_kerning_pair(&mut next, *master, first, second, *value)?,
+        Command::SetKerningGroup {
+            name,
+            side,
+            members,
+        } => kerning::set_kerning_group(&mut next, name, *side, members)?,
+        Command::DeleteKerningGroup { name, side } => {
+            kerning::delete_kerning_group(&mut next, name, *side)?
+        }
     };
     next.validate_invariants().map_err(|error| {
         EditError::InvalidArgument(format!("the command would break a font invariant: {error}"))
@@ -127,10 +152,11 @@ pub fn apply(font: &Font, cmd: &Command) -> Result<(Font, BTreeSet<EntityKey>), 
 /// The number of distinct glyphs `cmd` would touch in `font`, for deciding
 /// whether a command is a bulk operation.
 ///
-/// Creating a glyph counts as one; deleting counts every distinct listed
-/// glyph; applying geometry fixes to an empty list counts every glyph of the
-/// font; font-level commands count zero. References to glyphs that do not
-/// exist count zero, so this never fails.
+/// Creating a glyph counts as one; deleting, decomposing and removing
+/// overlaps count every distinct listed glyph (even one the command would
+/// leave alone); applying geometry fixes to an empty list counts every glyph
+/// of the font; font-level and kerning commands count zero. References to
+/// glyphs that do not exist count zero, so this never fails.
 #[must_use]
 pub fn affected_glyph_count(font: &Font, cmd: &Command) -> usize {
     let distinct = |refs: &[GlyphRef]| -> usize {
@@ -145,11 +171,18 @@ pub fn affected_glyph_count(font: &Font, cmd: &Command) -> usize {
         | Command::SetOutline { glyph, .. }
         | Command::ContourEdit { glyph, .. }
         | Command::NodesEdit { glyph, .. }
-        | Command::SetMetrics { glyph, .. } => usize::from(find_glyph(font, glyph).is_some()),
-        Command::DeleteGlyphs { glyphs } => distinct(glyphs),
+        | Command::SetMetrics { glyph, .. }
+        | Command::SetComponents { glyph, .. } => usize::from(find_glyph(font, glyph).is_some()),
+        Command::DeleteGlyphs { glyphs }
+        | Command::Decompose { glyphs, .. }
+        | Command::RemoveOverlap { glyphs, .. } => distinct(glyphs),
         Command::ApplyGeometryFixes { glyphs, .. } if glyphs.is_empty() => font.glyphs.len(),
         Command::ApplyGeometryFixes { glyphs, .. } => distinct(glyphs),
-        Command::SetFontInfo { .. } | Command::SetVerticalMetrics { .. } => 0,
+        Command::SetFontInfo { .. }
+        | Command::SetVerticalMetrics { .. }
+        | Command::SetKerningPair { .. }
+        | Command::SetKerningGroup { .. }
+        | Command::DeleteKerningGroup { .. } => 0,
     }
 }
 
@@ -162,6 +195,29 @@ fn find_glyph(font: &Font, glyph: &GlyphRef) -> Option<GlyphId> {
 
 fn resolve_glyph(font: &Font, glyph: &GlyphRef) -> Result<GlyphId, EditError> {
     find_glyph(font, glyph).ok_or_else(|| EditError::NotFound(format!("glyph '{glyph}'")))
+}
+
+/// The glyphs a command that works on a list of glyphs (`what` it does to
+/// them) refers to, each once, in the order they are listed.
+fn resolve_targets(
+    font: &Font,
+    glyphs: &[GlyphRef],
+    what: &str,
+) -> Result<Vec<GlyphId>, EditError> {
+    if glyphs.is_empty() {
+        return Err(EditError::InvalidArgument(format!(
+            "no glyphs to {what}: the list is empty"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    let mut ids = Vec::with_capacity(glyphs.len());
+    for glyph in glyphs {
+        let id = resolve_glyph(font, glyph)?;
+        if seen.insert(id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 /// The master to edit: the given one, or the default (first) master.
@@ -186,6 +242,37 @@ fn layer_mut(font: &mut Font, glyph: GlyphId, master: MasterId) -> Result<&mut L
     let Glyph { name, layers, .. } = glyph_mut(font, glyph)?;
     layers.get_mut(&master).ok_or_else(|| {
         EditError::NotFound(format!("layer of glyph '{name}' for master '{master}'"))
+    })
+}
+
+/// The name of a glyph and its layer in `master`, read without copying.
+fn named_layer(font: &Font, id: GlyphId, master: MasterId) -> Result<(&str, &Layer), EditError> {
+    let glyph = font
+        .glyphs
+        .get(&id)
+        .ok_or_else(|| EditError::NotFound(format!("glyph '{id}'")))?;
+    let layer = glyph.layers.get(&master).ok_or_else(|| {
+        EditError::NotFound(format!(
+            "layer of glyph '{}' for master '{master}'",
+            glyph.name
+        ))
+    })?;
+    Ok((&glyph.name, layer))
+}
+
+/// The layer of `glyph` in `master`. A glyph not drawn in that master yet
+/// gets an empty layer (no contours, no components) with the advance width
+/// of its layer in the `default` master, or of any layer it has.
+fn layer_or_new(glyph: &mut Glyph, master: MasterId, default: MasterId) -> &mut Layer {
+    let advance_width = glyph
+        .layers
+        .get(&default)
+        .or_else(|| glyph.layers.values().next())
+        .map_or(0.0, |layer| layer.advance_width);
+    glyph.layers.entry(master).or_insert_with(|| Layer {
+        advance_width,
+        paths: Vec::new(),
+        components: Vec::new(),
     })
 }
 

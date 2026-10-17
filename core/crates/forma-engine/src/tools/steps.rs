@@ -4,8 +4,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use forma_edit::{Command, ContourAction, apply};
-use forma_model::{EntityKey, Font, GlyphId};
+use forma_edit::{Command, ContourAction, GlyphRef, apply};
+use forma_model::{EntityKey, Font, GlyphId, KernSide, Layer, MasterId};
 
 use crate::errors::{ToolError, from_edit_error};
 use crate::registry::Effects;
@@ -44,10 +44,11 @@ pub(crate) struct Steps {
     /// scratch id, which no revision has seen), for the conflict check.
     pub touched: BTreeSet<EntityKey>,
     /// Whether some command, at its turn, destroys data that existed before
-    /// the call: it deletes glyphs, replaces the non-empty layer of a glyph
-    /// that existed before the call, removes the last contour of a layer that
-    /// had contours when the call started, or applies a singular transform to
-    /// a contour.
+    /// the call: it deletes glyphs or a kerning group, replaces the non-empty
+    /// layer or the non-empty component list of a glyph that existed before
+    /// the call, removes the last contour of a layer that had contours when
+    /// the call started, applies a singular transform to a contour, or
+    /// removes a kerning pair that existed before the call.
     pub destructive: bool,
     /// The outline nodes the commands bring so far.
     nodes: usize,
@@ -90,7 +91,7 @@ impl Steps {
     /// applying), and the mapped error of [`apply`]. A refused command leaves
     /// the steps unchanged.
     pub(crate) fn push(&mut self, cmd: Command) -> Result<(), ToolError> {
-        let nodes = self.nodes.saturating_add(command_nodes(&cmd));
+        let nodes = self.nodes.saturating_add(command_nodes(&self.after, &cmd));
         check_nodes(nodes)?;
         let destructive = self.destroys(&cmd);
         let (after, touched) = apply(&self.after, &cmd).map_err(from_edit_error)?;
@@ -117,14 +118,17 @@ impl Steps {
     }
 
     /// Whether `cmd`, applied to the current scratch state, destroys data
-    /// that existed before the call: deleting glyphs always does; replacing
-    /// a layer does when the layer has contours and its glyph existed before
-    /// the call (a glyph the call created holds nothing older than the call);
-    /// a transform with a singular matrix (`|a·d − b·c| < 1e-9`) always does,
-    /// since it collapses the contour.
+    /// that existed before the call: deleting glyphs or a kerning group
+    /// always does; replacing a layer does when the layer has contours, and
+    /// replacing components does when the layer has components, provided
+    /// the glyph existed before the call (a glyph the call created holds
+    /// nothing older than the call); a transform with a singular matrix
+    /// (`|a·d − b·c| < 1e-9`) always does, since it collapses the contour;
+    /// setting a kerning pair to 0 does when the pair is there and was there
+    /// before the call.
     fn destroys(&self, cmd: &Command) -> bool {
         match cmd {
-            Command::DeleteGlyphs { .. } => true,
+            Command::DeleteGlyphs { .. } | Command::DeleteKerningGroup { .. } => true,
             Command::ContourEdit {
                 action: ContourAction::Transform { affine, .. },
                 ..
@@ -134,23 +138,43 @@ impl Steps {
                 // A NaN determinant counts as singular too.
                 determinant.is_nan() || determinant < SINGULAR_DETERMINANT
             }
-            Command::SetOutline { glyph, master, .. } => {
+            Command::SetOutline { glyph, master, .. } => self
+                .older_layer(glyph, *master)
+                .is_some_and(|layer| !layer.paths.is_empty()),
+            Command::SetComponents { glyph, master, .. } => self
+                .older_layer(glyph, *master)
+                .is_some_and(|layer| !layer.components.is_empty()),
+            Command::SetKerningPair {
+                master,
+                first,
+                second,
+                value,
+            } if *value == 0.0 => {
                 let font = &self.after;
-                let Some(id) = glyph.resolve(font) else {
+                let master = master.or_else(|| font.masters.first().map(|master| master.id));
+                let first = first.resolve(font, KernSide::First);
+                let second = second.resolve(font, KernSide::Second);
+                let (Some(master), Some(first), Some(second)) = (master, first, second) else {
                     return false;
                 };
-                if !self.before.glyphs.contains_key(&id) {
-                    return false;
-                }
-                let master = master.or_else(|| font.masters.first().map(|master| master.id));
-                font.glyphs
-                    .get(&id)
-                    .zip(master)
-                    .and_then(|(glyph, master)| glyph.layers.get(&master))
-                    .is_some_and(|layer| !layer.paths.is_empty())
+                font.kerning.pair(master, first, second).is_some()
+                    && self.before.kerning.pair(master, first, second).is_some()
             }
             _ => false,
         }
+    }
+
+    /// The layer in `master` (the default one when `None`) of the glyph
+    /// `glyph` in the current scratch state, if the glyph existed before the
+    /// call.
+    fn older_layer(&self, glyph: &GlyphRef, master: Option<MasterId>) -> Option<&Layer> {
+        let font = &self.after;
+        let id = glyph.resolve(font)?;
+        if !self.before.glyphs.contains_key(&id) {
+            return None;
+        }
+        let master = master.or_else(|| font.masters.first().map(|master| master.id))?;
+        font.glyphs.get(&id)?.layers.get(&master)
     }
 
     /// Whether going from the current scratch state to `next` (the touched
@@ -182,8 +206,8 @@ impl Steps {
 
 #[cfg(test)]
 mod tests {
-    use forma_edit::{ContourAction, GlyphRef};
-    use forma_model::{Node, NodeKind, Path, PathId};
+    use forma_edit::{ComponentInput, ContourAction, KernRefInput};
+    use forma_model::{Node, NodeKind, Path, PathId, Transform};
 
     use super::*;
 
@@ -425,6 +449,139 @@ mod tests {
         assert_eq!(steps.cmds.len(), 7);
         assert_eq!(steps.effects(), Effects::WRITE);
         assert!(Arc::ptr_eq(&steps.before, &drawn));
+    }
+
+    fn kern(first: &str, second: &str, value: f64) -> Command {
+        Command::SetKerningPair {
+            master: None,
+            first: KernRefInput::Glyph(by_name(first)),
+            second: KernRefInput::Glyph(by_name(second)),
+            value,
+        }
+    }
+
+    /// A font with the empty glyphs `g0` to `g{count - 1}`.
+    fn glyphs(count: usize) -> Arc<Font> {
+        let mut font = Font::new("Test", 1000);
+        for index in 0..count {
+            font = apply(&font, &create(&format!("g{index}"), Vec::new()))
+                .expect("create")
+                .0;
+        }
+        Arc::new(font)
+    }
+
+    #[test]
+    fn removing_a_pair_is_destructive() {
+        let font = glyphs(2);
+        let kerned = Arc::new(apply(&font, &kern("g0", "g1", -50.0)).expect("kern").0);
+        assert_eq!(
+            effects(&kerned, vec![kern("g0", "g1", 0.0)]),
+            Effects::DESTRUCTIVE
+        );
+        // Changing its value, or removing a pair that is not there, is not.
+        assert_eq!(
+            effects(&kerned, vec![kern("g0", "g1", -60.0)]),
+            Effects::WRITE
+        );
+        assert_eq!(
+            effects(&kerned, vec![kern("g1", "g0", 0.0)]),
+            Effects::WRITE
+        );
+        // A pair the call added holds nothing older than the call.
+        assert_eq!(
+            effects(&font, vec![kern("g0", "g1", -50.0), kern("g0", "g1", 0.0)]),
+            Effects::WRITE
+        );
+        // Deleting a group always is.
+        let group = |members: Vec<GlyphRef>| Command::SetKerningGroup {
+            name: "O".into(),
+            side: KernSide::First,
+            members,
+        };
+        let grouped = Arc::new(apply(&font, &group(vec![by_name("g0")])).expect("group").0);
+        let delete = Command::DeleteKerningGroup {
+            name: "O".into(),
+            side: KernSide::First,
+        };
+        assert_eq!(effects(&grouped, vec![delete]), Effects::DESTRUCTIVE);
+        assert_eq!(
+            effects(&grouped, vec![group(vec![by_name("g1")])]),
+            Effects::WRITE
+        );
+    }
+
+    #[test]
+    fn twenty_one_pairs_is_mass() {
+        let font = glyphs(22);
+        let cmds: Vec<Command> = (0..21)
+            .map(|index| kern(&format!("g{index}"), &format!("g{}", index + 1), -10.0))
+            .collect();
+        let steps = Steps::of(&font, cmds).expect("valid commands");
+        assert_eq!(steps.affected.len(), 21);
+        assert!(steps.affected.len() > crate::limits::MASS_THRESHOLD);
+        assert!(
+            steps
+                .affected
+                .iter()
+                .all(|key| matches!(key, EntityKey::KerningPair(..)))
+        );
+        assert_eq!(steps.effects(), Effects::WRITE);
+    }
+
+    #[test]
+    fn replacing_components_is_destructive() {
+        let font = glyphs(3);
+        let set = |glyph: &str, bases: &[&str]| Command::SetComponents {
+            glyph: by_name(glyph),
+            master: None,
+            components: bases
+                .iter()
+                .map(|base| ComponentInput {
+                    base: by_name(base),
+                    transform: Transform::IDENTITY,
+                })
+                .collect(),
+        };
+        // Into an empty list: not destructive.
+        assert_eq!(effects(&font, vec![set("g2", &["g0"])]), Effects::WRITE);
+        let composite = Arc::new(apply(&font, &set("g2", &["g0"])).expect("set").0);
+        for replacement in [&["g1"][..], &[], &["g0", "g1"]] {
+            assert_eq!(
+                effects(&composite, vec![set("g2", replacement)]),
+                Effects::DESTRUCTIVE,
+                "{replacement:?}"
+            );
+        }
+        // Decomposing and removing overlaps are not.
+        let decompose = Command::Decompose {
+            glyphs: vec![by_name("g2")],
+            master: None,
+        };
+        let overlap = Command::RemoveOverlap {
+            glyphs: vec![by_name("g2")],
+            master: None,
+        };
+        assert_eq!(
+            effects(&composite, vec![decompose, overlap]),
+            Effects::WRITE
+        );
+    }
+
+    #[test]
+    fn remove_overlap_counts_the_nodes_of_its_glyphs() {
+        let mut second = triangle();
+        second.id = PathId(1);
+        let font = font_with("a", vec![triangle(), second]);
+        let font = Arc::new(apply(&font, &create("b", vec![triangle()])).expect("b").0);
+        let overlap = |names: &[&str]| Command::RemoveOverlap {
+            glyphs: names.iter().map(|name| by_name(name)).collect(),
+            master: None,
+        };
+        assert_eq!(command_nodes(&font, &overlap(&["a"])), 6);
+        assert_eq!(command_nodes(&font, &overlap(&["a", "b", "zed"])), 9);
+        assert_eq!(command_nodes(&font, &kern("a", "b", -5.0)), 0);
+        assert_eq!(command_nodes(&font, &set_outline("a")), 3);
     }
 
     #[test]
