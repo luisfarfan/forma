@@ -1,0 +1,6 @@
+# External oracles for FORMA's acceptance checks (development and CI only;
+# never shipped). Used by tools/oracle/verify_font.py and scripts/acceptance.*.
+fonttools==4.67.0
+fontmake==3.12.2
+opentype-sanitizer==9.2.0
+uharfbuzz==0.56.3

@@ -289,8 +289,11 @@ async fn scenario(mode: ClientLifecycleMode) {
     assert_eq!(check["issues"], json!([]), "{check}");
 
     if legacy && let Some(out) = std::env::var_os("FORMA_ACCEPTANCE_OUT") {
+        let inspected = call(&client, "document_inspect", json!({ "doc": reopened }))
+            .await
+            .ok();
         let model = model_glyphs(&client, &reopened).await;
-        write_acceptance(Path::new(&out), root, family, &fixture, &model);
+        write_acceptance(Path::new(&out), root, &inspected, &model);
     }
     close(client).await;
 }
@@ -419,10 +422,11 @@ async fn content(client: &Client, doc: &str) -> Value {
 
 /// Leaves the artefacts of the scenario in `out` for the external oracles:
 /// the TTF, the WOFF2, the `.forma` document and `expected.json`, which is
-/// computed from the model (not from the binary): the family, the units per
-/// em, the cmap as character → glyph name, and the glyphs and advance widths
-/// (rounded) that shaping [`SHAPING_TEXT`] must give.
-fn write_acceptance(out: &Path, root: &Path, family: &str, fixture: &Value, model: &[ModelGlyph]) {
+/// computed from the model (`inspected` is its `document_inspect` result),
+/// not from the binary: the family, the units per em, the cmap as character →
+/// glyph name, and the glyphs and advance widths (rounded) that shaping
+/// [`SHAPING_TEXT`] must give.
+fn write_acceptance(out: &Path, root: &Path, inspected: &Value, model: &[ModelGlyph]) {
     std::fs::create_dir_all(out)
         .unwrap_or_else(|error| panic!("cannot create {}: {error}", out.display()));
     for file in ["forma-demo.ttf", "forma-demo.woff2", "forma-demo.forma"] {
@@ -439,9 +443,13 @@ fn write_acceptance(out: &Path, root: &Path, family: &str, fixture: &Value, mode
         })
         .collect();
     let shaped: Vec<&ModelGlyph> = SHAPING_TEXT.chars().map(|c| glyph_for(model, c)).collect();
+    let family = inspected["info"]["family_name"]
+        .as_str()
+        .expect("family_name");
+    let upm = inspected["units_per_em"].as_u64().expect("units_per_em");
     let expected = json!({
         "family": family,
-        "upm": fixture["units_per_em"],
+        "upm": upm,
         "cmap": cmap,
         "shaping": {
             "text": SHAPING_TEXT,
