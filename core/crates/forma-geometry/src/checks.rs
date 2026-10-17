@@ -299,7 +299,7 @@ fn start_point(outline: &Outline, k: usize) -> Point {
 }
 
 /// The Bezier segment from `start` through the controls of `segment`.
-fn segment_geometry(start: Point, segment: &Segment) -> Option<PathSeg> {
+pub(crate) fn segment_geometry(start: Point, segment: &Segment) -> Option<PathSeg> {
     let end = point(segment.end);
     match (segment.kind, segment.controls.as_slice()) {
         (NodeKind::Line, []) => Some(PathSeg::Line(Line::new(start, end))),

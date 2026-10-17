@@ -7,7 +7,9 @@
 //! affine transforms to contours ([`transform_paths`]), expands glyph
 //! components into plain contours ([`flatten_layer`], [`layer_bbox`]), fits
 //! cubic Beziers through points ([`fit_cubics`]) and simplifies contours by
-//! refitting the stretches between corners ([`simplify_path`]).
+//! refitting the stretches between corners ([`simplify_path`]). Overlapping
+//! contours are united with [`remove_overlap`] (behind the [`PathOps`] trait),
+//! and [`stroke`] draws outlines around skeletons with a width and caps.
 //!
 //! # Contour convention
 //!
@@ -36,19 +38,23 @@
 
 #![forbid(unsafe_code)]
 
+mod boolean;
 mod checks;
 mod components;
 mod convert;
 mod direction;
 mod fit;
+mod stroke;
 mod svg;
 mod transform;
 
+pub use boolean::{Linesweeper, PathOps, remove_overlap};
 pub use checks::{GeometryIssue, IssueKind, check_paths, fix_paths};
 pub use components::{flatten_layer, layer_bbox};
 pub use convert::{bbox, from_bezpath, to_bezpath};
 pub use direction::{contour_depths, directed_area, normalize_direction, signed_area};
 pub use fit::{fit_cubics, simplify_path};
+pub use stroke::{Cap, Skeleton, SkeletonNode, StrokeStyle, stroke};
 pub use svg::{CoordinateSystem, path_to_svg, paths_from_svg};
 pub use transform::transform_paths;
 
