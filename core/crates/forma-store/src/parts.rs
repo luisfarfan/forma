@@ -16,8 +16,56 @@ use serde_json::Value;
 use crate::StoreError;
 use crate::canonical::{canonical_string, try_to_canonical_json};
 
-/// The only format version this build reads and writes.
-pub(crate) const FORMAT_VERSION: u32 = 1;
+/// The format version this build writes. Version 2 adds component lists in
+/// glyph layers and the kerning of the font document; both are optional
+/// fields, so a version 1 document is also a valid version 2 document.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// The format versions this build reads. Saving always writes
+/// [`FORMAT_VERSION`], which loses nothing: a migrated document means the
+/// same font.
+pub const READABLE_VERSIONS: [u32; 2] = [1, 2];
+
+/// Checks that `version` is one this build can read.
+pub(crate) fn ensure_readable(version: u32) -> Result<(), StoreError> {
+    if READABLE_VERSIONS.contains(&version) {
+        Ok(())
+    } else if version > FORMAT_VERSION {
+        Err(StoreError::UnsupportedVersion(version))
+    } else {
+        Err(StoreError::Invalid(format!(
+            "{version} is not a format version"
+        )))
+    }
+}
+
+/// Brings a font document written by format `version` to the current format.
+///
+/// Pure: no I/O, and the same input gives the same output. From 1 to 2 there
+/// is nothing to change, because the fields that version 2 adds
+/// (`kerning`) default to empty when absent; the function is the place where
+/// later versions add their steps.
+///
+/// # Errors
+///
+/// [`StoreError::UnsupportedVersion`] for a version newer than this build,
+/// [`StoreError::Invalid`] for version 0.
+pub fn migrate_font_document(version: u32, document: Value) -> Result<Value, StoreError> {
+    ensure_readable(version)?;
+    Ok(document)
+}
+
+/// Brings a glyph document written by format `version` to the current format.
+/// See [`migrate_font_document`]; the `components` of a layer default to
+/// empty when absent.
+///
+/// # Errors
+///
+/// As [`migrate_font_document`].
+pub fn migrate_glyph_document(version: u32, document: Value) -> Result<Value, StoreError> {
+    ensure_readable(version)?;
+    Ok(document)
+}
 
 /// Written to the manifest of every document, for diagnostics.
 pub(crate) const GENERATOR: &str = concat!("forma ", env!("CARGO_PKG_VERSION"));
@@ -167,9 +215,14 @@ pub(crate) fn encode(font: &Font) -> Result<Encoded, StoreError> {
 /// Reads a font document: a font whose glyph map is still empty.
 ///
 /// `context` names the document in error messages.
-pub(crate) fn decode_font_document(bytes: &[u8], context: &str) -> Result<Font, StoreError> {
-    let mut document: Value =
+pub(crate) fn decode_font_document(
+    bytes: &[u8],
+    context: &str,
+    version: u32,
+) -> Result<Font, StoreError> {
+    let document: Value =
         serde_json::from_slice(bytes).map_err(|err| json_error_in(context, &err))?;
+    let mut document = migrate_font_document(version, document)?;
     let Value::Object(fields) = &mut document else {
         return Err(StoreError::Invalid(format!("{context}: not a JSON object")));
     };
@@ -188,8 +241,15 @@ pub(crate) fn decode_font_document(bytes: &[u8], context: &str) -> Result<Font, 
 }
 
 /// Reads a glyph document.
-pub(crate) fn decode_glyph_document(bytes: &[u8], context: &str) -> Result<Glyph, StoreError> {
-    serde_json::from_slice(bytes).map_err(|err| json_error_in(context, &err))
+pub(crate) fn decode_glyph_document(
+    bytes: &[u8],
+    context: &str,
+    version: u32,
+) -> Result<Glyph, StoreError> {
+    let document: Value =
+        serde_json::from_slice(bytes).map_err(|err| json_error_in(context, &err))?;
+    let document = migrate_glyph_document(version, document)?;
+    serde_json::from_value(document).map_err(|err| json_error_in(context, &err))
 }
 
 /// Puts a font back together from its font document and its glyphs, and

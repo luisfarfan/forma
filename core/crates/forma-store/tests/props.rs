@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use forma_model::{
-    Font, FontId, FontInfo, Glyph, GlyphId, Kerning, Layer, Master, MasterId, Node, NodeKind,
-    Path as Contour, PathId, VerticalMetrics,
+    Component, Font, FontId, FontInfo, Glyph, GlyphId, KernRef, KernSide, Kerning, KerningGroup,
+    KerningGroupId, Layer, Master, MasterId, Node, NodeKind, Path as Contour, PathId, Transform,
+    VerticalMetrics,
 };
 use forma_store::{load, pack, save, unpack};
 use proptest::collection::vec;
@@ -127,6 +128,142 @@ fn json_value() -> impl Strategy<Value = Value> {
     })
 }
 
+/// A transform that the model accepts for a component.
+fn transform() -> impl Strategy<Value = Transform> {
+    (
+        prop_oneof![0.25f64..4.0, -4.0f64..-0.25],
+        prop_oneof![0.25f64..4.0, -4.0f64..-0.25],
+        -0.2f64..0.2,
+        -0.2f64..0.2,
+        finite(),
+        finite(),
+    )
+        .prop_map(|(xx, yy, xy, yx, dx, dy)| Transform {
+            xx,
+            xy,
+            yx,
+            yy,
+            dx,
+            dy,
+        })
+        .prop_map(|t| if t.is_valid() { t } else { Transform::IDENTITY })
+}
+
+/// Raw material for components: (glyph, base, transform), as indexes that the
+/// font builder reduces to valid choices.
+type ComponentSeed = (usize, usize, Transform);
+
+/// Raw material for kerning: groups as (side, name, member indexes), and per
+/// master the pairs as (first, second, fraction of twice the em).
+type KerningSeed = (
+    Vec<(bool, String, Vec<usize>)>,
+    Vec<Vec<(usize, usize, f64)>>,
+);
+
+fn kerning_seed() -> impl Strategy<Value = KerningSeed> {
+    (
+        vec(
+            (
+                any::<bool>(),
+                "[A-Za-z_][A-Za-z0-9_.-]{0,12}",
+                vec(any::<usize>(), 0..4),
+            ),
+            0..5,
+        ),
+        vec(
+            vec((any::<usize>(), any::<usize>(), -1.0f64..=1.0), 0..8),
+            2,
+        ),
+    )
+}
+
+/// Adds components (each only to a glyph with a higher position than its
+/// base, so there are no cycles, and only in masters where both glyphs have a
+/// layer) to the glyphs, which are in creation order.
+fn add_components(glyphs: &mut [Glyph], seeds: Vec<ComponentSeed>) {
+    for (glyph_index, base_index, transform) in seeds {
+        if glyphs.len() < 2 {
+            return;
+        }
+        let i = 1 + glyph_index % (glyphs.len() - 1);
+        let j = base_index % i;
+        let base = glyphs[j].id;
+        let base_masters: Vec<MasterId> = glyphs[j].layers.keys().copied().collect();
+        for (master, layer) in &mut glyphs[i].layers {
+            if base_masters.contains(master) {
+                layer.components.push(Component { base, transform });
+            }
+        }
+    }
+}
+
+/// Builds valid kerning from the seed: groups with unique names per side and
+/// unique members per side, and pairs between existing glyphs and groups of
+/// the right sides, with non-zero values within twice the em.
+fn build_kerning(
+    seed: KerningSeed,
+    glyph_ids: &[GlyphId],
+    masters: &[Master],
+    units_per_em: u16,
+    salt: u128,
+) -> Kerning {
+    let (group_seeds, pair_seeds) = seed;
+    let mut kerning = Kerning::default();
+    let mut names: HashSet<(KernSide, String)> = HashSet::new();
+    let mut used: HashSet<(KernSide, GlyphId)> = HashSet::new();
+    let mut by_side: [Vec<KernRef>; 2] = [
+        glyph_ids.iter().map(|&id| KernRef::Glyph(id)).collect(),
+        glyph_ids.iter().map(|&id| KernRef::Glyph(id)).collect(),
+    ];
+    for (n, (second, name, members)) in group_seeds.into_iter().enumerate() {
+        let side = if second {
+            KernSide::Second
+        } else {
+            KernSide::First
+        };
+        if glyph_ids.is_empty() || !names.insert((side, name.clone())) {
+            continue;
+        }
+        let mut list = Vec::new();
+        for member in members {
+            let id = glyph_ids[member % glyph_ids.len()];
+            if used.insert((side, id)) {
+                list.push(id);
+            }
+        }
+        if list.is_empty() {
+            continue;
+        }
+        let id = KerningGroupId(Uuid::from_u128(salt.rotate_left(7) ^ (0x1000 + n as u128)));
+        kerning.groups_mut().insert(
+            id,
+            KerningGroup {
+                id,
+                name,
+                side,
+                members: list,
+            },
+        );
+        by_side[usize::from(second)].push(KernRef::Group(id));
+    }
+    let limit = 2.0 * f64::from(units_per_em);
+    for (master, pairs) in masters.iter().zip(pair_seeds) {
+        for (a, b, fraction) in pairs {
+            if by_side[0].is_empty() {
+                continue;
+            }
+            let value = fraction * limit;
+            if value == 0.0 || !value.is_finite() || value.abs() > limit {
+                continue;
+            }
+            let first = by_side[0][a % by_side[0].len()];
+            let second = by_side[1][b % by_side[1].len()];
+            kerning.set_pair(master.id, first, second, Some(value));
+        }
+    }
+    kerning
+}
+
 fn metrics() -> impl Strategy<Value = VerticalMetrics> {
     (finite(), finite(), finite(), finite()).prop_map(
         |(ascender, descender, x_height, cap_height)| VerticalMetrics {
@@ -152,6 +289,8 @@ fn arb_font() -> impl Strategy<Value = Font> {
         vec(glyph_seed(), 0..=20),
         any::<u64>(),
         vec((".{0,10}", json_value()), 0..4),
+        vec((any::<usize>(), any::<usize>(), transform()), 0..8),
+        kerning_seed(),
     )
         .prop_map(
             |(
@@ -164,6 +303,8 @@ fn arb_font() -> impl Strategy<Value = Font> {
                 seeds,
                 shuffle,
                 lib,
+                component_seeds,
+                kerning_seed,
             )| {
                 let masters: Vec<Master> = masters
                     .into_iter()
@@ -181,6 +322,7 @@ fn arb_font() -> impl Strategy<Value = Font> {
                 let mut codepoints = HashSet::new();
                 let mut glyphs = BTreeMap::new();
                 let mut order = Vec::new();
+                let mut created: Vec<Glyph> = Vec::new();
                 for (n, (name, unicodes, export, layers)) in seeds.into_iter().enumerate() {
                     if !names.insert(name.clone()) {
                         continue;
@@ -198,18 +340,21 @@ fn arb_font() -> impl Strategy<Value = Font> {
                         .zip(layers)
                         .filter_map(|(master, layer)| layer.map(|layer| (master.id, layer)))
                         .collect();
-                    glyphs.insert(
+                    created.push(Glyph {
                         id,
-                        Arc::new(Glyph {
-                            id,
-                            name,
-                            unicodes,
-                            export,
-                            layers,
-                        }),
-                    );
+                        name,
+                        unicodes,
+                        export,
+                        layers,
+                    });
                     order.push(id);
                 }
+                add_components(&mut created, component_seeds);
+                for glyph in created {
+                    glyphs.insert(glyph.id, Arc::new(glyph));
+                }
+                let kerning =
+                    build_kerning(kerning_seed, &order, &masters, units_per_em, master_salt);
                 // The order is a permutation of the glyphs, not just sorted.
                 if !order.is_empty() {
                     let len = order.len();
@@ -234,7 +379,7 @@ fn arb_font() -> impl Strategy<Value = Font> {
                     masters,
                     glyphs: Arc::new(glyphs),
                     glyph_order: order,
-                    kerning: Kerning::default(),
+                    kerning,
                     lib: lib.into_iter().collect(),
                 }
             },
@@ -276,4 +421,30 @@ proptest! {
         unpack(&forma, &unpacked).unwrap();
         prop_assert_eq!(&load(&unpacked).unwrap(), &font);
     }
+}
+
+/// The generator must actually produce components and kerning, or the
+/// round-trip properties above would prove nothing about them.
+#[test]
+fn generator_covers_components_and_kerning() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+
+    let mut runner = TestRunner::deterministic();
+    let (mut components, mut groups, mut pairs) = (0, 0, 0);
+    for _ in 0..300 {
+        let font = arb_font().new_tree(&mut runner).unwrap().current();
+        assert_eq!(font.validate_invariants(), Ok(()));
+        components += font
+            .glyphs
+            .values()
+            .flat_map(|g| g.layers.values())
+            .map(|l| l.components.len())
+            .sum::<usize>();
+        groups += font.kerning.groups.len();
+        pairs += font.kerning.pairs.values().map(|p| p.len()).sum::<usize>();
+    }
+    assert!(components > 50, "{components}");
+    assert!(groups > 50, "{groups}");
+    assert!(pairs > 50, "{pairs}");
 }
