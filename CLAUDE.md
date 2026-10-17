@@ -4,9 +4,9 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 
 **FORMA es open source, sin fines comerciales, bajo `MIT OR Apache-2.0`.**
 
-**Estado: Hito 1 completado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`): CI en verde en macOS, Windows y Ubuntu (PR #1, 2026-10-17). Falta la primera ejecución del fuzzing nocturno, que solo corre desde `main`. **El Hito 2 requiere aprobación.** Repositorio público: `github.com/luisfarfan/forma`.
-- **Aprobado:** Rust como núcleo, licencia MIT OR Apache-2.0, Hito 1, instalación justificada de sus dependencias.
-- **No aprobado aún:** el toolkit de UI. No construyas el editor gráfico ni instales Qt o Slint hasta aprobar el Hito 2.
+**Estado: Hito 1 completado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`): CI en verde en macOS, Windows y Ubuntu (PR #1, 2026-10-17) y fuzzing nocturno en verde (los dos objetivos). **Hito 2 aprobado y en curso** (rama `hito2`): de una imagen de un alfabeto a una fuente completa; diseño vinculante en `docs/superpowers/specs/2026-10-17-hito2-imagen-a-fuente-design.md`. **La interfaz gráfica va al final del roadmap** (Hito 8; ADR 0008): motor primero, hitos guiados por fuentes demo. Repositorio público: `github.com/luisfarfan/forma`.
+- **Aprobado:** Rust como núcleo, licencia MIT OR Apache-2.0, Hitos 1 y 2, instalación justificada de sus dependencias.
+- **No aprobado aún:** el toolkit de UI. No construyas el editor gráfico ni instales Qt o Slint hasta aprobar el Hito 8 (spike de UI).
 
 ## Documentos de referencia (leer antes de trabajar)
 - `docs/01-research.md`: competencia y ecosistema, con niveles de evidencia.
@@ -16,6 +16,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 - `docs/05-reverse-engineering.md`: **política de ingeniería inversa (obligatoria)**.
 - `docs/06-risks.md`: registro de riesgos.
 - `docs/07-mcp-ai-architecture.md`: **arquitectura MCP e IA, catálogo de herramientas, seguridad, pruebas**.
+- `docs/superpowers/specs/`: diseño vinculante de cada hito (el del Hito 2 define el modelo v2, las crates nuevas y las 15 herramientas nuevas).
 - Las decisiones nuevas o los cambios de decisión se registran como ADR en `docs/adr/NNNN-titulo.md` (contexto, decisión, alternativas, consecuencias).
 
 ## Nombres y formatos
@@ -32,11 +33,13 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
   - `forma-compile`: fontc.
   - `forma-validate`.
   - `forma-render`: vello_cpu.
+  - `forma-trace`: imagen a contornos (`image`, `visioncortex`; ADR 0009).
+  - `forma-spacing`: espaciado, kerning automático y colisiones.
   - `forma-mcp`: rmcp.
   - `forma-cli`.
   - `forma-canvas`.
   - `forma-agent`: genai.
-- **UI:** recomendada Qt 6.12 LTS + Qt Quick/QML + cxx-qt, **pendiente del spike del Hito 2**. El canvas y las herramientas de edición viven en Rust (`forma-canvas`), no en el toolkit.
+- **UI:** recomendada Qt 6.12 LTS + Qt Quick/QML + cxx-qt, **pendiente del spike del Hito 8** (al final del roadmap, ADR 0008). El canvas y las herramientas de edición viven en Rust (`forma-canvas`), no en el toolkit.
 - **Oráculos de prueba (solo dev/CI):** fontTools, fontmake, `ttx`, opentype-sanitizer (OTS), HarfBuzz `hb-shape`, fontspector, MCP Inspector.
 
 ## Reglas de arquitectura (no negociables sin ADR)
@@ -69,8 +72,9 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
   - Errores con `thiserror`.
   - `#[non_exhaustive]` en enums públicos que vayan a crecer.
   - Schemas MCP generados con `schemars`, nunca escritos a mano.
-- **Definición de terminado** (ver `docs/04-roadmap.md`): comando del registro + tests + exposición MCP y CLI + escenario MCP + CI verde en los 3 SO (+ UI desde el Hito 3).
-- Fixtures de fuentes: solo propias u OFL, con su licencia en `tests/fixtures/<nombre>/`. **Nunca** fuentes comerciales.
+- **Definición de terminado** (ver `docs/04-roadmap.md`): comando del registro + tests + exposición MCP y CLI + escenario MCP + CI verde en los 3 SO (+ UI desde el Hito 8, el de la interfaz).
+- Fixtures de fuentes: solo propias u OFL, con su licencia en `tests/fixtures/<nombre>/`. **Nunca** fuentes comerciales: tampoco se usan, importan ni reconstruyen en local; solo sirven como referencia visual (mirarlas). Las demos usan dibujos con derechos claros, muestras de dominio público y fuentes OFL (ADR 0008).
+- **Las imágenes de terceros nunca se versionan.** Dibujos, fotos y escaneos ajenos (como el alfabeto de la demo del Hito 2) se quedan en local, fuera del repositorio. Solo se publican si la autora lo autoriza, con su nombre y la licencia que elija. Los tests usan imágenes propias generadas por código.
 - **Licencia:** cada crate declara `license = "MIT OR Apache-2.0"`. Archivos `LICENSE-MIT` y `LICENSE-APACHE` en la raíz.
 - **Dependencias:** justificar cada una (qué resuelve, licencia, mantenimiento).
   - Licencias permitidas: MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, Unicode, FTL, OFL (solo fixtures). Qt bajo LGPLv3 con enlace dinámico, si se aprueba Qt.
