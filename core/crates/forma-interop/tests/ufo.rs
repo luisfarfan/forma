@@ -63,6 +63,7 @@ fn glyph(font: &Font, n: u128, name: &str, advance_width: f64, paths: Vec<Contou
             Layer {
                 advance_width,
                 paths,
+                components: Vec::new(),
             },
         )]
         .into(),
@@ -525,6 +526,7 @@ fn exports_the_requested_master() {
             Layer {
                 advance_width: 777.0,
                 paths: Vec::new(),
+                components: Vec::new(),
             },
         );
     }

@@ -55,6 +55,7 @@ fn square(advance_width: f64) -> Layer {
                 corner(0.0, 500.0),
             ],
         }],
+        components: Vec::new(),
     }
 }
 

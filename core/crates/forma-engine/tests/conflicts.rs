@@ -295,3 +295,73 @@ fn a_plan_whose_glyph_was_deleted_is_a_conflict() {
         json!([{ "entity": format!("glyph:{id}"), "rev": 2, "actor": "user", "name": "a" }])
     );
 }
+
+#[test]
+fn conflict_details_name_kerning_pairs_and_groups() {
+    use forma_edit::{Command, ConflictInfo, Document, GlyphRef, apply};
+    use forma_engine::errors::conflict_details_in;
+    use forma_model::{EntityKey, Font, KernRef, KernSide, KerningGroup, KerningGroupId, Rev};
+
+    let mut font = Font::new("Kern", 1000);
+    for name in ["A", "V", "W"] {
+        let create = Command::CreateGlyph {
+            name: name.into(),
+            unicodes: Vec::new(),
+            advance_width: 500.0,
+            paths: Vec::new(),
+        };
+        font = apply(&font, &create).expect("create").0;
+    }
+    let id = |name: &str| font.glyph_by_name(name).expect("glyph").id;
+    let (a, v, w) = (id("A"), id("V"), id("W"));
+    let group = KerningGroupId::new();
+    font.kerning.groups.insert(
+        group,
+        KerningGroup {
+            id: group,
+            name: "O".into(),
+            side: KernSide::First,
+            members: vec![a],
+        },
+    );
+    let master = font.masters[0].id;
+    let mut doc = Document::new(font);
+    // `W` is deleted by the conflicting change: its name is the one it had
+    // right before.
+    let delete = Command::DeleteGlyphs {
+        glyphs: vec![GlyphRef::Name("W".into())],
+    };
+    doc.execute(&user(), Rev(0), "delete", &[delete])
+        .expect("delete");
+
+    let conflicts = [
+        EntityKey::KerningGroup(group),
+        EntityKey::KerningGroup(KerningGroupId::new()),
+        EntityKey::KerningPair(master, KernRef::Glyph(a), KernRef::Glyph(v)),
+        EntityKey::KerningPair(master, KernRef::Group(group), KernRef::Glyph(v)),
+        EntityKey::KerningPair(master, KernRef::Glyph(w), KernRef::Glyph(a)),
+        EntityKey::KerningPair(master, KernRef::Glyph(a), KernRef::Group(group)),
+    ];
+    let info = ConflictInfo {
+        current_rev: Rev(1),
+        conflicts: conflicts.iter().map(|key| (*key, Rev(1), user())).collect(),
+    };
+    let details = conflict_details_in(&info, &doc);
+    let listed = details["conflicts"].as_array().expect("conflicts");
+    let names: Vec<Value> = listed
+        .iter()
+        .map(|conflict| conflict["name"].clone())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            json!("@O"),
+            Value::Null,
+            json!("A/V"),
+            json!("@O/V"),
+            json!("W/A"),
+            json!("A/@O"),
+        ]
+    );
+    assert_eq!(listed[2]["entity"], json!(conflicts[2].to_string()));
+}

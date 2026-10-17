@@ -91,6 +91,7 @@ pub fn add_glyph(
                 Layer {
                     advance_width,
                     paths: paths.clone(),
+                    components: Vec::new(),
                 },
             )
         })

@@ -39,6 +39,7 @@ pub(super) fn set_outline(
             Layer {
                 advance_width,
                 paths,
+                components: Vec::new(),
             },
         );
     }

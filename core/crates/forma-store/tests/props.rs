@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use forma_model::{
-    Font, FontId, FontInfo, Glyph, GlyphId, Layer, Master, MasterId, Node, NodeKind,
+    Font, FontId, FontInfo, Glyph, GlyphId, Kerning, Layer, Master, MasterId, Node, NodeKind,
     Path as Contour, PathId, VerticalMetrics,
 };
 use forma_store::{load, pack, save, unpack};
@@ -91,6 +91,7 @@ fn layer() -> impl Strategy<Value = Layer> {
     (finite(), contours()).prop_map(|(advance_width, paths)| Layer {
         advance_width,
         paths,
+        components: Vec::new(),
     })
 }
 
@@ -233,6 +234,7 @@ fn arb_font() -> impl Strategy<Value = Font> {
                     masters,
                     glyphs: Arc::new(glyphs),
                     glyph_order: order,
+                    kerning: Kerning::default(),
                     lib: lib.into_iter().collect(),
                 }
             },

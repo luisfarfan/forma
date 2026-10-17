@@ -68,6 +68,7 @@ fn glyph(font: &Font, name: &str, unicodes: &[u32], advance: f64, paths: Vec<Pat
         Layer {
             advance_width: advance,
             paths,
+            components: Vec::new(),
         },
     );
     Glyph {

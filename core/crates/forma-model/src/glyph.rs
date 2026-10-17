@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::component::Component;
 use crate::ids::{GlyphId, MasterId, PathId};
 
 /// The longest glyph name allowed, in characters.
@@ -84,6 +85,10 @@ pub struct Layer {
     pub advance_width: f64,
     /// The contours of the layer.
     pub paths: Vec<Path>,
+    /// Other glyphs drawn as part of this layer, each through its transform;
+    /// omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<Component>,
 }
 
 /// A glyph.
@@ -99,4 +104,17 @@ pub struct Glyph {
     pub export: bool,
     /// The outline for each master the glyph has been drawn in.
     pub layers: BTreeMap<MasterId, Layer>,
+}
+
+impl Glyph {
+    /// Whether some layer of the glyph has a component of `base`.
+    #[must_use]
+    pub fn uses_component(&self, base: GlyphId) -> bool {
+        self.layers.values().any(|layer| {
+            layer
+                .components
+                .iter()
+                .any(|component| component.base == base)
+        })
+    }
 }

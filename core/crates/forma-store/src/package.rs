@@ -639,6 +639,7 @@ mod tests {
                 closed: true,
                 nodes: vec![corner(0.0, 0.0), corner(500.0, 0.0), corner(500.0, 500.0)],
             }],
+            components: Vec::new(),
         }
     }
 

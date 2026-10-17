@@ -10,6 +10,7 @@ use forma_model::{EntityKey, Font, GlyphId};
 use crate::errors::{ToolError, from_edit_error};
 use crate::registry::Effects;
 use crate::tools::limits::{check_nodes, command_nodes};
+use crate::tools::plans::is_affected;
 
 /// The absolute determinant below which a contour transform is singular: it
 /// collapses the contour onto a line or a point.
@@ -19,10 +20,11 @@ const SINGULAR_DETERMINANT: f64 = 1e-9;
 /// document's font as they are added.
 ///
 /// Applying them measures, before anything is committed, what the
-/// transaction will do: the state after each command, the distinct glyphs
-/// the commands touch and whether any of them destroys data. Each command is
-/// judged against the state the previous ones left (a glyph renamed by one
-/// command and replaced by the next is the same glyph).
+/// transaction will do: the state after each command, the distinct glyphs,
+/// kerning pairs and kerning groups the commands touch and whether any of
+/// them destroys data. Each command is judged against the state the previous
+/// ones left (a glyph renamed by one command and replaced by the next is the
+/// same glyph).
 #[derive(Clone, Debug)]
 pub(crate) struct Steps {
     /// The document's font the commands start from.
@@ -33,9 +35,11 @@ pub(crate) struct Steps {
     pub after: Font,
     /// The commands so far, in order.
     pub cmds: Vec<Command>,
-    /// The distinct glyphs the commands touch, by their id in `after`
-    /// (deleted glyphs by their id in `before`).
-    pub affected: BTreeSet<GlyphId>,
+    /// The distinct entities the commands touch that count toward the mass
+    /// threshold: glyphs (by their id in `after`, deleted glyphs by their id
+    /// in `before`), kerning pairs and kerning groups (see
+    /// [`is_affected`]).
+    pub affected: BTreeSet<EntityKey>,
     /// Every entity the commands touch (glyphs the call creates by their
     /// scratch id, which no revision has seen), for the conflict check.
     pub touched: BTreeSet<EntityKey>,
@@ -92,10 +96,7 @@ impl Steps {
         let (after, touched) = apply(&self.after, &cmd).map_err(from_edit_error)?;
         let destructive = destructive || self.empties_drawn_layer(&after, &touched);
         self.affected
-            .extend(touched.iter().filter_map(|key| match key {
-                EntityKey::Glyph(id) => Some(*id),
-                _ => None,
-            }));
+            .extend(touched.iter().copied().filter(is_affected));
         self.touched.extend(touched);
         self.destructive |= destructive;
         self.nodes = nodes;
@@ -417,7 +418,10 @@ mod tests {
         )
         .expect("valid commands");
         let c = steps.after.glyph_by_name("c").expect("c").id;
-        assert_eq!(steps.affected, BTreeSet::from([a, c]));
+        assert_eq!(
+            steps.affected,
+            BTreeSet::from([EntityKey::Glyph(a), EntityKey::Glyph(c)])
+        );
         assert_eq!(steps.cmds.len(), 7);
         assert_eq!(steps.effects(), Effects::WRITE);
         assert!(Arc::ptr_eq(&steps.before, &drawn));

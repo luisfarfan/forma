@@ -204,6 +204,7 @@ fn notdef_glyph(font: &Font) -> Glyph {
     let layer = Layer {
         advance_width: advance,
         paths: vec![outer, inner],
+        components: Vec::new(),
     };
     Glyph {
         id: GlyphId::new(),
@@ -254,6 +255,7 @@ fn add_space(font: &mut Font) {
     let layer = Layer {
         advance_width: (f64::from(font.units_per_em) / 4.0).round(),
         paths: Vec::new(),
+        components: Vec::new(),
     };
     let glyph = Glyph {
         id: GlyphId::new(),

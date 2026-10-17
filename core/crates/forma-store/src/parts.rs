@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::sync::Arc;
 
-use forma_model::{Font, FontId, Glyph, GlyphId, Master};
+use forma_model::{Font, FontId, Glyph, GlyphId, Kerning, Master};
 use serde::de::Error as _;
 use serde_json::Value;
 
@@ -60,6 +60,7 @@ fn invalid(cause: impl Display) -> StoreError {
 /// document loadable.
 fn ensure_finite(font: &Font) -> Result<(), StoreError> {
     ensure_masters_finite(&font.masters)?;
+    ensure_kerning_finite(&font.kerning)?;
     font.glyphs
         .values()
         .try_for_each(|glyph| ensure_glyph_finite(glyph))
@@ -92,15 +93,38 @@ pub(crate) fn ensure_glyph_finite(glyph: &Glyph) -> Result<(), StoreError> {
                 .paths
                 .iter()
                 .flat_map(|path| &path.nodes)
-                .all(|node| node.x.is_finite() && node.y.is_finite());
+                .all(|node| node.x.is_finite() && node.y.is_finite())
+            && layer.components.iter().all(|component| {
+                let t = &component.transform;
+                [t.xx, t.xy, t.yx, t.yy, t.dx, t.dy]
+                    .iter()
+                    .all(|value| value.is_finite())
+            });
         if !finite {
             return Err(StoreError::Invalid(format!(
-                "glyph {:?} has an advance width or coordinate that is not a finite number",
+                "glyph {:?} has an advance width, coordinate or component transform that is \
+                 not a finite number",
                 glyph.name
             )));
         }
     }
     Ok(())
+}
+
+/// The kerning part of [`ensure_finite`], also used for journal records.
+pub(crate) fn ensure_kerning_finite(kerning: &Kerning) -> Result<(), StoreError> {
+    let finite = kerning
+        .pairs
+        .values()
+        .flat_map(|pairs| pairs.values())
+        .all(|value| value.is_finite());
+    if finite {
+        Ok(())
+    } else {
+        Err(StoreError::Invalid(
+            "a kerning pair has a value that is not a finite number".to_owned(),
+        ))
+    }
 }
 
 /// Validates `font` and renders it as canonical JSON documents.

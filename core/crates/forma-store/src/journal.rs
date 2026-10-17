@@ -20,8 +20,9 @@
 //! The file is JSONL: each line is one record as compact canonical JSON (keys
 //! sorted at every level, as in the saved documents, but no indentation) ended
 //! by `\n`. A record holds *states*, not changes: the new value of the font
-//! information, the masters, the glyph order and each touched glyph (`null`
-//! for a glyph that was deleted). Applying a record twice therefore gives the
+//! information, the masters, the glyph order, each touched glyph (`null`
+//! for a glyph that was deleted) and, when the edit touched any kerning group
+//! or pair, the whole kerning. Applying a record twice therefore gives the
 //! same font as applying it once, which keeps replay safe when an append
 //! reported an error but its line reached the disk anyway.
 //!
@@ -44,14 +45,14 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use forma_model::{Actor, Font, FontId, FontInfo, Glyph, GlyphId, Master, Rev};
+use forma_model::{Actor, Font, FontId, FontInfo, Glyph, GlyphId, Kerning, Master, Rev};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::StoreError;
 use crate::atomic::{sync_dir, sync_file, sync_file_data};
 use crate::canonical::canonical_line;
-use crate::parts::{ensure_glyph_finite, ensure_masters_finite};
+use crate::parts::{ensure_glyph_finite, ensure_kerning_finite, ensure_masters_finite};
 
 /// The document a journal belongs to: a font, in one file.
 ///
@@ -140,6 +141,11 @@ pub struct JournalRecord {
     /// The new state of each glyph the edit touched; `None` means the glyph
     /// was deleted. Serialized as an array of `[id, glyph-or-null]` pairs.
     pub glyphs: Vec<(GlyphId, Option<Glyph>)>,
+    /// The whole new kerning (groups and pairs), if the edit touched any
+    /// kerning group or pair. Absent from the line when `None`, so records
+    /// written before this field existed read back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kerning: Option<Kerning>,
 }
 
 impl JournalRecord {
@@ -154,6 +160,9 @@ impl JournalRecord {
         }
         for glyph in self.glyphs.iter().filter_map(|(_, glyph)| glyph.as_ref()) {
             ensure_glyph_finite(glyph)?;
+        }
+        if let Some(kerning) = &self.kerning {
+            ensure_kerning_finite(kerning)?;
         }
         Ok(canonical_line(&serde_json::to_value(self)?)?.into_bytes())
     }
@@ -385,11 +394,12 @@ pub fn remove(dir: &Path, key: &JournalKey) -> Result<(), StoreError> {
 /// Applies `recs`, oldest first, over `base` (normally the last saved file)
 /// and returns the font as it was at the last record.
 ///
-/// Per record: a present `font_info`, `units_per_em`, `masters` or
-/// `glyph_order` replaces the font's (`document` only says which file the
-/// record belongs to, see [`replay`]); a glyph with `Some` state is inserted
-/// or replaced and one with `None` is removed. Other parts of the font (its
-/// id, `lib`) are never touched by a record and stay as they are in `base`.
+/// Per record: a present `font_info`, `units_per_em`, `masters`,
+/// `glyph_order` or `kerning` replaces the font's (`document` only says which
+/// file the record belongs to, see [`replay`]); a glyph with `Some` state is
+/// inserted or replaced and one with `None` is removed. Other parts of the
+/// font (its id, `lib`) are never touched by a record and stay as they are in
+/// `base`.
 ///
 /// The records are only trusted once the result checks out: it is validated
 /// with [`Font::validate_invariants`] after the last record (an edit that
@@ -414,6 +424,9 @@ pub fn apply_records(base: Font, recs: &[JournalRecord]) -> Result<Font, StoreEr
         }
         if let Some(order) = &rec.glyph_order {
             font.glyph_order = order.clone();
+        }
+        if let Some(kerning) = &rec.kerning {
+            font.kerning = kerning.clone();
         }
         if !rec.glyphs.is_empty() {
             let glyphs = Arc::make_mut(&mut font.glyphs);

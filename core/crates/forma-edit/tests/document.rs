@@ -341,16 +341,19 @@ fn diff_reports_added_modified_removed() {
                     outline_changed: false,
                     advance_changed: true,
                     unicodes_changed: false,
+                    components_changed: false,
                 },
                 GlyphDiff {
                     name: "B".to_owned(),
                     outline_changed: true,
                     advance_changed: false,
                     unicodes_changed: true,
+                    components_changed: false,
                 },
             ],
             info_changed: false,
             metrics_changed: false,
+            kerning_changed: false,
         }
     );
 }
@@ -367,6 +370,7 @@ fn diff_of_identical_fonts_is_empty() {
             modified: vec![],
             info_changed: false,
             metrics_changed: false,
+            kerning_changed: false,
         }
     );
 }
@@ -405,6 +409,7 @@ fn diff_lists_a_renamed_glyph_under_its_new_name() {
             outline_changed: false,
             advance_changed: false,
             unicodes_changed: false,
+            components_changed: false,
         }]
     );
 }
@@ -425,9 +430,11 @@ fn diff_serializes_as_documented() {
                 "outline_changed": false,
                 "advance_changed": true,
                 "unicodes_changed": false,
+                "components_changed": false,
             }],
             "info_changed": false,
             "metrics_changed": false,
+            "kerning_changed": false,
         })
     );
 }

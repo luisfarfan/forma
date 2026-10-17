@@ -151,6 +151,7 @@ pub fn add_glyph_with_id(
                 Layer {
                     advance_width,
                     paths: paths.clone(),
+                    components: Vec::new(),
                 },
             )
         })

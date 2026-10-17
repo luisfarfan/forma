@@ -440,6 +440,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -484,6 +488,7 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
@@ -493,6 +498,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -512,7 +521,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -527,7 +537,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -680,6 +690,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -724,6 +738,7 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
@@ -733,6 +748,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -752,7 +771,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -767,7 +787,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -1269,6 +1289,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -1313,13 +1337,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -1327,6 +1352,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -1346,7 +1375,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -1361,7 +1391,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -1590,6 +1620,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -1634,13 +1668,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -1648,6 +1683,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -1667,7 +1706,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -1682,7 +1722,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -1950,6 +1990,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -1994,13 +2038,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -2008,6 +2053,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -2027,7 +2076,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -2042,7 +2092,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -2935,6 +2985,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -2979,6 +3033,7 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
@@ -3002,8 +3057,8 @@ expression: "lists[0]"
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -3011,6 +3066,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -3030,7 +3089,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -3050,7 +3110,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -3292,6 +3352,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -3336,13 +3400,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -3350,6 +3415,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -3369,7 +3438,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -3384,7 +3454,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -3587,6 +3657,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -3631,13 +3705,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -3645,6 +3720,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -3664,7 +3743,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -3679,7 +3759,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -4022,6 +4102,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -4066,13 +4150,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -4080,6 +4165,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -4099,7 +4188,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -4114,7 +4204,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -4556,6 +4646,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -4600,13 +4694,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -4614,6 +4709,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -4633,7 +4732,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -4648,7 +4748,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -4995,6 +5095,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -5039,13 +5143,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -5053,6 +5158,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -5072,7 +5181,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -5087,7 +5197,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -5543,6 +5653,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -5587,13 +5701,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -5601,6 +5716,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -5620,7 +5739,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -5635,7 +5755,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -6060,6 +6180,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -6104,13 +6228,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -6118,6 +6243,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -6137,7 +6266,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -6152,7 +6282,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -6512,6 +6642,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -6556,6 +6690,7 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
@@ -6611,6 +6746,10 @@ expression: "lists[0]"
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
                 "type": "boolean"
               },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
+                "type": "boolean"
+              },
               "name": {
                 "description": "The glyph name in the second font.",
                 "type": "string"
@@ -6628,7 +6767,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -6643,7 +6783,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -7030,8 +7170,8 @@ expression: "lists[0]"
             "type": "string"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "EntryKind": {
@@ -7190,8 +7330,8 @@ expression: "lists[0]"
       "outputSchema": {
         "$defs": {
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           }
         },
@@ -7276,8 +7416,8 @@ expression: "lists[0]"
       "outputSchema": {
         "$defs": {
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           }
         },
@@ -7400,6 +7540,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -7444,13 +7588,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -7458,6 +7603,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -7477,7 +7626,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -7492,7 +7642,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -7673,6 +7823,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -7717,13 +7871,14 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
           },
           "EntityKey": {
-            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order` or `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+            "description": "Identifies a revisioned part of a document: `font_info`, `vertical_metrics:<master uuid>`, `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or `kerning_pair:<master uuid>:<first>:<second>`, where each side of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$",
             "type": "string"
           },
           "GlyphDiff": {
@@ -7731,6 +7886,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -7750,7 +7909,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           },
@@ -7765,7 +7925,7 @@ expression: "lists[0]"
                 "type": "array"
               },
               "affected_count": {
-                "description": "How many glyphs the call touches.",
+                "description": "How many glyphs, kerning pairs and kerning groups the call touches.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -7944,6 +8104,10 @@ expression: "lists[0]"
                 "description": "Whether the font info or the units per em changed.",
                 "type": "boolean"
               },
+              "kerning_changed": {
+                "description": "Whether any kerning group or kerning pair changed.",
+                "type": "boolean"
+              },
               "metrics_changed": {
                 "description": "Whether the vertical metrics of any master changed.",
                 "type": "boolean"
@@ -7988,6 +8152,7 @@ expression: "lists[0]"
               "modified_count",
               "info_changed",
               "metrics_changed",
+              "kerning_changed",
               "truncated"
             ],
             "type": "object"
@@ -7997,6 +8162,10 @@ expression: "lists[0]"
             "properties": {
               "advance_changed": {
                 "description": "Whether the advance width changed in any master (a layer present in\nonly one of the fonts counts as a change).",
+                "type": "boolean"
+              },
+              "components_changed": {
+                "description": "Whether the components changed in any master (a layer present in only\none of the fonts counts as a change when it has components).",
                 "type": "boolean"
               },
               "name": {
@@ -8016,7 +8185,8 @@ expression: "lists[0]"
               "name",
               "outline_changed",
               "advance_changed",
-              "unicodes_changed"
+              "unicodes_changed",
+              "components_changed"
             ],
             "type": "object"
           }

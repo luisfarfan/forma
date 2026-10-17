@@ -187,7 +187,7 @@ fn advance_all(doc: &str, base_rev: u64, count: usize, width: u64) -> Value {
 fn empty_diff() -> Value {
     json!({ "added": [], "added_count": 0, "removed": [], "removed_count": 0,
             "modified": [], "modified_count": 0, "info_changed": false,
-            "metrics_changed": false, "truncated": false })
+            "metrics_changed": false, "kerning_changed": false, "truncated": false })
 }
 
 /// Commits the plan of a call that needs approval, as an agent does once the

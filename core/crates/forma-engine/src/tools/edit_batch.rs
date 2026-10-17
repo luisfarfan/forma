@@ -222,6 +222,8 @@ fn edit_batch(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOut
 
 #[cfg(test)]
 mod tests {
+    use forma_model::EntityKey;
+
     use crate::errors::ErrorCode;
 
     use super::*;
@@ -279,7 +281,10 @@ mod tests {
         )
         .expect("valid batch");
         assert_eq!(steps.effects(), Effects::DESTRUCTIVE);
-        assert_eq!(steps.affected.iter().copied().collect::<Vec<_>>(), [a]);
+        assert_eq!(
+            steps.affected.iter().copied().collect::<Vec<_>>(),
+            [EntityKey::Glyph(a)]
+        );
         assert_eq!(steps.cmds.len(), 4);
 
         // A glyph the batch creates and then redraws destroys nothing.

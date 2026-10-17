@@ -28,7 +28,7 @@ use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, sch
 use crate::tools::json_output;
 use crate::tools::limits::{parse_checked, parse_checked_ref};
 use crate::tools::mutate::{BoundedTouched, MutationResult};
-use crate::tools::plans::{Change, Gate, OrPlan, Proposal, approval_gate};
+use crate::tools::plans::{Change, Gate, OrPlan, Proposal, approval_gate, is_affected};
 
 /// The largest page of `history_list`.
 const MAX_HISTORY_LIMIT: usize = 200;
@@ -414,8 +414,13 @@ fn gated_change(
     let before = Arc::clone(open.font());
     let mut scratch = open.document.clone();
     let measured = change(&mut scratch).map_err(|error| from_edit_error_in(error, &scratch))?;
-    let affected: BTreeSet<GlyphId> = measured
+    let affected: BTreeSet<EntityKey> = measured
         .touched
+        .iter()
+        .copied()
+        .filter(is_affected)
+        .collect();
+    let glyphs: BTreeSet<GlyphId> = affected
         .iter()
         .filter_map(|key| match key {
             EntityKey::Glyph(id) => Some(*id),
@@ -427,7 +432,7 @@ fn gated_change(
         .map_or_else(String::new, |entry| entry.label.clone());
     let destructive = match call.destroys {
         Destroys::Always => true,
-        Destroys::IfItErasesDrawings => erases_drawings(&before, scratch.font(), &affected),
+        Destroys::IfItErasesDrawings => erases_drawings(&before, scratch.font(), &glyphs),
     };
     let proposal = Proposal {
         actor,

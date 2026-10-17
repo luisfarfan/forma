@@ -10,8 +10,9 @@ pub const MAX_BATCH_OPS: usize = 2000;
 pub const MAX_NODES: usize = 100_000;
 /// The largest text argument (such as an SVG path), in bytes: 4 MiB.
 pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
-/// An operation affecting more glyphs than this is massive and needs an
-/// approved plan.
+/// An operation affecting more entities than this (glyphs, kerning pairs
+/// and kerning groups, counted together) is massive and needs an approved
+/// plan.
 pub const MASS_THRESHOLD: usize = 20;
 /// How long an approval plan token stays valid, in seconds.
 pub const PLAN_TTL_SECS: u64 = 300;

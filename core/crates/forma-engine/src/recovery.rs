@@ -149,6 +149,10 @@ fn failed(what: &str, error: &StoreError) -> String {
 }
 
 /// The journal record of a change that touched `touched` and left `font`.
+///
+/// The record holds the parts the change touched: the font info (with the
+/// units per em), the masters, the glyph order, each touched glyph and, when
+/// any kerning group or pair was touched, the whole kerning.
 fn record_of(
     key: &JournalKey,
     font: &Font,
@@ -161,6 +165,9 @@ fn record_of(
     let masters = touched
         .iter()
         .any(|key| matches!(key, EntityKey::VerticalMetrics(_)));
+    let kerning = touched
+        .iter()
+        .any(|key| matches!(key, EntityKey::KerningGroup(_) | EntityKey::KerningPair(..)));
     JournalRecord {
         document: key.document_text(),
         rev,
@@ -181,6 +188,7 @@ fn record_of(
                 _ => None,
             })
             .collect(),
+        kerning: kerning.then(|| font.kerning.clone()),
     }
 }
 
@@ -545,5 +553,44 @@ mod tests {
         let closed = json_of(engine.call(&actor, "document_close", json!({ "doc": doc })));
         assert!(closed.get("journal_warning").is_none(), "{closed}");
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn records_carry_the_kerning_when_a_kerning_entity_is_touched() {
+        use forma_model::{GlyphId, KernRef, KernSide, KerningGroup, KerningGroupId, Rev};
+
+        let mut font = Font::new("Kern", 1000);
+        let group = KerningGroupId::new();
+        font.kerning.groups.insert(
+            group,
+            KerningGroup {
+                id: group,
+                name: "O".into(),
+                side: KernSide::First,
+                members: Vec::new(),
+            },
+        );
+        let key = JournalKey::new(font.id, Path::new("/fonts/kern.forma"));
+        let master = font.masters[0].id;
+        let pair = EntityKey::KerningPair(
+            master,
+            KernRef::Group(group),
+            KernRef::Glyph(GlyphId::new()),
+        );
+        let record = |touched: &[EntityKey]| {
+            let touched: BTreeSet<EntityKey> = touched.iter().copied().collect();
+            record_of(&key, &font, &touched, Rev(1), &Actor::User, "x".into())
+        };
+
+        for touched in [
+            vec![pair],
+            vec![EntityKey::KerningGroup(group)],
+            vec![EntityKey::FontInfo, pair],
+        ] {
+            assert_eq!(record(&touched).kerning.as_ref(), Some(&font.kerning));
+        }
+        let glyph = record(&[EntityKey::Glyph(GlyphId::new()), EntityKey::GlyphOrder]);
+        assert_eq!(glyph.kerning, None);
+        assert_eq!(glyph.glyphs.len(), 1);
     }
 }

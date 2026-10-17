@@ -6,7 +6,7 @@ use std::fmt;
 use forma_compile::CompileError;
 use forma_edit::{ConflictInfo, Document, EditError};
 use forma_interop::InteropError;
-use forma_model::{EntityKey, Rev};
+use forma_model::{EntityKey, Font, GlyphId, KernRef, KerningGroupId, Rev};
 use forma_render::RenderError;
 use forma_store::StoreError;
 use serde::{Deserialize, Serialize};
@@ -178,7 +178,7 @@ pub fn from_edit_error(error: EditError) -> ToolError {
 
 /// [`from_edit_error`] for the error of a change of `document` (which a
 /// failed change leaves as it was): the details of a conflict also name each
-/// glyph, see [`conflict_details_in`].
+/// glyph, kerning group and kerning pair, see [`conflict_details_in`].
 #[must_use]
 pub fn from_edit_error_in(error: EditError, document: &Document) -> ToolError {
     match error {
@@ -190,9 +190,17 @@ pub fn from_edit_error_in(error: EditError, document: &Document) -> ToolError {
     }
 }
 
-/// [`conflict_details`] plus, for each conflicting glyph, its `name`: the
-/// name it has in `document` now or, for a glyph the conflicting change
-/// deleted, the name it had just before that change.
+/// [`conflict_details`] plus, for each conflicting glyph, kerning group and
+/// kerning pair, its `name`:
+///
+/// * a glyph: its name, such as `"a"`;
+/// * a kerning group: `@` and its name, such as `"@O"`;
+/// * a kerning pair: `"<first>/<second>"`, each side the name of its glyph
+///   or `@` and the name of its group, such as `"A/V"` or `"@O/V"`.
+///
+/// Each glyph or group is named as it is in `document` now or, when the
+/// conflicting change deleted it, as it was just before that change. An
+/// entity with a side that cannot be named that way gets no `name`.
 /// `{ "current_rev": n, "conflicts": [{ "entity": "glyph:<uuid>", "rev": n,
 /// "actor": "user", "name": "a" }] }`.
 #[must_use]
@@ -200,25 +208,57 @@ pub fn conflict_details_in(info: &ConflictInfo, document: &Document) -> Value {
     let mut details = conflict_details(info);
     if let Some(Value::Array(conflicts)) = details.get_mut("conflicts") {
         for (conflict, (entity, rev, _)) in conflicts.iter_mut().zip(&info.conflicts) {
-            let EntityKey::Glyph(id) = entity else {
-                continue;
+            let name = match entity {
+                EntityKey::Glyph(id) => name_in(document, *rev, |font| glyph_name(font, *id)),
+                EntityKey::KerningGroup(id) => {
+                    name_in(document, *rev, |font| group_name(font, *id))
+                }
+                EntityKey::KerningPair(_, first, second) => {
+                    name_in(document, *rev, |font| kern_ref_name(font, *first)).and_then(|first| {
+                        name_in(document, *rev, |font| kern_ref_name(font, *second))
+                            .map(|second| format!("{first}/{second}"))
+                    })
+                }
+                _ => None,
             };
-            let name = document
-                .font()
-                .glyphs
-                .get(id)
-                .map(|glyph| glyph.name.clone())
-                .or_else(|| {
-                    let before = rev.0.checked_sub(1).map(Rev)?;
-                    let font = document.snapshot_at(before)?;
-                    font.glyphs.get(id).map(|glyph| glyph.name.clone())
-                });
             if let (Some(name), Some(conflict)) = (name, conflict.as_object_mut()) {
                 conflict.insert("name".into(), Value::String(name));
             }
         }
     }
     details
+}
+
+/// What `name_of` finds in the current font of `document` or, failing that,
+/// in its font just before revision `rev` (the conflicting change).
+fn name_in(
+    document: &Document,
+    rev: Rev,
+    name_of: impl Fn(&Font) -> Option<String>,
+) -> Option<String> {
+    name_of(document.font()).or_else(|| {
+        let before = rev.0.checked_sub(1).map(Rev)?;
+        let font = document.snapshot_at(before)?;
+        name_of(&font)
+    })
+}
+
+fn glyph_name(font: &Font, id: GlyphId) -> Option<String> {
+    font.glyphs.get(&id).map(|glyph| glyph.name.clone())
+}
+
+fn group_name(font: &Font, id: KerningGroupId) -> Option<String> {
+    font.kerning
+        .groups
+        .get(&id)
+        .map(|group| format!("@{}", group.name))
+}
+
+fn kern_ref_name(font: &Font, reference: KernRef) -> Option<String> {
+    match reference {
+        KernRef::Glyph(id) => glyph_name(font, id),
+        KernRef::Group(id) => group_name(font, id),
+    }
 }
 
 /// The `details` of a `REVISION_CONFLICT`:
