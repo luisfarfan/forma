@@ -20,7 +20,8 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use forma_model::Path;
+use forma_geometry::transform_paths;
+use forma_model::{Path, Transform};
 use forma_render::Mask;
 use image::RgbImage;
 use kurbo::Point;
@@ -61,8 +62,9 @@ pub struct Placement {
     /// height of the candidate's row in pixels.
     pub scale: f64,
     /// The pixel that maps to `(lsb, 0)`: the left edge of the candidate's ink
-    /// (its box's `x0`, refined to the mask resolution) and the baseline of
-    /// its row.
+    /// (its box's `x0`, refined to the mask resolution, moved by the whole
+    /// units that put the traced outline's left edge exactly on `lsb`) and
+    /// the baseline of its row.
     pub origin_px: (f64, f64),
     /// The left side bearing in font units: 5 % of the em, rounded.
     pub lsb: f64,
@@ -78,7 +80,8 @@ pub struct TracedGlyph {
     pub paths: Vec<Path>,
     /// The width of the contours' bounding box.
     pub ink_width: f64,
-    /// `ink_width` plus both side bearings.
+    /// `ink_width` plus both side bearings: the outline spans `lsb` to
+    /// `lsb + ink_width`, so both bearings are `lsb`.
     pub advance_width: f64,
     /// Intersection over union of the contours, rasterized at the image
     /// scale, with the candidate's mask (see [`crate::compare`]).
@@ -373,7 +376,7 @@ fn vectorize(ink: &CandidateInk, lsb: f64) -> Result<Vec<Path>, TraceError> {
     let mut contours = Vec::new();
     for spline in splines(ink)? {
         let points: Vec<Point> = spline.iter().map(to_units).collect();
-        if let Some(path) = cleanup::contour(&points, ink.scale)? {
+        if let Some(path) = cleanup::contour(&points, ink.scale, ink.upsample)? {
             contours.push(path);
         }
     }
@@ -426,9 +429,33 @@ pub fn trace(
     let mut out = Vec::with_capacity(indices.len());
     for &index in indices {
         let ink = candidate_ink(&prepared, index, cap_height_units)?;
-        let paths = vectorize(&ink, lsb)?;
-        let ink_width = forma_geometry::bbox(&paths).map_or(0.0, |r| r.width());
-        let iou = fidelity::evaluate(&ink, &paths, fidelity::Anchor::At(lsb), false)?.0;
+        let traced = vectorize(&ink, lsb)?;
+        // Cleanup moves the outline's left edge by a fraction of a pixel:
+        // shift it (by whole units, keeping the grid) back onto the side
+        // bearing, and the placement with it.
+        // The bounding box of curves carries rounding noise (an extremum
+        // node at 50 may come out as 49.999999999999993): snap what is that
+        // close to the grid.
+        let bounds = forma_geometry::bbox(&traced).map(|r| {
+            let snap = |v: f64| {
+                if (v - v.round()).abs() < 1e-6 {
+                    v.round()
+                } else {
+                    v
+                }
+            };
+            kurbo::Rect::new(snap(r.x0), r.y0, snap(r.x1), r.y1)
+        });
+        let shift = bounds.map_or(0.0, |r| (lsb - r.x0).round());
+        let paths = transform_paths(
+            &traced,
+            &Transform {
+                dx: shift,
+                ..Transform::IDENTITY
+            },
+        );
+        let ink_width = bounds.map_or(0.0, |r| r.width());
+        let iou = fidelity::evaluate(&ink, &paths, fidelity::Anchor::At(lsb + shift), false)?.0;
         out.push(TracedGlyph {
             candidate: index,
             paths,
@@ -437,7 +464,7 @@ pub fn trace(
             iou,
             placement: Placement {
                 scale: ink.scale,
-                origin_px: (ink.ink_left_px, ink.baseline_px),
+                origin_px: (ink.ink_left_px - shift / ink.scale, ink.baseline_px),
                 lsb,
             },
         });

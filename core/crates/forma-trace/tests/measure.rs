@@ -17,7 +17,11 @@ fn line(x: f64, y: f64) -> Node {
 }
 
 fn font_with(paths: Vec<Path>) -> (Font, GlyphId, MasterId) {
-    let mut font = Font::new("Test", 1000);
+    font_with_em(paths, 1000)
+}
+
+fn font_with_em(paths: Vec<Path>, units_per_em: u16) -> (Font, GlyphId, MasterId) {
+    let mut font = Font::new("Test", units_per_em);
     let master = font.masters[0].id;
     let id = GlyphId::new();
     let mut layers = BTreeMap::new();
@@ -148,4 +152,27 @@ fn measure_ring_has_no_terminals() {
 fn measure_empty_glyph_is_an_error() {
     let (font, glyph, master) = font_with(Vec::new());
     assert!(measure(&font, glyph, master).is_err());
+}
+
+#[test]
+fn measure_follows_the_em() {
+    // The same bar in a 2048-unit em: the raster has 4 * 1000 / 2048 pixels
+    // per unit (capped by the 2048-pixel side), and the measures stay in
+    // font units.
+    let bar = Path {
+        id: PathId(0),
+        closed: true,
+        nodes: vec![
+            line(200.0, 0.0),
+            line(364.0, 0.0),
+            line(364.0, 1434.0),
+            line(200.0, 1434.0),
+        ],
+    };
+    let (font, glyph, master) = font_with_em(vec![bar], 2048);
+    let m = measure(&font, glyph, master).unwrap();
+    assert!((m.stroke_median - 164.0).abs() <= 6.0, "{m:?}");
+    // Square ends: terminals half as wide as the stroke.
+    let r = m.terminal_radius.expect("terminals");
+    assert!((r - 82.0).abs() <= 6.0, "{m:?}");
 }

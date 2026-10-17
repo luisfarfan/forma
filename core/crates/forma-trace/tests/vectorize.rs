@@ -69,7 +69,23 @@ fn trace_one(img: &RgbImage) -> TracedGlyph {
     assert_eq!(a.candidates.len(), 1, "{:?}", a.candidates);
     let mut traced = trace(img, &opts, &[0], CAP, UPM).unwrap();
     assert_eq!(traced.len(), 1);
-    traced.remove(0)
+    let g = traced.remove(0);
+    assert_side_bearings(&g, 50.0);
+    g
+}
+
+/// Both side bearings are exactly `lsb`.
+fn assert_side_bearings(g: &TracedGlyph, lsb: f64) {
+    let b = bbox(&g.paths).unwrap();
+    assert_eq!(g.placement.lsb, lsb);
+    // Exact, up to the floating-point noise of a curve's bounding box.
+    assert!((b.x0 - lsb).abs() < 1e-9, "left side bearing {}", b.x0);
+    assert!(
+        (g.advance_width - b.x1 - lsb).abs() < 1e-9,
+        "right side bearing"
+    );
+    assert_eq!(g.advance_width, g.ink_width + 2.0 * lsb);
+    assert_eq!(g.ink_width, g.ink_width.round(), "on the grid");
 }
 
 fn on_curve(path: &Path) -> usize {
@@ -387,4 +403,157 @@ fn stroked_letters_at_110_px_trace_faithfully() {
             "{name}: {traced} nodes for {drawn}"
         );
     }
+}
+
+/// An anti-aliased (8 x 8 samples) triangle with its apex at `apex` and its
+/// base from `left` to `right`, in pixels.
+fn triangle(img: &mut RgbImage, apex: (f64, f64), left: (f64, f64), right: (f64, f64)) {
+    let side = |p: (f64, f64), q: (f64, f64), x: f64, y: f64| {
+        (q.0 - p.0) * (y - p.1) - (q.1 - p.1) * (x - p.0)
+    };
+    for y in 0..img.height() {
+        for x in 0..img.width() {
+            let mut inside = 0;
+            for sy in 0..8 {
+                for sx in 0..8 {
+                    let px = f64::from(x) + (f64::from(sx) + 0.5) / 8.0;
+                    let py = f64::from(y) + (f64::from(sy) + 0.5) / 8.0;
+                    let d = [
+                        side(apex, left, px, py),
+                        side(left, right, px, py),
+                        side(right, apex, px, py),
+                    ];
+                    if d.iter().all(|&v| v >= 0.0) || d.iter().all(|&v| v <= 0.0) {
+                        inside += 1;
+                    }
+                }
+            }
+            if inside > 0 {
+                let c = f64::from(inside) / 64.0;
+                let blend = |v: u8| (f64::from(v) * c).round() as u8;
+                img.put_pixel(x, y, Rgb(ORANGE.map(blend)));
+            }
+        }
+    }
+}
+
+#[test]
+fn acute_corners_stay_sharp() {
+    // At the demo's scale: three 110-px bars set the row (cap 700 units, about
+    // 6.36 units per pixel), next to a 110-px triangle.
+    // (apex angle, IoU, apex error in pixels): the more acute, the more a
+    // fraction of a pixel along the edges moves the point where they meet.
+    for (apex_degrees, min_iou, max_px) in
+        [(60.0f64, 0.98, 1.0), (30.0, 0.98, 1.0), (16.0, 0.97, 2.0)]
+    {
+        let half = 110.0 * (apex_degrees / 2.0).to_radians().tan();
+        let width = (240.0 + 2.0 * half) as u32;
+        let mut img = canvas(width, 180);
+        for k in 0..3 {
+            rect(&mut img, 20 + 40 * k, 30, 35 + 40 * k, 140);
+        }
+        let cx = 180.0 + half;
+        triangle(&mut img, (cx, 30.0), (cx - half, 140.0), (cx + half, 140.0));
+        let opts = TraceOptions::default();
+        let g = trace(&img, &opts, &[3], CAP, UPM).unwrap().remove(0);
+        assert_side_bearings(&g, 50.0);
+        let nodes = &g.paths[0].nodes;
+        assert_eq!(g.paths.len(), 1);
+        assert_eq!(nodes.len(), 3, "{apex_degrees}°: {nodes:?}");
+        assert!(nodes.iter().all(|n| n.kind == NodeKind::Line), "{nodes:?}");
+        let scale = CAP / 110.0;
+        let top = nodes.iter().max_by(|a, b| a.y.total_cmp(&b.y)).unwrap();
+        let (want_x, want_y) = (50.0 + half * scale, CAP);
+        let off = (top.x - want_x).hypot(top.y - want_y);
+        assert!(
+            off <= max_px * scale,
+            "{apex_degrees}°: apex {top:?}, {off:.1} units off"
+        );
+        assert!(g.iou >= min_iou, "{apex_degrees}°: iou {}", g.iou);
+    }
+}
+
+#[test]
+fn mitred_apex_of_a_stroked_lambda_stays_sharp() {
+    // A "Λ" drawn as one outline with mitred (sharp) joins, 110 px tall.
+    let poly = |pts: &[(f64, f64)]| Path {
+        id: forma_model::PathId(0),
+        closed: true,
+        nodes: pts
+            .iter()
+            .map(|&(x, y)| forma_model::Node {
+                x,
+                y,
+                kind: NodeKind::Line,
+                smooth: false,
+            })
+            .collect(),
+    };
+    let lambda = poly(&[
+        (0.0, 0.0),
+        (90.0, 0.0),
+        (300.0, 560.0),
+        (510.0, 0.0),
+        (600.0, 0.0),
+        (300.0, 700.0),
+    ]);
+    let img = render(&[lambda], 110.0);
+    let g = trace_one(&img);
+    let nodes = &g.paths[0].nodes;
+    assert_eq!(g.paths.len(), 1);
+    assert_eq!(nodes.len(), 6, "{nodes:?}");
+    assert!(nodes.iter().all(|n| n.kind == NodeKind::Line), "{nodes:?}");
+    let top = nodes.iter().max_by(|a, b| a.y.total_cmp(&b.y)).unwrap();
+    let off = (top.x - 350.0).hypot(top.y - 700.0);
+    assert!(off <= CAP / 110.0, "apex {top:?}");
+    assert!(g.iou >= 0.97, "iou {}", g.iou);
+}
+
+#[test]
+fn large_scale_does_not_trace_mask_steps() {
+    // A 40-px disc alone sets its row: 17.5 units per pixel, so 1.5 units is
+    // finer than the mask.
+    let mut img = canvas(100, 100);
+    ring(&mut img, 50.0, 50.0, 20.0, 0.0);
+    let g = trace_one(&img);
+    assert!((g.placement.scale - 17.5).abs() < 1e-9);
+    assert_eq!(g.paths.len(), 1);
+    let n = on_curve(&g.paths[0]);
+    assert!(n <= 12, "{n} on-curve nodes");
+    assert!(g.iou >= 0.98, "iou {}", g.iou);
+    assert!(check_paths(&g.paths, 1.0).is_empty());
+}
+
+#[test]
+fn cap_height_must_be_positive() {
+    let img = rectangle_image();
+    let opts = TraceOptions::default();
+    for cap in [0.0, -700.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            matches!(
+                trace(&img, &opts, &[0], cap, UPM),
+                Err(TraceError::InvalidArgument(_))
+            ),
+            "{cap}"
+        );
+        assert!(
+            matches!(
+                compare(&img, &opts, 0, &[], cap),
+                Err(TraceError::InvalidArgument(_))
+            ),
+            "{cap}"
+        );
+    }
+}
+
+#[test]
+fn side_bearings_follow_the_em() {
+    let img = rectangle_image();
+    let g = trace(&img, &TraceOptions::default(), &[0], 1434.0, 2048)
+        .unwrap()
+        .remove(0);
+    // round(0.05 * 2048) = round(102.4) = 102.
+    assert_side_bearings(&g, 102.0);
+    let b = bbox(&g.paths).unwrap();
+    assert!((b.height() - 1434.0).abs() <= 1.0, "{b:?}");
 }
