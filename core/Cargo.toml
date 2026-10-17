@@ -54,3 +54,6 @@ rstest = "0.27.0"
 # TEST ONLY: validates tool results against their output schemas (MIT; no
 # default features: no HTTP or file resolution of references).
 jsonschema = { version = "0.58.6", default-features = false }
+# Decodes the PNG/JPEG source images of the image-to-font pipeline (ADR 0009). Only
+# the two formats are enabled; MIT OR Apache-2.0.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
