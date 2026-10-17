@@ -85,7 +85,7 @@ pub struct CommandSpec {
 | CLI (`forma call <tool> --json '{…}'` y subcomandos ergonómicos) | Mismo handler y mismos schemas |
 | UI (cualquier toolkit, ver `02-tech-stack.md`) | Las herramientas del canvas emiten los mismos comandos (gestos = transacciones) |
 | Agente integrado | Recibe las definiciones de herramientas del registro (formato del proveedor) |
-| Python (fase posterior) | Bindings generados del registro |
+| Python (Hito 7) | Bindings generados del registro |
 
 **Test de paridad (CI):** cada `CommandSpec` debe estar expuesto en MCP y CLI (o justificar su exclusión en una lista blanca). Una herramienta MCP sin `CommandSpec` no compila.
 
@@ -159,7 +159,7 @@ sequenceDiagram
 
 ## 8. Catálogo inicial de herramientas (API v1)
 
-Convenciones: `snake_case`, prefijo de dominio, ≤ 40 caracteres, orden determinista. Todas las mutantes llevan `doc` y `base_rev`; todas las lecturas devuelven `rev`. Columna "Hito": **1** = Hito 1, **F2…F7** = fase del roadmap (`04-roadmap.md`).
+Convenciones: `snake_case`, prefijo de dominio, ≤ 40 caracteres, orden determinista. Todas las mutantes llevan `doc` y `base_rev`; todas las lecturas devuelven `rev`. Columna "Hito": **1** = Hito 1, **2…9** = hito del roadmap (`04-roadmap.md`, revisión 4).
 
 | Toolset | Herramienta | Efecto | Hito |
 |---|---|---|---|
@@ -182,19 +182,19 @@ Convenciones: `snake_case`, prefijo de dominio, ≤ 40 caracteres, orden determi
 | glyphs | `glyph_set_outline` (reemplaza contornos de una capa) | destructive | 1 |
 | glyphs | `contour_edit` (añadir/borrar/invertir/transformar contorno) | write | 1 |
 | glyphs | `nodes_edit` (mover, insertar, borrar, smooth/corner) | write | 1 |
-| glyphs | `component_add` / `anchor_set` | write | F2 |
-| geometry | `geometry_check` (contornos abiertos, dirección, extremos, puntos duplicados, segmentos diminutos, fuera de grilla; auto-intersecciones desde F4) | read | 1 |
+| glyphs | `component_add` / `anchor_set` | write | 2 (componentes) / 3 (anclas) |
+| geometry | `geometry_check` (contornos abiertos, dirección, extremos, puntos duplicados, segmentos diminutos, fuera de grilla; auto-intersecciones con las booleanas, Hitos 2 y 6) | read | 1 |
 | geometry | `geometry_fix` (correcciones seleccionadas → plan si es masivo) | write/mass | 1 |
-| geometry | `path_boolean` / `remove_overlap` | write | F4 |
+| geometry | `path_boolean` / `remove_overlap` | write | 2 (`remove_overlap`) / 6 (`path_boolean`) |
 | spacing | `metrics_get` / `metrics_set` (advance, LSB, RSB por glifo y master; lote) | write | 1 |
-| spacing | `kerning_get` / `kerning_set` (pares, grupos, excepciones) | write | F2 |
-| masters | `axis_add` / `master_add` / `master_update` / `instance_set` | write | F3 |
-| masters | `compatibility_check` / `interpolate_preview` | read | F3 |
-| features | `features_get` / `features_set` / `features_generate` | write | F4 |
+| spacing | `kerning_get` / `kerning_set` (pares, grupos, excepciones) | write | 2 |
+| masters | `axis_add` / `master_add` / `master_update` / `instance_set` | write | 5 |
+| masters | `compatibility_check` / `interpolate_preview` | read | 5 |
+| features | `features_get` / `features_set` / `features_generate` | write | 3 |
 | quality | `validate` (modelo + binario: OTS, fontspector, chequeos propios) | read | 1 |
-| export | `export_font` (TTF; WOFF2; VF en F3; OTF en F4) | write (sobrescritura: destructive) | 1 |
+| export | `export_font` (TTF; WOFF2; VF en el Hito 5; OTF en el Hito 6) | write (sobrescritura: destructive) | 1 |
 | preview | `preview_glyph` (PNG/SVG; capa, master, guías, nodos opcionales) | read | 1 |
-| preview | `preview_text` (prueba de texto con shaping) | read | 1 (sin shaping complejo) / F2 |
+| preview | `preview_text` (prueba de texto con shaping) | read | 1 (sin shaping complejo) / 3 |
 | preview | `preview_compare` (dos revisiones superpuestas o lado a lado) | read | 1 |
 | history | `history_list` / `history_undo` / `history_redo` / `history_revert` / `history_restore` | write | 1 |
 | history | `document_diff` | read | 1 |

@@ -1,7 +1,7 @@
 # 02 — Comparación tecnológica y stack recomendado
 
 > Estado: revisión 3 (open source) · 2026-10-16
-> **Aprobado por el responsable:** Rust como núcleo; Hito 1; FORMA es **open source bajo MIT OR Apache-2.0**, sin fines comerciales. **Pendiente de aprobación:** tecnología de UI (§4), que se decide con un spike comparativo (`04-roadmap.md`, Hito 2).
+> **Aprobado por el responsable:** Rust como núcleo; Hitos 1 y 2; FORMA es **open source bajo MIT OR Apache-2.0**, sin fines comerciales. **Pendiente de aprobación:** tecnología de UI (§4), que se decide con un spike comparativo al final del roadmap (`04-roadmap.md`, Hito 8; ADR 0008).
 > Evidencia: **[V]** verificado en fuente primaria (URL en §12) · **[A]** afirmación del proveedor · **[H]** hipótesis o juicio de ingeniería.
 
 ## 1. Resumen de decisiones
@@ -14,7 +14,7 @@
 | MCP | **rmcp 3.5.x** (SDK oficial Rust): stdio, ambas eras del protocolo | Recomendado | `pmcp` |
 | Agente IA integrado | Bucle propio en Rust + **genai** detrás de un trait `LlmProvider` | Recomendado | rig-core (conflicto rmcp ^2) |
 | Formato nativo | **`.forma`**: archivo único SQLite. **`.formapackage`**: carpeta con JSON canónico para git | Recomendado | Zip de JSON (como Sketch); solo carpeta |
-| Compilación | **fontc 1.0** in-process (TTF, VF-TTF); fontmake como oráculo de pruebas y ruta CFF (fase 4) | Recomendado | fontmake como ruta única |
+| Compilación | **fontc 1.0** in-process (TTF, VF-TTF); fontmake como oráculo de pruebas y ruta CFF (Hito 6) | Recomendado | fontmake como ruta única |
 | Validación | OTS (`opentype-sanitizer`) + fontspector + chequeos propios | Recomendado | — |
 | Distribución | macOS universal firmado y notarizado; Windows firmado (MSIX/MSI); Linux AppImage + Flatpak + deb; además Homebrew, winget y Flathub; la CLI vía `cargo install` | Recomendado | — |
 | Licencia del proyecto | **MIT OR Apache-2.0**; dependencias permisivas, más Qt bajo LGPLv3 con enlace dinámico si se elige Qt | **Aprobado** | — |
@@ -31,7 +31,8 @@
 | kurbo | 0.13.1 | MIT/Apache | Geometría Bézier, sin booleanas [V] |
 | HarfRust | 0.14.0 | MIT | Shaping; "<25 % más lento" que HarfBuzz [V] |
 | fontTools / fontmake | 4.67.0 / 3.12.2 | MIT / Apache | Oráculos de prueba; ruta CFF [V] |
-| Skia PathOps (skia-safe 0.153) | — | BSD/MIT | Booleanas robustas [V] |
+| linesweeper | 0.5.0 | MIT/Apache | Unión de contornos (`remove_overlap`) sobre kurbo; primera opción detrás del trait `PathOps` (ADR 0009) [V 2026-10-17] |
+| Skia PathOps (skia-safe 0.153) | — | BSD/MIT | Booleanas robustas; plan B detrás del trait `PathOps` (ADR 0009) [V] |
 | fontspector | 1.9.0 · 2026-10-09 | Apache-2.0 | Sucesor de Font Bakery; crates Rust disponibles [V] |
 | opentype-sanitizer (OTS) | 9.2.0 | BSD | Wheels para macOS (universal2), Windows y Linux [V PyPI] |
 
@@ -112,7 +113,7 @@ Con esto **desaparece el costo de licencia** como criterio de desempate entre to
 
 ### 4.4 Recomendación
 
-**Qt 6.12 LTS + Qt Quick/QML + cxx-qt, con canvas propio en Rust**, sujeto a un spike comparativo de 2 semanas (Hito 2) contra **Slint**.
+**Qt 6.12 LTS + Qt Quick/QML + cxx-qt, con canvas propio en Rust**, sujeto a un spike comparativo de 2 semanas (Hito 8) contra **Slint**.
 
 Justificación:
 1. **Es la única opción que hoy cubre lápiz/tableta, IME, accesibilidad, menús y diálogos nativos, high-DPI y empaquetado en los tres SO** [V]. Para un editor de dibujo profesional, la presión e inclinación del lápiz y el IME no son opcionales a medio plazo.
@@ -189,7 +190,7 @@ flowchart LR
 
 Sin cambios en lo esencial (detalle en `03-architecture.md §9`):
 - **TTF y VF-TTF:** fontc in-process, a partir de designspace+UFO temporales generados con norad.
-- **OTF/CFF y CFF2:** sidecar fontmake con CPython embebido (fase 4) o AFDKO 5.
+- **OTF/CFF y CFF2:** sidecar fontmake con CPython embebido (Hito 6) o AFDKO 5.
 - **Validación:** OTS + fontspector + chequeos propios.
 - **Oráculo de pruebas:** comparación contra fontmake con `ttx_diff`.
 
@@ -203,7 +204,7 @@ Sin cambios en lo esencial (detalle en `03-architecture.md §9`):
 
 - Versiones mínimas exactas: se fijan al elegir el toolkit (Qt 6.12 publica su matriz de plataformas) [H: verificar en el spike].
 - Actualizaciones: a decidir en la fase de empaquetado (Sparkle/WinSparkle/Flatpak, o el updater del toolkit).
-- **Python embebido multiplataforma (fase 4–5):** PyO3 + una distribución redistribuible de CPython por plataforma [H: evaluar python-build-standalone y su licencia].
+- **Python embebido multiplataforma (Hitos 6–7):** PyO3 + una distribución redistribuible de CPython por plataforma [H: evaluar python-build-standalone y su licencia].
 
 ## 10. Dependencias del Hito 1 (instalación autorizada, con justificación)
 
@@ -215,7 +216,7 @@ Sin cambios en lo esencial (detalle en `03-architecture.md §9`):
 | fontspector (`cargo install` local al repo, o crate) | Validación de binarios | Desarrollo y CI |
 | MCP Inspector (`npx @modelcontextprotocol/inspector`) | Smoke tests de MCP con la herramienta oficial | Desarrollo y CI (Node 24 ya instalado) |
 | HarfBuzz `hb-shape` | Oráculo de shaping (ya instalado en macOS; apt/choco en CI) | Desarrollo y CI |
-| **No se instala** Qt ni Slint hasta aprobar el Hito 2 | — | — |
+| **No se instala** Qt ni Slint hasta aprobar el Hito 8 (spike de UI; ADR 0008) | — | — |
 
 ## 11. Riesgos tecnológicos principales
 

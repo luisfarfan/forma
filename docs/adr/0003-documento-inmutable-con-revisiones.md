@@ -31,4 +31,4 @@ Una persona y uno o varios agentes editan a la vez la misma fuente. Un agente nu
 - La memoria crece con las revisiones (se comparte lo que no cambia, pero el historial completo se conserva); habrá que decidir una política de compactación cuando el historial largo pese.
 - Los agentes deben releer tras un `REVISION_CONFLICT`; la guía de conexión (`docs/guides/connect-agents.md`) lo explica.
 - Un futuro comando de reordenar glifos tendrá que aportar su propia clave de conflicto.
-- En la interfaz, Cmd/Ctrl+Z podrá deshacer la última transacción de cualquier actor (decisión de producto para el Hito 3); por MCP rige la regla del mismo actor.
+- En la interfaz, Cmd/Ctrl+Z podrá deshacer la última transacción de cualquier actor (decisión de producto para el Hito 8, el de la interfaz; entonces era el Hito 3); por MCP rige la regla del mismo actor.
