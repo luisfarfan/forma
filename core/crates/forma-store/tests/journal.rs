@@ -824,7 +824,7 @@ fn units_per_em_is_journaled_and_older_lines_still_read() {
 fn kerning_of(font: &Font, value: f64) -> Kerning {
     let group = KerningGroupId(Uuid::from_u128(0x6a));
     let mut kerning = Kerning::default();
-    kerning.groups.insert(
+    kerning.groups_mut().insert(
         group,
         KerningGroup {
             id: group,
@@ -833,11 +833,12 @@ fn kerning_of(font: &Font, value: f64) -> Kerning {
             members: vec![gid(1)],
         },
     );
-    kerning
-        .pairs
-        .entry(font.default_master().id)
-        .or_default()
-        .insert((KernRef::Group(group), KernRef::Glyph(gid(2))), value);
+    kerning.set_pair(
+        font.default_master().id,
+        KernRef::Group(group),
+        KernRef::Glyph(gid(2)),
+        Some(value),
+    );
     kerning
 }
 

@@ -891,13 +891,15 @@ fn kerning_font() -> Font {
 }
 
 fn add_group(font: &mut Font, group: KerningGroup) {
-    font.kerning.groups.insert(group.id, group);
+    font.kerning.groups_mut().insert(group.id, group);
 }
 
+/// Stores the pair in the default master as it is, even when the value is
+/// invalid, so that the invariants can be checked.
 fn set_pair(font: &mut Font, first: KernRef, second: KernRef, value: f64) {
     let master = font.masters[0].id;
     font.kerning
-        .pairs
+        .pairs_mut()
         .entry(master)
         .or_default()
         .insert((first, second), value);
@@ -990,15 +992,19 @@ fn kerning_invariants() {
         &mut font,
         group(kid(2), "round", KernSide::First, &[gid(3)]),
     );
+    let error = font.validate_invariants().unwrap_err();
     assert_eq!(
-        font.validate_invariants(),
-        Err(ModelError::GlyphInTwoGroups {
+        error,
+        ModelError::GlyphInTwoGroups {
             glyph: "O".to_owned(),
             side: KernSide::First,
-        })
+            group: "O".to_owned(),
+            again_in: "round".to_owned(),
+        }
     );
+    assert!(error.to_string().contains("\"round\""), "{error}");
     // One group per side is fine.
-    font.kerning.groups.get_mut(&kid(2)).unwrap().side = KernSide::Second;
+    font.kerning.groups_mut().get_mut(&kid(2)).unwrap().side = KernSide::Second;
     assert_eq!(font.validate_invariants(), Ok(()));
 
     // A second-side group used as the first member of a pair.
@@ -1010,31 +1016,40 @@ fn kerning_invariants() {
         KernRef::Glyph(gid(1)),
         -20.0,
     );
+    let master = font.masters[0].id;
     assert_eq!(
         font.validate_invariants(),
         Err(ModelError::KerningGroupWrongSide {
-            group: "V".to_owned()
+            master,
+            pair: "@V/A".to_owned(),
+            group: "V".to_owned(),
         })
     );
 
-    // Zero, NaN and out-of-range values.
+    // Zero, NaN and out-of-range values, named by master and pair.
     let pair = (KernRef::Glyph(gid(1)), KernRef::Glyph(gid(2)));
     let mut font = kerning_font();
+    let master = font.masters[0].id;
+    let invalid = |value: f64| ModelError::InvalidKerningValue {
+        master,
+        pair: "A/V".to_owned(),
+        value,
+    };
     set_pair(&mut font, pair.0, pair.1, 0.0);
-    assert_eq!(
-        font.validate_invariants(),
-        Err(ModelError::InvalidKerningValue { value: 0.0 })
+    let error = font.validate_invariants().unwrap_err();
+    assert_eq!(error, invalid(0.0));
+    let message = error.to_string();
+    assert!(
+        message.contains("A/V") && message.contains(&master.to_string()),
+        "{message}"
     );
     set_pair(&mut font, pair.0, pair.1, f64::NAN);
     assert!(matches!(
         font.validate_invariants(),
-        Err(ModelError::InvalidKerningValue { value }) if value.is_nan()
+        Err(ModelError::InvalidKerningValue { value, .. }) if value.is_nan()
     ));
     set_pair(&mut font, pair.0, pair.1, 2000.5);
-    assert_eq!(
-        font.validate_invariants(),
-        Err(ModelError::InvalidKerningValue { value: 2000.5 })
-    );
+    assert_eq!(font.validate_invariants(), Err(invalid(2000.5)));
     for value in [-2000.0, 2000.0, -0.5] {
         set_pair(&mut font, pair.0, pair.1, value);
         assert_eq!(font.validate_invariants(), Ok(()), "{value}");
@@ -1060,25 +1075,40 @@ fn kerning_invariants() {
         })
     );
 
-    // References that do not exist.
+    // References that do not exist, named by group or by master and pair
+    // (a side that does not resolve keeps its reference text).
     let mut font = kerning_font();
     add_group(&mut font, group(kid(1), "O", KernSide::First, &[gid(99)]));
+    let error = font.validate_invariants().unwrap_err();
     assert_eq!(
-        font.validate_invariants(),
-        Err(ModelError::KerningUnknownGlyph(gid(99)))
+        error,
+        ModelError::KerningGroupUnknownGlyph {
+            group: "O".to_owned(),
+            side: KernSide::First,
+            glyph: gid(99),
+        }
     );
+    assert!(error.to_string().contains("\"O\""), "{error}");
     let mut font = kerning_font();
+    let master = font.masters[0].id;
     set_pair(
         &mut font,
         KernRef::Glyph(gid(98)),
         KernRef::Glyph(gid(1)),
         -5.0,
     );
+    let error = font.validate_invariants().unwrap_err();
     assert_eq!(
-        font.validate_invariants(),
-        Err(ModelError::KerningUnknownGlyph(gid(98)))
+        error,
+        ModelError::KerningUnknownGlyph {
+            master,
+            pair: format!("g.{}/A", gid(98)),
+            glyph: gid(98),
+        }
     );
+    assert!(error.to_string().contains("/A"), "{error}");
     let mut font = kerning_font();
+    let master = font.masters[0].id;
     set_pair(
         &mut font,
         KernRef::Glyph(gid(1)),
@@ -1087,12 +1117,16 @@ fn kerning_invariants() {
     );
     assert_eq!(
         font.validate_invariants(),
-        Err(ModelError::KerningUnknownGroup(kid(7)))
+        Err(ModelError::KerningUnknownGroup {
+            master,
+            pair: format!("A/k.{}", kid(7)),
+            group: kid(7),
+        })
     );
     let mut font = kerning_font();
     let stranger = MasterId(Uuid::from_u128(0xdead));
     font.kerning
-        .pairs
+        .pairs_mut()
         .entry(stranger)
         .or_default()
         .insert(pair, -5.0);
@@ -1104,7 +1138,7 @@ fn kerning_invariants() {
     // A group stored under another id.
     let mut font = kerning_font();
     font.kerning
-        .groups
+        .groups_mut()
         .insert(kid(1), group(kid(2), "O", KernSide::First, &[]));
     assert_eq!(
         font.validate_invariants(),
@@ -1147,24 +1181,153 @@ fn effective_kerning_lookup_order() {
     assert_eq!(kerning.pair(master, group_glyph.0, group_glyph.1), None);
 
     assert_eq!(kerning.effective(master, a, v), -50.0);
-    let pairs = kerning.pairs.get_mut(&master).unwrap();
-    pairs.remove(&glyph_glyph);
+    let (first, second) = glyph_glyph;
+    assert_eq!(kerning.set_pair(master, first, second, None), Some(-50.0));
     assert_eq!(kerning.effective(master, a, v), -30.0);
-    let pairs = kerning.pairs.get_mut(&master).unwrap();
-    pairs.remove(&glyph_group);
-    pairs.insert(group_glyph, -20.0);
+    kerning.set_pair(master, glyph_group.0, glyph_group.1, None);
+    kerning.set_pair(master, group_glyph.0, group_glyph.1, Some(-20.0));
     assert_eq!(kerning.effective(master, a, v), -20.0);
-    let pairs = kerning.pairs.get_mut(&master).unwrap();
-    pairs.remove(&group_glyph);
+    kerning.set_pair(master, group_glyph.0, group_glyph.1, None);
     assert_eq!(kerning.effective(master, a, v), -10.0);
     // Nothing for the reversed pair, another master or no pairs at all.
     assert_eq!(kerning.effective(master, v, a), 0.0);
     assert_eq!(kerning.effective(MasterId(Uuid::from_u128(77)), a, v), 0.0);
-    kerning.pairs.clear();
+    kerning.pairs_mut().clear();
     assert_eq!(kerning.effective(master, a, v), 0.0);
     assert!(!kerning.is_empty());
-    kerning.groups.clear();
+    kerning.groups_mut().clear();
     assert!(kerning.is_empty());
+}
+
+#[test]
+fn a_master_without_pairs_has_no_entry() {
+    let mut font = kerning_font();
+    let master = font.masters[0].id;
+    let (a, v) = (KernRef::Glyph(gid(1)), KernRef::Glyph(gid(2)));
+
+    // Setting and then removing the only pair of a master leaves no trace.
+    assert_eq!(font.kerning.set_pair(master, a, v, Some(-30.0)), None);
+    assert_eq!(font.kerning.pair(master, a, v), Some(-30.0));
+    assert_eq!(font.kerning.set_pair(master, a, v, None), Some(-30.0));
+    assert_eq!(font.kerning, Kerning::default());
+    assert!(font.kerning.pairs.is_empty());
+    let value = serde_json::to_value(&font).unwrap();
+    assert!(value.get("kerning").is_none(), "{value}");
+    // Removing a pair that is not there changes nothing.
+    assert_eq!(font.kerning.set_pair(master, a, v, None), None);
+    assert_eq!(font.kerning, Kerning::default());
+
+    // A master stored with an empty map breaks the invariants...
+    font.kerning.pairs_mut().insert(master, BTreeMap::new());
+    // (It holds no pair, though.)
+    assert!(font.kerning.is_empty());
+    assert_eq!(
+        font.validate_invariants(),
+        Err(ModelError::EmptyKerningMaster(master))
+    );
+
+    // ...and an empty list in JSON reads as no entry at all.
+    let json = serde_json::json!({"groups": [], "pairs": {master.to_string(): []}});
+    let kerning: Kerning = serde_json::from_value(json).unwrap();
+    assert_eq!(kerning, Kerning::default());
+    assert!(kerning.is_empty());
+}
+
+#[test]
+fn kerning_is_shared_between_clones() {
+    let mut font = kerning_font();
+    let master = font.masters[0].id;
+    add_group(&mut font, group(kid(1), "O", KernSide::First, &[gid(3)]));
+    set_pair(
+        &mut font,
+        KernRef::Glyph(gid(1)),
+        KernRef::Glyph(gid(2)),
+        -50.0,
+    );
+    let copy = font.clone();
+    assert!(Arc::ptr_eq(&copy.kerning.groups, &font.kerning.groups));
+    assert!(Arc::ptr_eq(&copy.kerning.pairs, &font.kerning.pairs));
+
+    // Editing one copy leaves the other as it was.
+    let mut edited = copy.clone();
+    edited.kerning.set_pair(
+        master,
+        KernRef::Glyph(gid(1)),
+        KernRef::Glyph(gid(2)),
+        Some(-60.0),
+    );
+    assert!(Arc::ptr_eq(&edited.kerning.groups, &font.kerning.groups));
+    assert!(!Arc::ptr_eq(&edited.kerning.pairs, &font.kerning.pairs));
+    assert_eq!(
+        font.kerning
+            .pair(master, KernRef::Glyph(gid(1)), KernRef::Glyph(gid(2))),
+        Some(-50.0)
+    );
+    assert_eq!(copy, font);
+}
+
+#[test]
+fn removing_a_reference_from_the_kerning() {
+    let mut font = kerning_font();
+    let master = font.masters[0].id;
+    let second = MasterId(Uuid::from_u128(0xb01d));
+    let (a, v, o) = (gid(1), gid(2), gid(3));
+    add_group(&mut font, group(kid(1), "round", KernSide::First, &[o, a]));
+    add_group(&mut font, group(kid(2), "A", KernSide::Second, &[a]));
+    add_group(&mut font, group(kid(3), "V", KernSide::Second, &[v]));
+    let kerning = &mut font.kerning;
+    kerning.set_pair(master, KernRef::Glyph(a), KernRef::Glyph(v), Some(-50.0));
+    kerning.set_pair(master, KernRef::Glyph(v), KernRef::Glyph(a), Some(-40.0));
+    kerning.set_pair(
+        master,
+        KernRef::Glyph(v),
+        KernRef::Group(kid(3)),
+        Some(-5.0),
+    );
+    kerning.set_pair(
+        second,
+        KernRef::Glyph(a),
+        KernRef::Group(kid(3)),
+        Some(-30.0),
+    );
+    kerning.set_pair(
+        second,
+        KernRef::Group(kid(1)),
+        KernRef::Glyph(v),
+        Some(-20.0),
+    );
+
+    // Nothing to remove: nothing is copied.
+    let shared = font.kerning.clone();
+    let mut copy = shared.clone();
+    assert!(copy.remove_pairs_with(KernRef::Glyph(gid(4))).is_empty());
+    assert!(copy.remove_from_groups(gid(4)).is_empty());
+    assert!(Arc::ptr_eq(&copy.pairs, &shared.pairs));
+    assert!(Arc::ptr_eq(&copy.groups, &shared.groups));
+
+    // The pairs of `A`, on either side and in every master, in key order; a
+    // master left without pairs goes.
+    let removed = font.kerning.remove_pairs_with(KernRef::Glyph(a));
+    let mut expected = vec![
+        (master, KernRef::Glyph(a), KernRef::Glyph(v)),
+        (master, KernRef::Glyph(v), KernRef::Glyph(a)),
+        (second, KernRef::Glyph(a), KernRef::Group(kid(3))),
+    ];
+    expected.sort();
+    assert_eq!(removed, expected);
+    assert_eq!(font.kerning.pairs[&master].len(), 1);
+    let removed = font.kerning.remove_pairs_with(KernRef::Group(kid(1)));
+    assert_eq!(
+        removed,
+        vec![(second, KernRef::Group(kid(1)), KernRef::Glyph(v))]
+    );
+    assert!(!font.kerning.pairs.contains_key(&second));
+
+    // `A` leaves every group it was in; the groups stay, even when empty.
+    assert_eq!(font.kerning.remove_from_groups(a), vec![kid(1), kid(2)]);
+    assert_eq!(font.kerning.groups[&kid(1)].members, vec![o]);
+    assert!(font.kerning.groups[&kid(2)].members.is_empty());
+    assert_eq!(font.kerning.groups[&kid(3)].members, vec![v]);
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-use forma_model::{Actor, EntityKey, Font, GlyphId, KernRef, Kerning, MasterId, Rev};
+use forma_model::{Actor, EntityKey, Font, GlyphId, Rev};
 
 use crate::diff::changed_entities;
 use crate::history::{EntryKind, HistoryEntry, TxId, TxOutcome};
@@ -541,39 +541,22 @@ fn reverted(current: &Font, before: &Font, touched: &BTreeSet<EntityKey>) -> Fon
             }
             EntityKey::KerningGroup(id) => match before.kerning.groups.get(id) {
                 Some(group) => {
-                    font.kerning.groups.insert(*id, group.clone());
+                    font.kerning.groups_mut().insert(*id, group.clone());
                 }
                 None => {
-                    font.kerning.groups.remove(id);
+                    if font.kerning.groups.contains_key(id) {
+                        font.kerning.groups_mut().remove(id);
+                    }
                 }
             },
             EntityKey::KerningPair(master, first, second) => {
                 let value = before.kerning.pair(*master, *first, *second);
-                set_pair(&mut font.kerning, *master, (*first, *second), value);
+                font.kerning.set_pair(*master, *first, *second, value);
             }
         }
     }
     font.glyph_order = reconciled_order(&font, &before.glyph_order, &restored);
     font
-}
-
-/// Sets the pair `key` of `master` to `value`, or removes it for `None`; a
-/// master left without pairs is removed too, so that kerning without pairs
-/// has a single form.
-fn set_pair(kerning: &mut Kerning, master: MasterId, key: (KernRef, KernRef), value: Option<f64>) {
-    match value {
-        Some(value) => {
-            kerning.pairs.entry(master).or_default().insert(key, value);
-        }
-        None => {
-            if let Some(pairs) = kerning.pairs.get_mut(&master) {
-                pairs.remove(&key);
-                if pairs.is_empty() {
-                    kerning.pairs.remove(&master);
-                }
-            }
-        }
-    }
 }
 
 /// The current glyph order without the glyphs that no longer exist, with the
@@ -601,9 +584,19 @@ fn reconciled_order(
 
 #[cfg(test)]
 mod tests {
-    use forma_model::{KernSide, KerningGroup, KerningGroupId};
+    use forma_model::{KernRef, KernSide, Kerning, KerningGroup, KerningGroupId, MasterId};
 
     use super::*;
+
+    /// Sets the pair `key` of `master` to `value`, or removes it for `None`.
+    fn set_pair(
+        kerning: &mut Kerning,
+        master: MasterId,
+        key: (KernRef, KernRef),
+        value: Option<f64>,
+    ) {
+        kerning.set_pair(master, key.0, key.1, value);
+    }
 
     fn kid(n: u128) -> KerningGroupId {
         format!("00000000-0000-0000-0000-{n:012x}")
@@ -636,8 +629,11 @@ mod tests {
             KernRef::Glyph(gid(2)),
             KernRef::Glyph(gid(3)),
         );
-        before.kerning.groups.insert(kid(1), group(1, &[gid(1)]));
-        before.kerning.groups.insert(kid(2), group(2, &[]));
+        before
+            .kerning
+            .groups_mut()
+            .insert(kid(1), group(1, &[gid(1)]));
+        before.kerning.groups_mut().insert(kid(2), group(2, &[]));
         set_pair(&mut before.kerning, master, (a, b), Some(-50.0));
         set_pair(&mut before.kerning, master, (a, c), Some(-20.0));
         set_pair(&mut before.kerning, master, (b, c), Some(-5.0));
@@ -645,9 +641,12 @@ mod tests {
         let mut current = before.clone();
         // Touched below: a changed group and pair, a removed pair, a removed
         // group, an added group and an added pair (alone in its master).
-        current.kerning.groups.insert(kid(1), group(1, &[gid(2)]));
-        current.kerning.groups.remove(&kid(2));
-        current.kerning.groups.insert(kid(3), group(3, &[]));
+        current
+            .kerning
+            .groups_mut()
+            .insert(kid(1), group(1, &[gid(2)]));
+        current.kerning.groups_mut().remove(&kid(2));
+        current.kerning.groups_mut().insert(kid(3), group(3, &[]));
         set_pair(&mut current.kerning, master, (a, b), Some(-60.0));
         set_pair(&mut current.kerning, master, (a, c), None);
         set_pair(&mut current.kerning, other, (c, a), Some(-7.0));

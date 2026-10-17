@@ -161,13 +161,21 @@ fn record_of(
     actor: &Actor,
     label: String,
 ) -> JournalRecord {
-    let info = touched.contains(&EntityKey::FontInfo);
-    let masters = touched
-        .iter()
-        .any(|key| matches!(key, EntityKey::VerticalMetrics(_)));
-    let kerning = touched
-        .iter()
-        .any(|key| matches!(key, EntityKey::KerningGroup(_) | EntityKey::KerningPair(..)));
+    // Every kind of entity is placed explicitly, so that a new kind cannot
+    // be left out of the journal unnoticed.
+    let (mut info, mut masters, mut order, mut kerning) = (false, false, false, false);
+    let mut glyphs = Vec::new();
+    for key in touched {
+        match key {
+            EntityKey::FontInfo => info = true,
+            EntityKey::VerticalMetrics(_) => masters = true,
+            EntityKey::GlyphOrder => order = true,
+            EntityKey::Glyph(id) => {
+                glyphs.push((*id, font.glyphs.get(id).map(|glyph| (**glyph).clone())));
+            }
+            EntityKey::KerningGroup(_) | EntityKey::KerningPair(..) => kerning = true,
+        }
+    }
     JournalRecord {
         document: key.document_text(),
         rev,
@@ -176,18 +184,8 @@ fn record_of(
         font_info: info.then(|| font.info.clone()),
         units_per_em: info.then_some(font.units_per_em),
         masters: masters.then(|| font.masters.clone()),
-        glyph_order: touched
-            .contains(&EntityKey::GlyphOrder)
-            .then(|| font.glyph_order.clone()),
-        glyphs: touched
-            .iter()
-            .filter_map(|key| match key {
-                EntityKey::Glyph(id) => {
-                    Some((*id, font.glyphs.get(id).map(|glyph| (**glyph).clone())))
-                }
-                _ => None,
-            })
-            .collect(),
+        glyph_order: order.then(|| font.glyph_order.clone()),
+        glyphs,
         kerning: kerning.then(|| font.kerning.clone()),
     }
 }
@@ -561,7 +559,7 @@ mod tests {
 
         let mut font = Font::new("Kern", 1000);
         let group = KerningGroupId::new();
-        font.kerning.groups.insert(
+        font.kerning.groups_mut().insert(
             group,
             KerningGroup {
                 id: group,

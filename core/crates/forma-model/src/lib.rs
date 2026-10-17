@@ -22,5 +22,5 @@ pub use font::{
 };
 pub use glyph::{Glyph, Layer, MAX_GLYPH_NAME_LEN, Node, NodeKind, Path, is_valid_glyph_name};
 pub use ids::{EntityKey, FontId, GlyphId, KerningGroupId, MasterId, PathId};
-pub use kerning::{KernRef, KernSide, Kerning, KerningGroup, KerningPair};
+pub use kerning::{KernRef, KernSide, Kerning, KerningGroup, KerningPair, MasterPairs};
 pub use rev::Rev;

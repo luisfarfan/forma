@@ -62,7 +62,7 @@ fn font() -> Font {
         );
         font.glyph_order.push(gid(n));
     }
-    font.kerning.groups.insert(
+    font.kerning.groups_mut().insert(
         kid(1),
         KerningGroup {
             id: kid(1),
@@ -71,11 +71,12 @@ fn font() -> Font {
             members: vec![gid(1)],
         },
     );
-    font.kerning
-        .pairs
-        .entry(master)
-        .or_default()
-        .insert((KernRef::Glyph(gid(1)), KernRef::Glyph(gid(2))), -50.0);
+    font.kerning.set_pair(
+        master,
+        KernRef::Glyph(gid(1)),
+        KernRef::Glyph(gid(2)),
+        Some(-50.0),
+    );
     font.validate_invariants().expect("a valid font");
     font
 }
@@ -95,12 +96,12 @@ fn diff_flags_kerning_and_components() {
 
     // A pair value.
     let mut after = before.clone();
-    after
-        .kerning
-        .pairs
-        .get_mut(&master)
-        .expect("pairs")
-        .insert((KernRef::Glyph(gid(1)), KernRef::Glyph(gid(2))), -40.0);
+    after.kerning.set_pair(
+        master,
+        KernRef::Glyph(gid(1)),
+        KernRef::Glyph(gid(2)),
+        Some(-40.0),
+    );
     let report = diff(&before, &after);
     assert!(report.kerning_changed);
     assert!(report.modified.is_empty());
@@ -108,17 +109,17 @@ fn diff_flags_kerning_and_components() {
 
     // A new pair, and the members of a group.
     let mut after = before.clone();
-    after
-        .kerning
-        .pairs
-        .get_mut(&master)
-        .expect("pairs")
-        .insert((KernRef::Group(kid(1)), KernRef::Glyph(gid(2))), -30.0);
+    after.kerning.set_pair(
+        master,
+        KernRef::Group(kid(1)),
+        KernRef::Glyph(gid(2)),
+        Some(-30.0),
+    );
     assert!(diff(&before, &after).kerning_changed);
     let mut after = before.clone();
     after
         .kerning
-        .groups
+        .groups_mut()
         .get_mut(&kid(1))
         .expect("group")
         .members

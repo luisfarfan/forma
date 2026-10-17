@@ -219,7 +219,7 @@ pub fn conflict_details_in(info: &ConflictInfo, document: &Document) -> Value {
                             .map(|second| format!("{first}/{second}"))
                     })
                 }
-                _ => None,
+                EntityKey::FontInfo | EntityKey::VerticalMetrics(_) | EntityKey::GlyphOrder => None,
             };
             if let (Some(name), Some(conflict)) = (name, conflict.as_object_mut()) {
                 conflict.insert("name".into(), Value::String(name));

@@ -2,9 +2,10 @@
 //! master.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::Error as _;
@@ -130,33 +131,134 @@ pub struct KerningPair {
     pub value: f64,
 }
 
+/// The pairs of one master: `(first, second)` to value.
+pub type MasterPairs = BTreeMap<(KernRef, KernRef), f64>;
+
 /// The kerning of a font: its groups and the pairs of each master.
 ///
 /// Serialized as
 /// `{"groups": [group...], "pairs": {"<master uuid>": [pair...]}}`, with the
 /// groups sorted by id and the pairs of each master sorted by
-/// `(first, second)`, so that equal kerning always has the same JSON.
+/// `(first, second)`, so that equal kerning always has the same JSON. A
+/// master without pairs has no entry (an empty list in JSON reads as none).
+///
+/// The groups and the pairs live behind [`Arc`]s, like the glyphs of a
+/// [`Font`]: cloning a font (once per command and per revision) shares them,
+/// and they are copied only when edited, through [`Kerning::groups_mut`],
+/// [`Kerning::pairs_mut`] or the editing methods.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Kerning {
     /// The groups, keyed by their identifier.
-    pub groups: BTreeMap<KerningGroupId, KerningGroup>,
-    /// The pairs of each master: `(first, second)` to value.
-    pub pairs: BTreeMap<MasterId, BTreeMap<(KernRef, KernRef), f64>>,
+    pub groups: Arc<BTreeMap<KerningGroupId, KerningGroup>>,
+    /// The pairs of each master: `(first, second)` to value. A master
+    /// without pairs has no entry.
+    pub pairs: Arc<BTreeMap<MasterId, MasterPairs>>,
 }
 
 impl Kerning {
-    /// Whether there are no groups and no pair lists. A master stored with an
-    /// empty list of pairs makes the kerning non-empty, so that it survives a
-    /// round trip through JSON unchanged.
+    /// Whether there are no groups and no pairs.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.groups.is_empty() && self.pairs.is_empty()
+        self.groups.is_empty() && self.pairs.values().all(BTreeMap::is_empty)
+    }
+
+    /// The groups, for editing: copied first if they are shared.
+    pub fn groups_mut(&mut self) -> &mut BTreeMap<KerningGroupId, KerningGroup> {
+        Arc::make_mut(&mut self.groups)
+    }
+
+    /// The pairs of every master, for editing: copied first if they are
+    /// shared. A master must not be left with an empty map (see
+    /// [`Font::validate_invariants`]); [`Kerning::set_pair`] takes care of
+    /// that.
+    pub fn pairs_mut(&mut self) -> &mut BTreeMap<MasterId, MasterPairs> {
+        Arc::make_mut(&mut self.pairs)
     }
 
     /// The value of the pair `(first, second)` in `master`, if there is one.
     #[must_use]
     pub fn pair(&self, master: MasterId, first: KernRef, second: KernRef) -> Option<f64> {
         self.pairs.get(&master)?.get(&(first, second)).copied()
+    }
+
+    /// Sets the pair `(first, second)` of `master` to `value`, or removes it
+    /// for `None`, and returns its previous value. A master left without
+    /// pairs loses its entry. The value is not checked (see
+    /// [`Font::validate_invariants`]); removing a pair that is not there
+    /// changes nothing and copies nothing.
+    pub fn set_pair(
+        &mut self,
+        master: MasterId,
+        first: KernRef,
+        second: KernRef,
+        value: Option<f64>,
+    ) -> Option<f64> {
+        let key = (first, second);
+        match value {
+            Some(value) => self
+                .pairs_mut()
+                .entry(master)
+                .or_default()
+                .insert(key, value),
+            None => {
+                self.pair(master, first, second)?;
+                let pairs = self.pairs_mut();
+                let list = pairs.get_mut(&master)?;
+                let previous = list.remove(&key);
+                if list.is_empty() {
+                    pairs.remove(&master);
+                }
+                previous
+            }
+        }
+    }
+
+    /// Removes every pair, in every master, with `reference` on either side
+    /// and returns them as `(master, first, second)`, in that order. Masters
+    /// left without pairs lose their entry; when there is nothing to remove,
+    /// nothing is copied.
+    pub fn remove_pairs_with(&mut self, reference: KernRef) -> Vec<(MasterId, KernRef, KernRef)> {
+        let removed: Vec<(MasterId, KernRef, KernRef)> = self
+            .pairs
+            .iter()
+            .flat_map(|(&master, pairs)| {
+                pairs
+                    .keys()
+                    .filter(|(first, second)| *first == reference || *second == reference)
+                    .map(move |&(first, second)| (master, first, second))
+            })
+            .collect();
+        if !removed.is_empty() {
+            let pairs = self.pairs_mut();
+            for (master, first, second) in &removed {
+                if let Some(list) = pairs.get_mut(master) {
+                    list.remove(&(*first, *second));
+                }
+            }
+            pairs.retain(|_, list| !list.is_empty());
+        }
+        removed
+    }
+
+    /// Takes `glyph` out of every group that lists it and returns those
+    /// groups, in id order. The groups stay, even when left empty; when no
+    /// group lists the glyph, nothing is copied.
+    pub fn remove_from_groups(&mut self, glyph: GlyphId) -> Vec<KerningGroupId> {
+        let listing: Vec<KerningGroupId> = self
+            .groups
+            .values()
+            .filter(|group| group.members.contains(&glyph))
+            .map(|group| group.id)
+            .collect();
+        if !listing.is_empty() {
+            let groups = self.groups_mut();
+            for id in &listing {
+                if let Some(group) = groups.get_mut(id) {
+                    group.members.retain(|member| *member != glyph);
+                }
+            }
+        }
+        listing
     }
 
     /// The group of `side` that `glyph` belongs to, if any.
@@ -202,7 +304,8 @@ impl Kerning {
 
     /// Checks the kerning rules of `font` (see
     /// [`Font::validate_invariants`]), reporting the first violation: groups
-    /// first, in id order, then the pairs of each master.
+    /// first, in id order, then the pairs of each master. Each error names
+    /// what is wrong: the group, or the master and the pair.
     pub(crate) fn check(&self, font: &Font) -> Result<(), ModelError> {
         let glyph_name = |id: GlyphId| {
             font.glyphs
@@ -210,8 +313,8 @@ impl Kerning {
                 .map_or_else(|| id.to_string(), |glyph| glyph.name.clone())
         };
         let mut names: HashSet<(KernSide, &str)> = HashSet::new();
-        let mut members: HashSet<(KernSide, GlyphId)> = HashSet::new();
-        for (&key, group) in &self.groups {
+        let mut members: HashMap<(KernSide, GlyphId), &str> = HashMap::new();
+        for (&key, group) in self.groups.iter() {
             if key != group.id {
                 return Err(ModelError::GroupKeyMismatch { key, id: group.id });
             }
@@ -226,12 +329,18 @@ impl Kerning {
             }
             for &member in &group.members {
                 if !font.glyphs.contains_key(&member) {
-                    return Err(ModelError::KerningUnknownGlyph(member));
+                    return Err(ModelError::KerningGroupUnknownGlyph {
+                        group: group.name.clone(),
+                        side: group.side,
+                        glyph: member,
+                    });
                 }
-                if !members.insert((group.side, member)) {
+                if let Some(first) = members.insert((group.side, member), &group.name) {
                     return Err(ModelError::GlyphInTwoGroups {
                         glyph: glyph_name(member),
                         side: group.side,
+                        group: first.to_owned(),
+                        again_in: group.name.clone(),
                     });
                 }
             }
@@ -239,34 +348,68 @@ impl Kerning {
 
         let masters: HashSet<MasterId> = font.masters.iter().map(|master| master.id).collect();
         let limit = 2.0 * f64::from(font.units_per_em);
-        for (&master, pairs) in &self.pairs {
+        for (&master, pairs) in self.pairs.iter() {
             if !masters.contains(&master) {
                 return Err(ModelError::KerningUnknownMaster(master));
             }
+            if pairs.is_empty() {
+                return Err(ModelError::EmptyKerningMaster(master));
+            }
             for (&(first, second), &value) in pairs {
-                self.check_ref(font, first, KernSide::First)?;
-                self.check_ref(font, second, KernSide::Second)?;
+                let pair = || self.pair_name(font, first, second);
+                for (reference, side) in [(first, KernSide::First), (second, KernSide::Second)] {
+                    match reference {
+                        KernRef::Glyph(glyph) if !font.glyphs.contains_key(&glyph) => {
+                            return Err(ModelError::KerningUnknownGlyph {
+                                master,
+                                pair: pair(),
+                                glyph,
+                            });
+                        }
+                        KernRef::Glyph(_) => {}
+                        KernRef::Group(id) => match self.groups.get(&id) {
+                            None => {
+                                return Err(ModelError::KerningUnknownGroup {
+                                    master,
+                                    pair: pair(),
+                                    group: id,
+                                });
+                            }
+                            Some(group) if group.side != side => {
+                                return Err(ModelError::KerningGroupWrongSide {
+                                    master,
+                                    pair: pair(),
+                                    group: group.name.clone(),
+                                });
+                            }
+                            Some(_) => {}
+                        },
+                    }
+                }
                 if !value.is_finite() || value == 0.0 || value.abs() > limit {
-                    return Err(ModelError::InvalidKerningValue { value });
+                    return Err(ModelError::InvalidKerningValue {
+                        master,
+                        pair: pair(),
+                        value,
+                    });
                 }
             }
         }
         Ok(())
     }
 
-    /// Checks that `reference` exists and, for a group, stands on `side`.
-    fn check_ref(&self, font: &Font, reference: KernRef, side: KernSide) -> Result<(), ModelError> {
-        match reference {
-            KernRef::Glyph(id) if font.glyphs.contains_key(&id) => Ok(()),
-            KernRef::Glyph(id) => Err(ModelError::KerningUnknownGlyph(id)),
-            KernRef::Group(id) => match self.groups.get(&id) {
-                None => Err(ModelError::KerningUnknownGroup(id)),
-                Some(group) if group.side != side => Err(ModelError::KerningGroupWrongSide {
-                    group: group.name.clone(),
-                }),
-                Some(_) => Ok(()),
-            },
-        }
+    /// The pair `(first, second)` as `<first>/<second>`, each side the name
+    /// of its glyph, `@` and the name of its group, or its reference text
+    /// when it does not resolve.
+    fn pair_name(&self, font: &Font, first: KernRef, second: KernRef) -> String {
+        let side = |reference: KernRef| {
+            match reference {
+                KernRef::Glyph(id) => font.glyphs.get(&id).map(|glyph| glyph.name.clone()),
+                KernRef::Group(id) => self.groups.get(&id).map(|group| format!("@{}", group.name)),
+            }
+            .unwrap_or_else(|| reference.to_string())
+        };
+        format!("{}/{}", side(first), side(second))
     }
 }
 
@@ -284,7 +427,8 @@ struct KerningDocument {
     #[serde(default)]
     groups: Vec<KerningGroup>,
     /// The kerning pairs of each master, keyed by master id, each list sorted
-    /// by `(first, second)` and without repeated pairs.
+    /// by `(first, second)` and without repeated pairs. A master without
+    /// pairs is left out.
     #[serde(default)]
     pairs: BTreeMap<MasterId, Vec<KerningPair>>,
 }
@@ -300,7 +444,7 @@ impl Serialize for GroupList<'_> {
 
 /// The pairs of one master, serialized as a list of [`KerningPair`]s in
 /// `(first, second)` order.
-struct PairList<'a>(&'a BTreeMap<(KernRef, KernRef), f64>);
+struct PairList<'a>(&'a MasterPairs);
 
 impl Serialize for PairList<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -313,9 +457,9 @@ impl Serialize for PairList<'_> {
 }
 
 /// The pairs of every master, serialized as a map from master id to list.
-struct MasterPairs<'a>(&'a BTreeMap<MasterId, BTreeMap<(KernRef, KernRef), f64>>);
+struct PairsByMaster<'a>(&'a BTreeMap<MasterId, MasterPairs>);
 
-impl Serialize for MasterPairs<'_> {
+impl Serialize for PairsByMaster<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_map(
             self.0
@@ -329,14 +473,15 @@ impl Serialize for Kerning {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut document = serializer.serialize_struct("Kerning", 2)?;
         document.serialize_field("groups", &GroupList(&self.groups))?;
-        document.serialize_field("pairs", &MasterPairs(&self.pairs))?;
+        document.serialize_field("pairs", &PairsByMaster(&self.pairs))?;
         document.end()
     }
 }
 
 impl<'de> Deserialize<'de> for Kerning {
     /// Reads the serialized form; a group id or a pair of a master listed
-    /// twice is an error, so every value has one place in the JSON.
+    /// twice is an error, so every value has one place in the JSON. A master
+    /// with an empty list gets no entry.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let document = KerningDocument::deserialize(deserializer)?;
         let mut groups = BTreeMap::new();
@@ -362,9 +507,14 @@ impl<'de> Deserialize<'de> for Kerning {
                     )));
                 }
             }
-            pairs.insert(master, values);
+            if !values.is_empty() {
+                pairs.insert(master, values);
+            }
         }
-        Ok(Kerning { groups, pairs })
+        Ok(Kerning {
+            groups: Arc::new(groups),
+            pairs: Arc::new(pairs),
+        })
     }
 }
 

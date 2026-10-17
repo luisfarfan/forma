@@ -137,25 +137,72 @@ pub enum ModelError {
     /// Kerning pairs are stored for a master the font does not have.
     #[error("kerning pairs are stored for the unknown master {0}")]
     KerningUnknownMaster(MasterId),
-    /// A kerning group or pair refers to a glyph that does not exist.
-    #[error("kerning refers to the unknown glyph {0}")]
-    KerningUnknownGlyph(GlyphId),
+    /// A master is stored with an empty map of kerning pairs: a master
+    /// without pairs has no entry, so that kerning has a single form.
+    #[error(
+        "master {0} is stored with an empty list of kerning pairs; a master without pairs has \
+         no entry"
+    )]
+    EmptyKerningMaster(MasterId),
+    /// A kerning group lists a glyph that does not exist.
+    #[error("the {side}-side kerning group {group:?} lists the unknown glyph {glyph}")]
+    KerningGroupUnknownGlyph {
+        /// The group name.
+        group: String,
+        /// The side of the group.
+        side: KernSide,
+        /// The missing glyph.
+        glyph: GlyphId,
+    },
+    /// A kerning pair refers to a glyph that does not exist.
+    #[error("kerning pair {pair} of master {master} refers to the unknown glyph {glyph}")]
+    KerningUnknownGlyph {
+        /// The master of the pair.
+        master: MasterId,
+        /// The pair, as `<first>/<second>`: each side the name of its glyph,
+        /// `@` and the name of its group, or its reference text when it does
+        /// not resolve.
+        pair: String,
+        /// The missing glyph.
+        glyph: GlyphId,
+    },
     /// A kerning pair refers to a group that does not exist.
-    #[error("a kerning pair refers to the unknown kerning group {0}")]
-    KerningUnknownGroup(KerningGroupId),
+    #[error("kerning pair {pair} of master {master} refers to the unknown kerning group {group}")]
+    KerningUnknownGroup {
+        /// The master of the pair.
+        master: MasterId,
+        /// The pair, named as in [`ModelError::KerningUnknownGlyph`].
+        pair: String,
+        /// The missing group.
+        group: KerningGroupId,
+    },
     /// A kerning group is used on the other side of a pair than its own.
-    #[error("kerning group {group:?} is used on the wrong side of a pair")]
+    #[error(
+        "kerning pair {pair} of master {master} uses kerning group {group:?} on the wrong side"
+    )]
     KerningGroupWrongSide {
+        /// The master of the pair.
+        master: MasterId,
+        /// The pair, named as in [`ModelError::KerningUnknownGlyph`].
+        pair: String,
         /// The group name.
         group: String,
     },
     /// A glyph is listed more than once in the groups of one side.
-    #[error("glyph {glyph:?} is listed more than once in the {side}-side kerning groups")]
+    #[error(
+        "glyph {glyph:?} is listed in the {side}-side kerning group {group:?} and again in \
+         {again_in:?}; a glyph belongs to at most one group per side"
+    )]
     GlyphInTwoGroups {
         /// The glyph name.
         glyph: String,
         /// The side of the groups.
         side: KernSide,
+        /// The group that lists the glyph first (in group id order).
+        group: String,
+        /// The group that lists it again (the same group if it lists the
+        /// glyph twice).
+        again_in: String,
     },
     /// A kerning group name breaks the naming rules (those of glyph names).
     #[error("invalid kerning group name {0:?}: group names follow the glyph name rules")]
@@ -171,10 +218,14 @@ pub enum ModelError {
     /// A kerning value is not finite, is 0 or exceeds twice the units per
     /// em in absolute value.
     #[error(
-        "invalid kerning value {value}: it must be finite, not 0, and at most twice the units \
-         per em in absolute value"
+        "invalid value {value} of kerning pair {pair} in master {master}: it must be finite, \
+         not 0, and at most twice the units per em in absolute value"
     )]
     InvalidKerningValue {
+        /// The master of the pair.
+        master: MasterId,
+        /// The pair, named as in [`ModelError::KerningUnknownGlyph`].
+        pair: String,
         /// The offending value.
         value: f64,
     },
@@ -348,7 +399,8 @@ impl Font {
     /// - every kerning group is stored under its own id, has a name that
     ///   follows the glyph name rules and is unique on its side, and lists
     ///   existing glyphs; no glyph is listed twice in the groups of one side;
-    /// - kerning pairs are stored for existing masters, refer to existing
+    /// - kerning pairs are stored for existing masters (a master without
+    ///   pairs has no entry, not an empty one), refer to existing
     ///   glyphs and to groups of the right side (first-side groups as
     ///   `first`, second-side groups as `second`), and have a finite, non-zero
     ///   value of at most twice the units per em in absolute value (a value of

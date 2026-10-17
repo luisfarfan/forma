@@ -315,7 +315,7 @@ fn conflict_details_name_kerning_pairs_and_groups() {
     let id = |name: &str| font.glyph_by_name(name).expect("glyph").id;
     let (a, v, w) = (id("A"), id("V"), id("W"));
     let group = KerningGroupId::new();
-    font.kerning.groups.insert(
+    font.kerning.groups_mut().insert(
         group,
         KerningGroup {
             id: group,

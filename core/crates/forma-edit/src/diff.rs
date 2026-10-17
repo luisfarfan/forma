@@ -122,7 +122,8 @@ pub(crate) fn changed_entities(a: &Font, b: &Font) -> BTreeSet<EntityKey> {
 fn kerning_changes(a: &Font, b: &Font) -> BTreeSet<EntityKey> {
     let mut keys = BTreeSet::new();
     let (a, b) = (&a.kerning, &b.kerning);
-    if a == b {
+    let shared = Arc::ptr_eq(&a.groups, &b.groups) && Arc::ptr_eq(&a.pairs, &b.pairs);
+    if shared || a == b {
         return keys;
     }
     for id in a.groups.keys().chain(b.groups.keys()) {
@@ -233,11 +234,7 @@ mod tests {
     }
 
     fn set_pair(font: &mut Font, master: MasterId, first: KernRef, second: KernRef, value: f64) {
-        font.kerning
-            .pairs
-            .entry(master)
-            .or_default()
-            .insert((first, second), value);
+        font.kerning.set_pair(master, first, second, Some(value));
     }
 
     #[test]
@@ -251,21 +248,23 @@ mod tests {
             KernRef::Glyph(gid(3)),
         );
         for n in [1, 2, 3] {
-            a.kerning.groups.insert(kid(n), group(n, "G", &[]));
+            a.kerning.groups_mut().insert(kid(n), group(n, "G", &[]));
         }
         set_pair(&mut a, master, g1, g2, -10.0); // changed
         set_pair(&mut a, master, g1, g3, -20.0); // removed
         set_pair(&mut a, master, g2, g3, -30.0); // kept
         set_pair(&mut a, other, g3, g1, -40.0); // its whole master goes
         let mut b = a.clone();
-        b.kerning.groups.remove(&kid(1));
-        b.kerning.groups.insert(kid(2), group(2, "G", &[gid(1)]));
-        b.kerning.groups.insert(kid(4), group(4, "H", &[]));
-        let pairs = b.kerning.pairs.get_mut(&master).expect("pairs");
+        b.kerning.groups_mut().remove(&kid(1));
+        b.kerning
+            .groups_mut()
+            .insert(kid(2), group(2, "G", &[gid(1)]));
+        b.kerning.groups_mut().insert(kid(4), group(4, "H", &[]));
+        let pairs = b.kerning.pairs_mut().get_mut(&master).expect("pairs");
         pairs.insert((g1, g2), -15.0);
         pairs.remove(&(g1, g3));
         pairs.insert((g3, g2), -50.0); // added
-        b.kerning.pairs.remove(&other);
+        b.kerning.pairs_mut().remove(&other);
 
         let expected = BTreeSet::from([
             EntityKey::KerningGroup(kid(1)),
@@ -284,7 +283,7 @@ mod tests {
         // A master stored with an empty pair list holds the same pairs as no
         // list at all.
         let mut c = b.clone();
-        c.kerning.pairs.insert(other, BTreeMap::new());
+        c.kerning.pairs_mut().insert(other, BTreeMap::new());
         assert!(changed_entities(&b, &c).is_empty());
         assert!(!diff(&b, &c).kerning_changed);
     }

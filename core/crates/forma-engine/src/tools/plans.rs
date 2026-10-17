@@ -276,10 +276,11 @@ pub(crate) enum Change<'a> {
 /// than [`MASS_THRESHOLD`] is massive; the font info, the vertical metrics
 /// and the glyph order do not count.
 pub(crate) fn is_affected(key: &EntityKey) -> bool {
-    matches!(
-        key,
-        EntityKey::Glyph(_) | EntityKey::KerningPair(..) | EntityKey::KerningGroup(_)
-    )
+    // Exhaustive, so that a new kind of entity needs a decision here.
+    match key {
+        EntityKey::Glyph(_) | EntityKey::KerningPair(..) | EntityKey::KerningGroup(_) => true,
+        EntityKey::FontInfo | EntityKey::VerticalMetrics(_) | EntityKey::GlyphOrder => false,
+    }
 }
 
 /// `count` followed by the singular or plural noun.
