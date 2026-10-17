@@ -27,3 +27,5 @@ tracing = { workspace = true }
 rmcp = { workspace = true, features = ["client", "server", "transport-io"] }
 insta = { workspace = true }
 tempfile = { workspace = true }
+# Roadmap criterion 6.2: every real output validates against its outputSchema.
+jsonschema = { workspace = true }

@@ -1519,3 +1519,84 @@ fn opening_records_what_is_on_disk() {
     );
     assert!(path.is_file());
 }
+
+// ------------------------------------------- Windows junctions (crit. 5)
+
+/// Makes `link` a directory junction to `target` (`mklink /J`, which needs no
+/// administrator rights).
+#[cfg(windows)]
+fn junction(link: &Path, target: &Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("run cmd");
+    assert!(
+        output.status.success(),
+        "mklink /J failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn junction_escape_is_rejected() {
+    let root = TempDir::new().expect("tempdir");
+    let outside = TempDir::new().expect("tempdir");
+    write_font(&outside.path().join("secret.forma"), "Secret");
+    let mut engine = engine_with(&[root.path()]);
+
+    // A junction inside the root to a folder outside it: nothing is created,
+    // opened or saved through it.
+    let dir_link = root.path().join("outdir");
+    junction(&dir_link, outside.path());
+    let error = err(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": "X", "path": text(&dir_link.join("planted.forma")) }),
+    );
+    assert_eq!(error.code, ErrorCode::PathNotAllowed, "{error:?}");
+    assert!(!outside.path().join("planted.forma").exists());
+    let error = err(
+        &mut engine,
+        "document_open",
+        json!({ "path": "outdir/secret.forma" }),
+    );
+    assert_eq!(error.code, ErrorCode::PathNotAllowed, "{error:?}");
+    let doc = doc_of(&ok(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": "Inside" }),
+    ));
+    let error = err(
+        &mut engine,
+        "document_save",
+        json!({ "doc": doc, "base_rev": 0, "path": text(&dir_link.join("saved.forma")) }),
+    );
+    assert_eq!(error.code, ErrorCode::PathNotAllowed, "{error:?}");
+    assert!(!outside.path().join("saved.forma").exists());
+    let error = err(
+        &mut engine,
+        "export_font",
+        json!({ "doc": doc, "base_rev": 0, "format": "ttf",
+                "path": text(&dir_link.join("out.ttf")) }),
+    );
+    assert_eq!(error.code, ErrorCode::PathNotAllowed, "{error:?}");
+    assert!(!outside.path().join("out.ttf").exists());
+
+    // A package whose `glyphs` folder is a junction to the outside folder
+    // cannot be opened: nothing is read through it.
+    let package = root.path().join("linked.formapackage");
+    write_font(&package, "Linked");
+    std::fs::remove_dir_all(package.join("glyphs")).expect("rmdir");
+    junction(&package.join("glyphs"), outside.path());
+    let error = err(
+        &mut engine,
+        "document_open",
+        json!({ "path": text(&package) }),
+    );
+    assert_eq!(error.code, ErrorCode::PathNotAllowed, "{error:?}");
+    assert!(outside.path().join("secret.forma").is_file());
+}

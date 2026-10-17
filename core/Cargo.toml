@@ -48,3 +48,6 @@ anyhow = "1.0.104"
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
 rstest = "0.27.0"
+# TEST ONLY: validates tool results against their output schemas (MIT; no
+# default features: no HTTP or file resolution of references).
+jsonschema = { version = "0.58.6", default-features = false }

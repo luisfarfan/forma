@@ -15,7 +15,8 @@ use serde_json::{Map, Number, Value};
 use tempfile::TempDir;
 use uuid::Uuid;
 
-const CASES: u32 = 500;
+/// Roadmap criterion 7: 1 000 cases per property.
+const CASES: u32 = 1000;
 
 /// Names that are hard on file systems: upper case, `_`, `.`, `-`, Windows
 /// device names, characters that are illegal in file names.

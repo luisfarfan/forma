@@ -91,7 +91,8 @@ jobs:
       # and there is no flag to turn that off), so every fsync is skipped.
       # FORMA_REAL_FSYNC=1 makes that test build flush for real (see
       # core/crates/forma-store/src/atomic.rs): the durable-write path then runs
-      # under test. The property tests take about a minute with real flushes.
+      # under test. The property tests (1 000 cases each, roadmap criterion 7)
+      # take a few minutes with real flushes.
       - name: Test forma-store with real fsync
         if: runner.os == 'Linux'
         env:
