@@ -382,7 +382,7 @@ expression: "lists[0]"
     {
       "name": "document_save",
       "title": "Save document",
-      "description": "Save the document `doc` to its own file, or to `path` to save it as a new file that the document then belongs to. Pass the latest `rev` you received as `base_rev`: a `base_rev` newer than the current revision is rejected, while an older one is accepted and the current state is saved. A document created without a path needs `path`. Overwriting an existing file other than the document's own is destructive and may require approval depending on the server policy (APPROVAL_REQUIRED with a plan to confirm, which is refused if the document changes before it is committed); with `dry_run: true` the call only returns the plan.",
+      "description": "Save the document `doc` to its own file, or to `path` to save it as a new file that the document then belongs to. Pass the latest `rev` you received as `base_rev`: a `base_rev` newer than the current revision is rejected, while an older one is accepted and the current state is saved. A document created without a path needs `path`. Overwriting an existing file other than the document's own, or the document's own file when another program changed it on disk since it was opened or last saved, is destructive and may require approval depending on the server policy (APPROVAL_REQUIRED with a plan to confirm, which is refused if the document changes before it is committed); with `dry_run: true` the call only returns the plan.",
       "inputSchema": {
         "additionalProperties": false,
         "description": "Arguments of `document_save`.",

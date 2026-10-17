@@ -53,6 +53,7 @@ use std::path::{Path, PathBuf};
 use forma_model::{Font, FontId};
 use serde_json::{Value, json};
 
+use crate::DiskEntry;
 use crate::StoreError;
 use crate::atomic::{
     create_synced, is_temp_name, remove_quietly, sync_dir, temp_path, write_file_atomic,
@@ -109,6 +110,37 @@ fn glyph_files(glyphs_dir: &Path) -> Result<Vec<(String, PathBuf)>, StoreError> 
     }
     files.sort();
     Ok(files)
+}
+
+/// The size and modification time of every part of the package in `dir`
+/// that exists (`manifest.json`, `font.json` and the glyph documents of
+/// `glyphs/`), by path relative to the package, sorted; `None` if nothing
+/// is at `dir`. A part that is a symbolic link is refused, as by a load or a
+/// save: nothing is looked at through it. See [`crate::disk_state`].
+pub(crate) fn disk_state(dir: &Path) -> Result<Option<Vec<DiskEntry>>, StoreError> {
+    let metadata = match fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(err) if is_missing(&err) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    if !metadata.is_dir() {
+        return Ok(Some(vec![DiskEntry::of(String::new(), &metadata)]));
+    }
+    ensure_no_links(dir)?;
+    let mut entries = Vec::new();
+    for name in [MANIFEST, FONT] {
+        match fs::symlink_metadata(dir.join(name)) {
+            Ok(metadata) => entries.push(DiskEntry::of(name.to_owned(), &metadata)),
+            Err(err) if is_missing(&err) => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    for (name, path) in glyph_files(&dir.join(GLYPHS))? {
+        let metadata = fs::symlink_metadata(&path)?;
+        entries.push(DiskEntry::of(format!("{GLYPHS}/{name}"), &metadata));
+    }
+    entries.sort();
+    Ok(Some(entries))
 }
 
 /// Reads the manifest of the package in `dir`.

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use forma_edit::{Document, EditError};
 use forma_model::{Actor, Font, Rev};
+use forma_store::DiskState;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -168,6 +169,10 @@ pub struct OpenDoc {
     pub dirty: bool,
     /// The lock of the document's file (see `locks`).
     pub(crate) lock: FileLock,
+    /// What the document's file looked like on disk when it was opened or
+    /// last saved, to tell whether another program changed it since; `None`
+    /// without a file (or when it could not be read).
+    pub(crate) disk: Option<DiskState>,
 }
 
 impl OpenDoc {
@@ -179,6 +184,7 @@ impl OpenDoc {
             source_path,
             dirty,
             lock: FileLock::Unlocked,
+            disk: None,
         }
     }
 

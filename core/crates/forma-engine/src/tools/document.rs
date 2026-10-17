@@ -69,8 +69,9 @@ pub(crate) const SAVE: CommandSpec = CommandSpec {
                   as `base_rev`: a `base_rev` newer than the current revision is rejected, \
                   while an older one is accepted and the current state is saved. A document \
                   created without a path needs `path`. Overwriting an existing file other \
-                  than the document's own is destructive and may require approval depending on \
-                  the server policy (APPROVAL_REQUIRED with a plan to confirm, which is \
+                  than the document's own, or the document's own file when another program \
+                  changed it on disk since it was opened or last saved, is destructive and may \
+                  require approval depending on the server policy (APPROVAL_REQUIRED with a plan to confirm, which is \
                   refused if the document changes before it is committed); with \
                   `dry_run: true` the call only returns the plan.",
     toolset: Toolset::Core,
@@ -363,6 +364,7 @@ fn document_create(
     }
     let mut open = OpenDoc::new(Document::new(font), path.clone(), path.is_none());
     open.lock = lock;
+    open.disk = path.as_deref().and_then(disk_state);
     let rev = open.rev().0;
     let path = open.path_text();
     let doc = engine.insert_doc(open);
@@ -412,6 +414,9 @@ fn document_open(
             _ => read_only_handle(),
         });
     }
+    // What is on disk is recorded before it is read, so that a change made
+    // in between is seen at the next save.
+    let disk = disk_state(&path);
     let font = forma_store::load(&path).map_err(from_store_error)?;
     let opened = if lock.owns_file() {
         engine.journal_on_open(font, &path, args.recover)?
@@ -420,6 +425,7 @@ fn document_open(
     };
     let mut open = OpenDoc::new(Document::new(opened.font), Some(path.clone()), opened.dirty);
     open.lock = lock;
+    open.disk = disk;
     let (rev, read_only, locked) = (
         open.rev().0,
         open.read_only(),
@@ -495,7 +501,13 @@ fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<Tool
         Some(writable_lock(engine, &target)?)
     };
 
-    let label = if overwrites {
+    // Saving over the document's own file when another program changed it
+    // since it was opened or last saved would silently lose those changes.
+    let own_file = previous.as_deref() == Some(target.as_path());
+    let changed_on_disk = own_file && changed_on_disk(engine.doc(&call.doc)?, &target)?;
+    let label = if changed_on_disk {
+        CHANGED_ON_DISK.to_owned()
+    } else if overwrites {
         format!("overwrites {}", path_text(&target))
     } else {
         format!("saves to {}", path_text(&target))
@@ -507,7 +519,7 @@ fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<Tool
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
         dry_run: call.dry_run,
-        destructive: overwrites,
+        destructive: overwrites || changed_on_disk,
         label,
         change: Change::Snapshot,
     };
@@ -519,6 +531,7 @@ fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<Tool
     forma_store::save(open.font(), &target).map_err(from_store_error)?;
     open.source_path = Some(target.clone());
     open.dirty = false;
+    open.disk = disk_state(&target);
     if let Some(lock) = moved_lock {
         // The lock of the previous file is released here.
         open.lock = lock;
@@ -641,6 +654,32 @@ fn writable_lock(engine: &Engine, path: &Path) -> Result<FileLock, ToolError> {
     } else {
         Err(locked_target(path))
     }
+}
+
+/// The plan summary of a save over a file another program changed.
+const CHANGED_ON_DISK: &str = "the file changed on disk since it was opened or last saved; \
+                               saving will overwrite those changes";
+
+/// What the document at `path` looks like on disk now (`None` if nothing is
+/// there or it cannot be read).
+fn disk_state(path: &Path) -> Option<forma_store::DiskState> {
+    forma_store::disk_state(path).ok().flatten()
+}
+
+/// Whether the file `path` of `open` changed on disk since the document was
+/// opened or last saved. A file that is gone has nothing to lose.
+///
+/// # Errors
+///
+/// The mapped [`forma_store::disk_state`] error: `PATH_NOT_ALLOWED` for a
+/// link inside a package, `IO_ERROR` if the file cannot be queried.
+fn changed_on_disk(open: &OpenDoc, path: &Path) -> Result<bool, ToolError> {
+    Ok(
+        match forma_store::disk_state(path).map_err(from_store_error)? {
+            None => false,
+            Some(now) => open.disk.as_ref() != Some(&now),
+        },
+    )
 }
 
 /// Whether anything (file, folder or link) exists at `path`.

@@ -35,7 +35,9 @@ mod package;
 mod parts;
 mod sqlite;
 
+use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use forma_model::Font;
 use thiserror::Error;
@@ -188,6 +190,63 @@ pub fn load(path: &Path) -> Result<Font, StoreError> {
         Format::Forma => sqlite::load(path),
         Format::Package => package::load(path),
     }
+}
+
+/// One file of a document as [`DiskState`] sees it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct DiskEntry {
+    /// The path relative to the document (empty for a `.forma` file).
+    name: String,
+    /// The size in bytes.
+    len: u64,
+    /// The modification time, where the file system has one.
+    modified: Option<SystemTime>,
+}
+
+impl DiskEntry {
+    pub(crate) fn of(name: String, metadata: &Metadata) -> DiskEntry {
+        DiskEntry {
+            name,
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        }
+    }
+}
+
+/// What a document looks like on disk, without its contents: the size and
+/// modification time of each of its files. Two states of the same document
+/// differ when a file was written, added or removed in between (a write
+/// within the file system's time resolution that keeps the size escapes
+/// it). See [`disk_state`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiskState(Vec<DiskEntry>);
+
+/// The [`DiskState`] of the document at `path`, or `None` if nothing is
+/// there:
+///
+/// * `.forma`: the size and modification time of the file;
+/// * `.formapackage`: the relative path, size and modification time of
+///   `manifest.json`, `font.json` and every glyph document in `glyphs/`
+///   (the ones that exist), sorted by path. Links are not followed.
+///
+/// A program that edits the document while FORMA has it open changes its
+/// state; the engine compares the state before saving over the file.
+///
+/// # Errors
+///
+/// [`StoreError::UnknownFormat`] for another extension;
+/// [`StoreError::SymlinkInPackage`] if a part of a package is a symbolic
+/// link; [`StoreError::Io`] if the file system cannot be queried.
+pub fn disk_state(path: &Path) -> Result<Option<DiskState>, StoreError> {
+    let entries = match format_of(path)? {
+        Format::Forma => match fs::metadata(path) {
+            Ok(metadata) => Some(vec![DiskEntry::of(String::new(), &metadata)]),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(err.into()),
+        },
+        Format::Package => package::disk_state(path)?,
+    };
+    Ok(entries.map(DiskState))
 }
 
 /// Converts the document at `src` into the document at `dst`; the format of

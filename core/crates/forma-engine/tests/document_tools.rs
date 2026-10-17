@@ -1402,3 +1402,120 @@ fn text_limit_applies_to_every_tool() {
         Some(MAX_TEXT_BYTES)
     );
 }
+
+// ------------------------------------------------- files changed on disk (I1)
+
+/// The summary of the plan of a save over a file another program changed.
+const CHANGED_ON_DISK: &str = "the file changed on disk since it was opened or last saved; \
+                               saving will overwrite those changes";
+
+/// Another program changes the document at `path`: the `.forma` file is
+/// rewritten with another font, a glyph file is added to a package.
+fn edit_externally(path: &Path) {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "forma")
+    {
+        write_font(path, "Changed elsewhere, and longer");
+    } else {
+        std::fs::write(path.join("glyphs").join("extra.json"), b"{}").expect("write");
+    }
+}
+
+#[test]
+fn saving_over_a_file_changed_on_disk_needs_approval() {
+    for name in ["changed.forma", "changed.formapackage"] {
+        let root = TempDir::new().expect("tempdir");
+        let mut engine = engine_with(&[root.path()]);
+        let path = root.path().join(name);
+        let doc = doc_of(&ok(
+            &mut engine,
+            "document_create",
+            json!({ "family_name": "Disk", "path": text(&path) }),
+        ));
+        ok(
+            &mut engine,
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": 0, "name": "A", "advance_width": 500 }),
+        );
+        // A save over the file as the engine left it needs nothing.
+        ok(
+            &mut engine,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 1 }),
+        );
+
+        edit_externally(&path);
+        ok(
+            &mut engine,
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": 1, "name": "B", "advance_width": 500 }),
+        );
+        let error = err(
+            &mut engine,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 2 }),
+        );
+        assert_eq!(error.code, ErrorCode::ApprovalRequired, "{name}: {error:?}");
+        assert_eq!(
+            error.details["plan"]["summary"],
+            json!(CHANGED_ON_DISK),
+            "{name}"
+        );
+        // Also through the document's own path given explicitly, and as a
+        // dry run.
+        let planned = ok(
+            &mut engine,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 2, "path": text(&path), "dry_run": true }),
+        );
+        assert_eq!(planned["plan"]["summary"], json!(CHANGED_ON_DISK), "{name}");
+        let saved = ok(
+            &mut engine,
+            "plan_commit",
+            json!({ "plan_token": planned["plan"]["plan_token"] }),
+        );
+        assert_eq!(saved["plan_committed"], json!(true), "{name}");
+        // The save recorded what is on disk now: the next one needs nothing.
+        ok(
+            &mut engine,
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": 2, "name": "C", "advance_width": 500 }),
+        );
+        ok(
+            &mut engine,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 3 }),
+        );
+    }
+}
+
+#[test]
+fn opening_records_what_is_on_disk() {
+    let root = TempDir::new().expect("tempdir");
+    let path = root.path().join("opened.forma");
+    write_font(&path, "Opened");
+    let mut engine = engine_with(&[root.path()]);
+    let doc = doc_of(&ok(
+        &mut engine,
+        "document_open",
+        json!({ "path": text(&path) }),
+    ));
+    edit_externally(&path);
+    let error = err(
+        &mut engine,
+        "document_save",
+        json!({ "doc": doc, "base_rev": 0 }),
+    );
+    assert_eq!(error.code, ErrorCode::ApprovalRequired, "{error:?}");
+    assert_eq!(error.details["plan"]["summary"], json!(CHANGED_ON_DISK));
+
+    // A file deleted meanwhile is simply written again: nothing is lost.
+    std::fs::remove_file(&path).expect("remove");
+    ok(
+        &mut engine,
+        "document_save",
+        json!({ "doc": doc, "base_rev": 0 }),
+    );
+    assert!(path.is_file());
+}
