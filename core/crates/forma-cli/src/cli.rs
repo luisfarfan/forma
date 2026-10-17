@@ -213,6 +213,13 @@ pub struct McpArgs {
     /// Do not keep a crash-recovery journal.
     #[arg(long)]
     pub no_journal: bool,
+    /// Keep the document locks in this folder (created if missing). A
+    /// document file has a single writer among the FORMA processes that use
+    /// the same folder; the others open it read-only. Default:
+    /// $FORMA_LOCK_DIR, else the `locks` folder of the OS data directory for
+    /// FORMA (the default of every `forma` command).
+    #[arg(long, value_name = "DIR")]
+    pub lock_dir: Option<PathBuf>,
 }
 
 /// Reads a toolset name for `--toolsets`.

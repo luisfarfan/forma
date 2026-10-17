@@ -688,8 +688,10 @@ fn create_with_path_writes_immediately_and_lists() {
 
     let listed = ok(&mut engine, "document_list", json!({}));
     let mut expected = vec![
-        json!({ "doc": doc, "path": text(&canon(&target)), "family_name": "Fresh", "rev": 0, "dirty": false }),
-        json!({ "doc": memory, "path": null, "family_name": "Memory", "rev": 0, "dirty": true }),
+        json!({ "doc": doc, "path": text(&canon(&target)), "family_name": "Fresh", "rev": 0,
+                "dirty": false, "read_only": false }),
+        json!({ "doc": memory, "path": null, "family_name": "Memory", "rev": 0, "dirty": true,
+                "read_only": false }),
     ];
     expected.sort_by(|a, b| a["doc"].as_str().cmp(&b["doc"].as_str()));
     assert_eq!(listed, json!({ "documents": expected }));

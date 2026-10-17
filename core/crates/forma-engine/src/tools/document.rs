@@ -11,6 +11,8 @@ use serde_json::Value;
 
 use crate::engine::{DocHandle, DocSummary, Engine, OpenDoc, path_text};
 use crate::errors::{ToolError, from_store_error};
+use crate::locks::{FileLock, locked_target, read_only_handle};
+use crate::recovery::Opened;
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::plans::{Change, Gate, OrPlan, Proposal, approval_gate};
 use crate::tools::{json_output, parse_args, parse_args_ref};
@@ -41,7 +43,11 @@ pub(crate) const OPEN: CommandSpec = CommandSpec {
                   roots (relative paths resolve against the first one). Returns its `doc` \
                   handle, to pass to every later call, and its current `rev`. Opening a path \
                   that is already open returns the same handle with `already_open: true`. If \
-                  the server keeps crash-recovery journals and changes made after the last \
+                  another FORMA process has the file open for writing, the handle is \
+                  read-only (`read_only: true`, `locked_by_other_process: true`): reads, \
+                  previews, validation and exports to new files work, every change or save \
+                  fails with UNSUPPORTED; close and reopen it once the other process has \
+                  closed it. If the server keeps crash-recovery journals and changes made after the last \
                   save were left unsaved (a crash), the result has `recovery_available: \
                   {records}`; ask the user, then close the document and open it again with \
                   `recover: true` to get it with those changes applied (at `rev` 0, unsaved; \
@@ -177,6 +183,16 @@ pub struct DocumentOpenResult {
     pub path: String,
     /// Whether the document was already open (the handle is then the existing one).
     pub already_open: bool,
+    /// Whether the handle is read-only: every change, save, export over an
+    /// existing file or discarding close fails with UNSUPPORTED (another
+    /// FORMA process has the file open for writing, or the server is
+    /// read-only).
+    pub read_only: bool,
+    /// Whether another FORMA process had the file open for writing when it
+    /// was opened, which makes the handle read-only; close and reopen it once
+    /// that process has closed it. Always `false` on a read-only server,
+    /// which never locks files.
+    pub locked_by_other_process: bool,
     /// Present when the crash-recovery journal holds changes made after the
     /// last save that were never saved: close the document and open it again
     /// with `recover: true` to apply them. Until then (or a save) changes are
@@ -303,6 +319,9 @@ pub struct DocumentInspectResult {
     pub dirty: bool,
     /// The file the document belongs to, or `null`.
     pub path: Option<String>,
+    /// Whether the handle is read-only (another FORMA process has the file
+    /// open for writing, or the server is read-only).
+    pub read_only: bool,
 }
 
 // ------------------------------------------------------------------ handlers
@@ -322,7 +341,7 @@ fn document_create(
             args.units_per_em
         )));
     }
-    let path = match &args.path {
+    let (path, lock) = match &args.path {
         Some(path) => {
             let resolved = engine.check_document_path(path, false)?;
             if exists(&resolved) {
@@ -332,20 +351,18 @@ fn document_create(
                 )));
             }
             ensure_not_open_elsewhere(engine, &resolved, None)?;
-            Some(resolved)
+            let lock = writable_lock(engine, &resolved)?;
+            (Some(resolved), lock)
         }
-        None => None,
+        None => (None, FileLock::Unlocked),
     };
 
     let font = Font::new(&args.family_name, args.units_per_em);
     if let Some(path) = &path {
         forma_store::save(&font, path).map_err(from_store_error)?;
     }
-    let open = OpenDoc {
-        document: Document::new(font),
-        dirty: path.is_none(),
-        source_path: path,
-    };
+    let mut open = OpenDoc::new(Document::new(font), path.clone(), path.is_none());
+    open.lock = lock;
     let rev = open.rev().0;
     let path = open.path_text();
     let doc = engine.insert_doc(open);
@@ -366,26 +383,48 @@ fn document_open(
                 path_text(&path)
             )));
         }
-        let rev = engine.doc(&doc)?.rev().0;
+        let open = engine.doc(&doc)?;
+        let (rev, read_only, locked) = (
+            open.rev().0,
+            open.read_only(),
+            open.locked_by_other_process(),
+        );
         return json_output(&DocumentOpenResult {
             doc,
             rev,
             path: path_text(&path),
             already_open: true,
+            read_only,
+            locked_by_other_process: locked,
             recovery_available: None,
             recovered: None,
             journal_warning: None,
         });
     }
 
+    // The lock first: the journal is only looked at by the file's writer.
+    let lock = engine.lock_document(&path)?;
+    if args.recover && !lock.owns_file() {
+        return Err(match lock {
+            FileLock::ReadOnlyEngine => ToolError::unsupported(
+                "server is in read-only mode; recovering unsaved changes needs a writable server",
+            ),
+            _ => read_only_handle(),
+        });
+    }
     let font = forma_store::load(&path).map_err(from_store_error)?;
-    let opened = engine.journal_on_open(font, args.recover)?;
-    let open = OpenDoc {
-        document: Document::new(opened.font),
-        source_path: Some(path.clone()),
-        dirty: opened.dirty,
+    let opened = if lock.owns_file() {
+        engine.journal_on_open(font, &path, args.recover)?
+    } else {
+        Opened::untouched(font)
     };
-    let rev = open.rev().0;
+    let mut open = OpenDoc::new(Document::new(opened.font), Some(path.clone()), opened.dirty);
+    open.lock = lock;
+    let (rev, read_only, locked) = (
+        open.rev().0,
+        open.read_only(),
+        open.locked_by_other_process(),
+    );
     let doc = engine.insert_doc(open);
     if let Some(state) = opened.state {
         engine.journals.insert(doc.clone(), state);
@@ -395,6 +434,8 @@ fn document_open(
         rev,
         path: path_text(&path),
         already_open: false,
+        read_only,
+        locked_by_other_process: locked,
         recovery_available: opened
             .recovery_available
             .map(|records| RecoveryAvailable { records }),
@@ -406,6 +447,9 @@ fn document_open(
 fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
     let call: DocumentSaveArgs = parse_args_ref(&args)?;
     let open = engine.doc(&call.doc)?;
+    if open.read_only() {
+        return Err(read_only_handle());
+    }
     let rev = open.rev().0;
     if call.base_rev > rev {
         return Err(ToolError::invalid_argument(format!(
@@ -442,6 +486,15 @@ fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<Tool
         }
     };
 
+    // Saving to another file makes the document that file's writer: its lock
+    // first (refused while another process holds it).
+    let previous = open.source_path.clone();
+    let moved_lock = if previous.as_deref() == Some(target.as_path()) {
+        None
+    } else {
+        Some(writable_lock(engine, &target)?)
+    };
+
     let label = if overwrites {
         format!("overwrites {}", path_text(&target))
     } else {
@@ -466,7 +519,11 @@ fn document_save(engine: &mut Engine, actor: &Actor, args: Value) -> Result<Tool
     forma_store::save(open.font(), &target).map_err(from_store_error)?;
     open.source_path = Some(target.clone());
     open.dirty = false;
-    let journal_warning = engine.journal_saved(&call.doc);
+    if let Some(lock) = moved_lock {
+        // The lock of the previous file is released here.
+        open.lock = lock;
+    }
+    let journal_warning = engine.journal_saved(&call.doc, previous.as_deref());
     json_output(&DocumentSaveResult {
         doc: call.doc,
         rev,
@@ -489,6 +546,9 @@ fn document_close(
     }
     let rev = open.rev();
     let discards = open.dirty;
+    if discards && open.read_only() {
+        return Err(read_only_handle());
+    }
     let label = if discards {
         format!("closes {} and discards its unsaved changes", call.doc)
     } else {
@@ -545,6 +605,7 @@ fn document_inspect(
         glyph_count: font.glyphs.len(),
         dirty: open.dirty,
         path: open.path_text(),
+        read_only: open.read_only(),
         doc: args.doc,
     };
     json_output(&result)
@@ -563,6 +624,22 @@ fn ensure_not_open_elsewhere(
             path_text(path)
         ))),
         _ => Ok(()),
+    }
+}
+
+/// The lock of the file at `path` for a document this engine is about to
+/// write there (a new document, or a save to another file).
+///
+/// # Errors
+///
+/// `INVALID_ARGUMENT` if another process holds the file open for writing;
+/// `IO_ERROR` if the lock cannot be taken.
+fn writable_lock(engine: &Engine, path: &Path) -> Result<FileLock, ToolError> {
+    let lock = engine.lock_document(path)?;
+    if lock.owns_file() {
+        Ok(lock)
+    } else {
+        Err(locked_target(path))
     }
 }
 

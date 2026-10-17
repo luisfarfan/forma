@@ -13,6 +13,9 @@ serde = { workspace = true }
 # `float_roundtrip` makes parsing an f64 exact, so a saved coordinate always
 # loads back bit-for-bit.
 serde_json = { workspace = true, features = ["float_roundtrip"] }
+# The crash-recovery journal file of a document is named by the SHA-256 of its
+# path (MIT OR Apache-2.0, RustCrypto; already used by forma-engine).
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 

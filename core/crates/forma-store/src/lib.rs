@@ -43,7 +43,9 @@ use thiserror::Error;
 pub use atomic::write_file_atomic;
 pub use canonical::{to_canonical_json, try_to_canonical_json};
 pub use filenames::glyph_file_name;
-pub use journal::{Journal, JournalRecord, apply_records, remove as remove_journal, replay};
+pub use journal::{
+    Journal, JournalKey, JournalRecord, apply_records, remove as remove_journal, replay,
+};
 
 /// Everything that can go wrong while saving or loading a document.
 #[derive(Debug, Error)]

@@ -17,8 +17,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use mcp_common::{
-    ACTOR, Client, TEST_TIMEOUT, call, close, connect, create_squares, glyph_names, is_legacy,
-    legacy, mcp_args, modern, new_doc, path_text, rev_of, with_timeout,
+    ACTOR, Client, SQUARE, TEST_TIMEOUT, call, close, connect, connect_to, create_squares,
+    glyph_names, is_legacy, legacy, mcp_args, modern, new_doc, path_text, rev_of, with_timeout,
 };
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{CallToolRequest, CallToolRequestParams, ClientRequest};
@@ -537,6 +537,125 @@ fn immediate_eof_exits_with_code_0() {
     let run = run_raw(root.path(), &[], &[]);
     assert_eq!(run.status.code(), Some(0), "stderr: {}", run.stderr);
     assert!(run.messages.is_empty(), "{:#?}", run.messages);
+}
+
+// --------------------------------------------- single writer (risk T18)
+
+/// The journal files of `root` and the number of lines of each.
+fn journal_lines(root: &Path) -> Vec<(String, usize)> {
+    let Ok(entries) = std::fs::read_dir(root.join("journal")) else {
+        return Vec::new();
+    };
+    let mut files: Vec<(String, usize)> = entries
+        .map(|entry| {
+            let entry = entry.expect("entry");
+            let text = std::fs::read_to_string(entry.path()).expect("journal");
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                text.lines().count(),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// Two `forma mcp` processes sharing their journal and lock folders: the
+/// second one to open a document gets it read-only, cannot change, save or
+/// discard it, is not offered the first one's live journal, and leaves that
+/// journal alone when it closes the document.
+#[rstest]
+#[case::legacy(legacy())]
+#[case::modern(modern())]
+#[tokio::test]
+async fn a_second_server_opens_a_locked_document_read_only(#[case] mode: ClientLifecycleMode) {
+    with_timeout("a_second_server_opens_a_locked_document_read_only", async {
+        let root = TempDir::new().expect("root");
+        let first = connect_to(legacy(), root.path(), &[]).await;
+        let second = connect_to(mode, root.path(), &[]).await;
+        let path = root.path().join("shared.forma");
+
+        let created = call(
+            &first,
+            "document_create",
+            json!({ "family_name": "Shared", "path": path_text(&path) }),
+        )
+        .await
+        .ok();
+        let doc = created["doc"].as_str().expect("doc").to_owned();
+        call(
+            &first,
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": 0, "name": "X", "advance_width": 500,
+                    "svg_path": SQUARE }),
+        )
+        .await
+        .ok();
+        let journal = journal_lines(root.path());
+        assert_eq!(journal.len(), 1, "{journal:?}");
+        assert_eq!(journal[0].1, 1, "{journal:?}");
+
+        let opened = call(
+            &second,
+            "document_open",
+            json!({ "path": path_text(&path) }),
+        )
+        .await
+        .ok();
+        assert_eq!(opened["read_only"], json!(true), "{opened}");
+        assert_eq!(opened["locked_by_other_process"], json!(true), "{opened}");
+        assert!(opened.get("recovery_available").is_none(), "{opened}");
+        let reader = opened["doc"].as_str().expect("doc").to_owned();
+        for (tool, args) in [
+            (
+                "glyph_create",
+                json!({ "doc": reader, "base_rev": 0, "name": "Y", "advance_width": 500 }),
+            ),
+            ("document_save", json!({ "doc": reader, "base_rev": 0 })),
+        ] {
+            let error = call(&second, tool, args).await.error("UNSUPPORTED");
+            assert_eq!(
+                error["message"],
+                json!(
+                    "document is open for writing in another FORMA process; this handle is \
+                     read-only"
+                ),
+                "{tool}"
+            );
+        }
+        // Reading works.
+        call(&second, "document_inspect", json!({ "doc": reader }))
+            .await
+            .ok();
+        call(&second, "document_close", json!({ "doc": reader }))
+            .await
+            .ok();
+        assert_eq!(
+            journal_lines(root.path()),
+            journal,
+            "the writer's journal is intact"
+        );
+
+        // The writer goes on journaling and saving.
+        call(
+            &first,
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": 1, "name": "Z", "advance_width": 500 }),
+        )
+        .await
+        .ok();
+        assert_eq!(journal_lines(root.path())[0].1, 2);
+        call(
+            &first,
+            "document_save",
+            json!({ "doc": doc, "base_rev": 2 }),
+        )
+        .await
+        .ok();
+        close(second).await;
+        close(first).await;
+    })
+    .await;
 }
 
 /// The `glyph_get` detail of the glyph `name`.

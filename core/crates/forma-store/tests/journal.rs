@@ -10,7 +10,9 @@ use forma_model::{
     Actor, Font, FontInfo, Glyph, GlyphId, Layer, Master, MasterId, Node, NodeKind,
     Path as Contour, PathId, Rev, VerticalMetrics,
 };
-use forma_store::{Journal, JournalRecord, StoreError, apply_records, remove_journal, replay};
+use forma_store::{
+    Journal, JournalKey, JournalRecord, StoreError, apply_records, remove_journal, replay,
+};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use tempfile::TempDir;
@@ -91,6 +93,7 @@ impl Sim {
         edit(&mut self.font);
         let font = &self.font;
         self.records.push(JournalRecord {
+            document: DOCUMENT.to_owned(),
             rev: Rev(self.records.len() as u64 + 1),
             actor: actor_for(self.records.len()),
             label: label.to_owned(),
@@ -143,9 +146,26 @@ impl Sim {
     }
 }
 
+/// The document path of the journals of most tests.
+const DOCUMENT: &str = "/fonts/test.forma";
+
+/// The key of the journal of `font` in [`DOCUMENT`].
+fn key(font: &Font) -> JournalKey {
+    JournalKey::new(font.id, Path::new(DOCUMENT))
+}
+
+/// A record of `key`'s document that changes nothing.
+fn record_for(key: &JournalKey, rev: u64, label: &str) -> JournalRecord {
+    JournalRecord {
+        document: key.document_text(),
+        ..empty_record(rev, label)
+    }
+}
+
 /// A record that changes nothing, for tests about the file and not the font.
 fn empty_record(rev: u64, label: &str) -> JournalRecord {
     JournalRecord {
+        document: DOCUMENT.to_owned(),
         rev: Rev(rev),
         actor: Actor::User,
         label: label.to_owned(),
@@ -158,7 +178,7 @@ fn empty_record(rev: u64, label: &str) -> JournalRecord {
 }
 
 fn journal_file(dir: &Path, font: &Font) -> PathBuf {
-    dir.join(format!("{}.journal", font.id))
+    dir.join(key(font).file_name())
 }
 
 /// A font with two glyphs, `a` and `b`.
@@ -263,11 +283,11 @@ fn replay_restores_state() {
     sim.add_glyph(f);
     assert_eq!(sim.records.len(), 10);
 
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     append_all(&mut journal, &sim.records);
     drop(journal);
 
-    let replayed = replay(dir.path(), base.id).unwrap();
+    let replayed = replay(dir.path(), &key(&base)).unwrap();
     assert_eq!(replayed, sim.records);
     assert_eq!(apply_records(base, &replayed).unwrap(), sim.font);
 }
@@ -281,7 +301,7 @@ fn truncated_last_line_is_ignored() {
         let glyph = glyph_in(&sim.font, n, &format!("g{n}"), 500.0, 700.0);
         sim.add_glyph(glyph);
     }
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     append_all(&mut journal, &sim.records);
     drop(journal);
     let path = journal_file(dir.path(), &base);
@@ -293,7 +313,7 @@ fn truncated_last_line_is_ignored() {
     next.font_info = Some(base.info.clone());
     let line = {
         let scratch = TempDir::new().unwrap();
-        let mut journal = Journal::open(scratch.path(), base.id).unwrap();
+        let mut journal = Journal::open(scratch.path(), &key(&base)).unwrap();
         journal.append(&next).unwrap();
         drop(journal);
         fs::read(journal_file(scratch.path(), &base)).unwrap()
@@ -307,7 +327,7 @@ fn truncated_last_line_is_ignored() {
         bytes.extend_from_slice(&line[..cut]);
         fs::write(&path, &bytes).unwrap();
 
-        let replayed = replay(dir.path(), base.id).unwrap();
+        let replayed = replay(dir.path(), &key(&base)).unwrap();
 
         assert_eq!(replayed, sim.records, "cut after {cut} bytes");
     }
@@ -317,7 +337,7 @@ fn truncated_last_line_is_ignored() {
 fn truncate_empties_journal() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     append_all(
         &mut journal,
         &[empty_record(1, "one"), empty_record(2, "two")],
@@ -334,7 +354,7 @@ fn truncate_empties_journal() {
         fs::metadata(journal_file(dir.path(), &base)).unwrap().len(),
         0
     );
-    assert!(replay(dir.path(), base.id).unwrap().is_empty());
+    assert!(replay(dir.path(), &key(&base)).unwrap().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -345,10 +365,10 @@ fn truncate_empties_journal() {
 fn missing_journal_replays_empty() {
     let dir = TempDir::new().unwrap();
 
-    assert!(replay(dir.path(), base_font().id).unwrap().is_empty());
+    assert!(replay(dir.path(), &key(&base_font())).unwrap().is_empty());
     // Not even the folder exists.
     assert!(
-        replay(&dir.path().join("nowhere"), base_font().id)
+        replay(&dir.path().join("nowhere"), &key(&base_font()))
             .unwrap()
             .is_empty()
     );
@@ -358,18 +378,18 @@ fn missing_journal_replays_empty() {
 fn corrupt_middle_line_is_an_error() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(1, "one")).unwrap();
     drop(journal);
     let path = journal_file(dir.path(), &base);
     let mut file = OpenOptions::new().append(true).open(&path).unwrap();
     file.write_all(b"{\"rev\": 2, this is not json\n").unwrap();
     drop(file);
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(3, "three")).unwrap();
     drop(journal);
 
-    let err = replay(dir.path(), base.id).unwrap_err();
+    let err = replay(dir.path(), &key(&base)).unwrap_err();
 
     assert!(
         matches!(&err, StoreError::Invalid(message) if message == "journal corrupt at line 2"),
@@ -381,7 +401,7 @@ fn corrupt_middle_line_is_an_error() {
 fn a_bad_line_followed_only_by_blank_lines_is_a_torn_tail() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(1, "one")).unwrap();
     drop(journal);
     let path = journal_file(dir.path(), &base);
@@ -389,7 +409,7 @@ fn a_bad_line_followed_only_by_blank_lines_is_a_torn_tail() {
     file.write_all(b"{\"rev\": 2, tor\n\n  \n").unwrap();
     drop(file);
 
-    let replayed = replay(dir.path(), base.id).unwrap();
+    let replayed = replay(dir.path(), &key(&base)).unwrap();
 
     assert_eq!(replayed, [empty_record(1, "one")]);
 }
@@ -398,7 +418,7 @@ fn a_bad_line_followed_only_by_blank_lines_is_a_torn_tail() {
 fn corruption_in_the_first_line_is_reported_with_its_number() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(2, "two")).unwrap();
     drop(journal);
     let path = journal_file(dir.path(), &base);
@@ -407,7 +427,7 @@ fn corruption_in_the_first_line_is_reported_with_its_number() {
     bytes.extend_from_slice(&good);
     fs::write(&path, bytes).unwrap();
 
-    let err = replay(dir.path(), base.id).unwrap_err();
+    let err = replay(dir.path(), &key(&base)).unwrap_err();
 
     assert!(
         matches!(&err, StoreError::Invalid(message) if message == "journal corrupt at line 1"),
@@ -423,7 +443,7 @@ fn corruption_in_the_first_line_is_reported_with_its_number() {
 fn appends_after_truncate_work() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     append_all(
         &mut journal,
         &[empty_record(1, "one"), empty_record(2, "two")],
@@ -436,7 +456,7 @@ fn appends_after_truncate_work() {
     );
     drop(journal);
 
-    let replayed = replay(dir.path(), base.id).unwrap();
+    let replayed = replay(dir.path(), &key(&base)).unwrap();
     assert_eq!(
         replayed,
         [empty_record(3, "three"), empty_record(4, "four")],
@@ -448,16 +468,16 @@ fn appends_after_truncate_work() {
 fn reopening_keeps_appending() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(1, "one")).unwrap();
     drop(journal);
 
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(2, "two")).unwrap();
     drop(journal);
 
     assert_eq!(
-        replay(dir.path(), base.id).unwrap(),
+        replay(dir.path(), &key(&base)).unwrap(),
         [empty_record(1, "one"), empty_record(2, "two")]
     );
 }
@@ -468,7 +488,7 @@ fn open_creates_the_folder() {
     let nested = dir.path().join("recovery").join("fonts");
     let base = base_font();
 
-    let mut journal = Journal::open(&nested, base.id).unwrap();
+    let mut journal = Journal::open(&nested, &key(&base)).unwrap();
     journal.append(&empty_record(1, "one")).unwrap();
 
     assert!(journal_file(&nested, &base).is_file());
@@ -479,18 +499,18 @@ fn each_font_has_its_own_journal() {
     let dir = TempDir::new().unwrap();
     let first = base_font();
     let second = base_font();
-    let mut first_journal = Journal::open(dir.path(), first.id).unwrap();
-    let mut second_journal = Journal::open(dir.path(), second.id).unwrap();
+    let mut first_journal = Journal::open(dir.path(), &key(&first)).unwrap();
+    let mut second_journal = Journal::open(dir.path(), &key(&second)).unwrap();
 
     first_journal.append(&empty_record(1, "first")).unwrap();
     second_journal.append(&empty_record(1, "second")).unwrap();
 
     assert_eq!(
-        replay(dir.path(), first.id).unwrap(),
+        replay(dir.path(), &key(&first)).unwrap(),
         [empty_record(1, "first")]
     );
     assert_eq!(
-        replay(dir.path(), second.id).unwrap(),
+        replay(dir.path(), &key(&second)).unwrap(),
         [empty_record(1, "second")]
     );
 }
@@ -499,7 +519,7 @@ fn each_font_has_its_own_journal() {
 fn lines_are_compact_canonical_json() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     let mut with_label = empty_record(1, "line one\nline \"two\"");
     with_label.actor = Actor::Agent("claude-code".to_owned());
     journal.append(&with_label).unwrap();
@@ -511,11 +531,12 @@ fn lines_are_compact_canonical_json() {
     assert_eq!(
         text,
         concat!(
-            r#"{"actor":"agent:claude-code","font_info":null,"glyph_order":null,"glyphs":[],"#,
-            r#""label":"line one\nline \"two\"","masters":null,"rev":1}"#,
+            r#"{"actor":"agent:claude-code","document":"/fonts/test.forma","font_info":null,"#,
+            r#""glyph_order":null,"glyphs":[],"label":"line one\nline \"two\"","masters":null,"#,
+            r#""rev":1}"#,
             "\n",
-            r#"{"actor":"user","font_info":null,"glyph_order":null,"glyphs":[],"#,
-            r#""label":"x","masters":null,"rev":2}"#,
+            r#"{"actor":"user","document":"/fonts/test.forma","font_info":null,"#,
+            r#""glyph_order":null,"glyphs":[],"label":"x","masters":null,"rev":2}"#,
             "\n",
         )
     );
@@ -530,7 +551,7 @@ fn glyph_changes_are_pairs_of_id_and_glyph_or_null() {
         (gid(1), Some(glyph_in(&base, 1, "a", 500.0, 700.0))),
         (gid(2), None),
     ];
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&record).unwrap();
     drop(journal);
 
@@ -548,7 +569,7 @@ fn glyph_changes_are_pairs_of_id_and_glyph_or_null() {
 fn a_non_finite_number_is_refused_and_nothing_is_written() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(1, "fine")).unwrap();
     let before = fs::read(journal_file(dir.path(), &base)).unwrap();
 
@@ -568,24 +589,24 @@ fn a_non_finite_number_is_refused_and_nothing_is_written() {
     // The journal is still usable.
     journal.append(&empty_record(4, "after")).unwrap();
     drop(journal);
-    assert_eq!(replay(dir.path(), base.id).unwrap().len(), 2);
+    assert_eq!(replay(dir.path(), &key(&base)).unwrap().len(), 2);
 }
 
 #[test]
 fn remove_deletes_the_journal() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(1, "one")).unwrap();
     drop(journal);
 
-    remove_journal(dir.path(), base.id).unwrap();
+    remove_journal(dir.path(), &key(&base)).unwrap();
 
     assert!(!journal_file(dir.path(), &base).exists());
-    assert!(replay(dir.path(), base.id).unwrap().is_empty());
+    assert!(replay(dir.path(), &key(&base)).unwrap().is_empty());
     // Removing what is not there is not an error.
-    remove_journal(dir.path(), base.id).unwrap();
-    remove_journal(&dir.path().join("nowhere"), base.id).unwrap();
+    remove_journal(dir.path(), &key(&base)).unwrap();
+    remove_journal(&dir.path().join("nowhere"), &key(&base)).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +617,7 @@ fn remove_deletes_the_journal() {
 fn open_after_a_torn_append_does_not_glue_the_next_record_to_it() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(1, "one")).unwrap();
     drop(journal);
     let path = journal_file(dir.path(), &base);
@@ -606,13 +627,13 @@ fn open_after_a_torn_append_does_not_glue_the_next_record_to_it() {
     drop(file);
 
     // The session after the crash keeps working on the same journal.
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(2, "two")).unwrap();
     journal.append(&empty_record(3, "three")).unwrap();
     drop(journal);
 
     assert_eq!(
-        replay(dir.path(), base.id).unwrap(),
+        replay(dir.path(), &key(&base)).unwrap(),
         [
             empty_record(1, "one"),
             empty_record(2, "two"),
@@ -625,7 +646,7 @@ fn open_after_a_torn_append_does_not_glue_the_next_record_to_it() {
 fn open_completes_a_record_that_lost_its_newline() {
     let dir = TempDir::new().unwrap();
     let base = base_font();
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(1, "one")).unwrap();
     journal.append(&empty_record(2, "two")).unwrap();
     drop(journal);
@@ -634,14 +655,14 @@ fn open_completes_a_record_that_lost_its_newline() {
     let mut bytes = fs::read(&path).unwrap();
     assert_eq!(bytes.pop(), Some(b'\n'));
     fs::write(&path, &bytes).unwrap();
-    assert_eq!(replay(dir.path(), base.id).unwrap().len(), 2);
+    assert_eq!(replay(dir.path(), &key(&base)).unwrap().len(), 2);
 
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&empty_record(3, "three")).unwrap();
     drop(journal);
 
     assert_eq!(
-        replay(dir.path(), base.id).unwrap(),
+        replay(dir.path(), &key(&base)).unwrap(),
         [
             empty_record(1, "one"),
             empty_record(2, "two"),
@@ -657,13 +678,13 @@ fn open_drops_a_torn_first_line() {
     let path = journal_file(dir.path(), &base);
     fs::write(&path, b"{\"actor\":\"us").unwrap();
 
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     assert_eq!(fs::metadata(&path).unwrap().len(), 0);
     journal.append(&empty_record(1, "one")).unwrap();
     drop(journal);
 
     assert_eq!(
-        replay(dir.path(), base.id).unwrap(),
+        replay(dir.path(), &key(&base)).unwrap(),
         [empty_record(1, "one")]
     );
 }
@@ -772,7 +793,7 @@ fn units_per_em_is_journaled_and_older_lines_still_read() {
     let mut record = empty_record(1, "upm");
     record.font_info = Some(base.info.clone());
     record.units_per_em = Some(2048);
-    let mut journal = Journal::open(dir.path(), base.id).unwrap();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
     journal.append(&record).unwrap();
     journal.append(&empty_record(2, "none")).unwrap();
     drop(journal);
@@ -784,7 +805,7 @@ fn units_per_em_is_journaled_and_older_lines_still_read() {
     // written before the field existed do.
     assert!(!lines[1].contains("units_per_em"), "{}", lines[1]);
 
-    let records = replay(dir.path(), base.id).unwrap();
+    let records = replay(dir.path(), &key(&base)).unwrap();
     assert_eq!(records[0].units_per_em, Some(2048));
     assert_eq!(records[1].units_per_em, None);
     let font = apply_records(base.clone(), &records).unwrap();
@@ -876,14 +897,94 @@ proptest! {
         let mut sim = Sim::new(base.clone());
         play(&mut sim, &steps);
 
-        let mut journal = Journal::open(dir.path(), base.id).unwrap();
+        let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
         append_all(&mut journal, &sim.records);
         drop(journal);
-        let replayed = replay(dir.path(), base.id).unwrap();
+        let replayed = replay(dir.path(), &key(&base)).unwrap();
 
         prop_assert_eq!(&replayed, &sim.records);
         let restored = apply_records(base, &replayed).unwrap();
         prop_assert_eq!(&restored, &sim.font);
         restored.validate_invariants().unwrap();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Journals belong to one document file
+// ---------------------------------------------------------------------------
+
+#[test]
+fn journals_are_keyed_by_font_and_document_path() {
+    let dir = TempDir::new().unwrap();
+    let base = base_font();
+    // Two copies of the same font (same id) in two files.
+    let first = JournalKey::new(base.id, Path::new("/fonts/first.forma"));
+    let copy = JournalKey::new(base.id, Path::new("/fonts/copy.forma"));
+    assert_ne!(first.file_name(), copy.file_name());
+    let name = first.file_name();
+    let (font_part, rest) = name.split_at(36);
+    assert_eq!(font_part, base.id.to_string());
+    let hash = rest
+        .strip_prefix('-')
+        .and_then(|rest| rest.strip_suffix(".journal"))
+        .expect("<font id>-<hash>.journal");
+    assert_eq!(hash.len(), 16, "{name}");
+    assert!(
+        hash.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+        "{name}"
+    );
+    assert_eq!(first.document(), Path::new("/fonts/first.forma"));
+    assert_eq!(first.font_id(), base.id);
+
+    let mut first_journal = Journal::open(dir.path(), &first).unwrap();
+    let mut copy_journal = Journal::open(dir.path(), &copy).unwrap();
+    first_journal
+        .append(&record_for(&first, 1, "first"))
+        .unwrap();
+    copy_journal.append(&record_for(&copy, 1, "copy")).unwrap();
+    drop((first_journal, copy_journal));
+
+    assert_eq!(
+        replay(dir.path(), &first).unwrap(),
+        [record_for(&first, 1, "first")]
+    );
+    assert_eq!(
+        replay(dir.path(), &copy).unwrap(),
+        [record_for(&copy, 1, "copy")]
+    );
+    remove_journal(dir.path(), &copy).unwrap();
+    assert!(dir.path().join(first.file_name()).is_file());
+    assert!(!dir.path().join(copy.file_name()).exists());
+}
+
+#[test]
+fn records_name_their_document_and_replay_checks_it() {
+    let dir = TempDir::new().unwrap();
+    let base = base_font();
+    let mine = JournalKey::new(base.id, Path::new("/fonts/mine.forma"));
+    let other = JournalKey::new(base.id, Path::new("/fonts/other.forma"));
+    let mut journal = Journal::open(dir.path(), &mine).unwrap();
+
+    // A record of another document is refused, and nothing is written.
+    let err = journal
+        .append(&record_for(&other, 1, "not mine"))
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Invalid(_)), "{err:?}");
+    journal.append(&record_for(&mine, 1, "mine")).unwrap();
+    drop(journal);
+    let text = fs::read_to_string(dir.path().join(mine.file_name())).unwrap();
+    assert!(text.contains(r#""document":"/fonts/mine.forma""#), "{text}");
+
+    // A journal file that holds the records of another document (copied or
+    // renamed by hand) is never offered as this document's.
+    fs::copy(
+        dir.path().join(mine.file_name()),
+        dir.path().join(other.file_name()),
+    )
+    .unwrap();
+    let err = replay(dir.path(), &other).unwrap_err();
+    assert!(
+        matches!(&err, StoreError::Invalid(message) if message.contains("another document")),
+        "{err:?}"
+    );
 }

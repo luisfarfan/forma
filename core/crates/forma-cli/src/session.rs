@@ -39,6 +39,7 @@ impl Session {
         let engine = Engine::new(EngineConfig {
             allowed_roots: sandbox_roots(&cwd, explicit_paths),
             policy: Policy::Prompted,
+            lock_dir: lock_dir(None),
             ..EngineConfig::default()
         });
         Ok(Session { engine, yes })
@@ -91,6 +92,47 @@ impl Session {
             .call(&Actor::Cli, "plan_commit", json!({ "plan_token": token }))
             .map_err(Failure::Tool)
     }
+}
+
+/// The environment variable that names the document lock folder when
+/// `--lock-dir` is not given.
+pub const LOCK_DIR_ENV: &str = "FORMA_LOCK_DIR";
+
+/// The document lock folder: `explicit`, else `$FORMA_LOCK_DIR`, else the
+/// `locks` folder of the OS data directory for FORMA; created if missing.
+/// Every `forma` process uses the same default, so that a document has one
+/// writer among them. `None` (with a warning: documents are then not locked
+/// against other processes) if there is no data directory or the folder
+/// cannot be created.
+pub fn lock_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    let dir = explicit
+        .or_else(|| std::env::var_os(LOCK_DIR_ENV).map(PathBuf::from))
+        .or_else(default_lock_dir);
+    let Some(dir) = dir else {
+        tracing::warn!(
+            "no data directory for the document locks; documents are not locked against other \
+             FORMA processes"
+        );
+        return None;
+    };
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => Some(dir),
+        Err(error) => {
+            tracing::warn!(
+                dir = %dir.display(),
+                %error,
+                "cannot create the document lock folder; documents are not locked against other \
+                 FORMA processes"
+            );
+            None
+        }
+    }
+}
+
+/// `<OS data dir>/locks` for the app `org.forma.forma`.
+pub fn default_lock_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("org", "forma", "forma")
+        .map(|dirs| dirs.data_dir().join("locks"))
 }
 
 /// The JSON of a tool's result.
@@ -186,6 +228,29 @@ mod tests {
             .call_json("history_list", json!({ "doc": doc }))
             .expect("history_list");
         assert_eq!(history["entries"][0]["actor"], json!("cli"), "{history}");
+    }
+
+    #[test]
+    fn an_explicit_lock_folder_is_created() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let wanted = dir.path().join("a").join("locks");
+        assert_eq!(lock_dir(Some(wanted.clone())), Some(wanted.clone()));
+        assert!(wanted.is_dir());
+        // A folder that cannot be created: nothing is locked (with a warning).
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"x").expect("write");
+        assert_eq!(lock_dir(Some(file.join("locks"))), None);
+    }
+
+    #[test]
+    fn the_default_lock_folder_is_locks_in_the_data_dir() {
+        if let Some(dir) = default_lock_dir() {
+            assert_eq!(
+                dir.file_name().and_then(|name| name.to_str()),
+                Some("locks")
+            );
+            assert!(dir.to_string_lossy().to_lowercase().contains("forma"));
+        }
     }
 
     #[cfg(unix)]

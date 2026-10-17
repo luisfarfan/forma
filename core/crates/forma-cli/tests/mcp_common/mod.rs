@@ -82,7 +82,7 @@ pub fn forma_bin() -> &'static str {
 }
 
 /// The arguments that start `forma mcp` sandboxed to `root`, with its journal
-/// inside it, followed by `extra_args`.
+/// and its document locks inside it, followed by `extra_args`.
 pub fn mcp_args(root: &Path, extra_args: &[&str]) -> Vec<String> {
     let mut args = vec![
         "mcp".to_owned(),
@@ -90,6 +90,8 @@ pub fn mcp_args(root: &Path, extra_args: &[&str]) -> Vec<String> {
         path_text(root),
         "--journal-dir".to_owned(),
         path_text(&root.join("journal")),
+        "--lock-dir".to_owned(),
+        path_text(&root.join("locks")),
     ];
     args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
     args
@@ -118,12 +120,20 @@ pub async fn with_timeout<F: Future>(name: &str, test: F) -> F::Output {
 /// the whole test.
 pub async fn connect(mode: ClientLifecycleMode, extra_args: &[&str]) -> (Client, TempDir) {
     let root = TempDir::new().expect("temporary root");
+    let client = connect_to(mode, root.path(), extra_args).await;
+    (client, root)
+}
+
+/// Spawns `forma mcp` on the existing folder `root` (its only allowed root,
+/// which also holds its journal and lock folders) and connects the test
+/// client to it in `mode`, like [`connect`]. Two servers started on the same
+/// root share their journals and document locks, as two processes of one
+/// user do.
+pub async fn connect_to(mode: ClientLifecycleMode, root: &Path, extra_args: &[&str]) -> Client {
     let mut command = Command::new(forma_bin());
     // The server's logs (warnings only, unless FORMA_LOG says otherwise) go
     // to the test's stderr. A server left behind by a failing test is killed.
-    command
-        .args(mcp_args(root.path(), extra_args))
-        .kill_on_drop(true);
+    command.args(mcp_args(root, extra_args)).kill_on_drop(true);
     let transport = TokioChildProcess::new(command).expect("spawn forma mcp");
 
     let info = ClientConfig::new(
@@ -145,7 +155,7 @@ pub async fn connect(mode: ClientLifecycleMode, extra_args: &[&str]) -> (Client,
         peer.server_info.as_ref().map(|server| server.name.as_str()),
         Some("forma")
     );
-    (client, root)
+    client
 }
 
 /// Closes the client: stdin reaches EOF and the server exits.

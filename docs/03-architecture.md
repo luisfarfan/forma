@@ -252,6 +252,7 @@ sequenceDiagram
   `forma mcp` detecta el endpoint y actúa como **proxy**, de modo que el agente edita el mismo documento en vivo.
 - **Sin app:** `forma mcp` (o la CLI) aloja el motor en su propio proceso. Es el modo headless de CI y del Hito 1.
 - Si el documento está bloqueado por un proceso sin IPC, se abre **solo lectura**.
+- *Hito 1:* el bloqueo es `File::try_lock` sobre `<datos de la app>/locks/<sha256 de la ruta canónica>.lock` (configurable con `EngineConfig::lock_dir`, `--lock-dir` o `FORMA_LOCK_DIR`); el diario de recuperación se nombra por fuente y ruta, y solo lo toca quien tiene el bloqueo (ADR 0004).
 - **Protocolo IPC:** los mismos sobres JSON del registro de comandos (no hay una segunda API que mantener). Detalle en `07-mcp-ai-architecture.md §3`.
 
 ## 8. Persistencia, autosave y recuperación

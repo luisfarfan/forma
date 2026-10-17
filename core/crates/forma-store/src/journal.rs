@@ -10,13 +10,20 @@
 //!
 //! # File format
 //!
-//! `<dir>/<font id>.journal` is JSONL: each line is one record as compact
-//! canonical JSON (keys sorted at every level, as in the saved documents, but
-//! no indentation) ended by `\n`. A record holds *states*, not changes: the new
-//! value of the font information, the masters, the glyph order and each touched
-//! glyph (`null` for a glyph that was deleted). Applying a record twice
-//! therefore gives the same font as applying it once, which keeps replay safe
-//! when an append reported an error but its line reached the disk anyway.
+//! A journal belongs to one document *file*, not just to one font: two copies
+//! of a font (same font id) in two files have two journals. Its name is
+//! `<dir>/<font id>-<hash>.journal` ([`JournalKey::file_name`]), where `<hash>`
+//! is the first 16 hexadecimal digits of the SHA-256 of the canonical path of
+//! the document, and every record names that path again (`document`), so a
+//! journal is only ever replayed over the file it was written for.
+//!
+//! The file is JSONL: each line is one record as compact canonical JSON (keys
+//! sorted at every level, as in the saved documents, but no indentation) ended
+//! by `\n`. A record holds *states*, not changes: the new value of the font
+//! information, the masters, the glyph order and each touched glyph (`null`
+//! for a glyph that was deleted). Applying a record twice therefore gives the
+//! same font as applying it once, which keeps replay safe when an append
+//! reported an error but its line reached the disk anyway.
 //!
 //! # Crashes
 //!
@@ -28,7 +35,9 @@
 //! appended next are not glued to it. Any other unreadable line cannot be
 //! explained by a crash and is reported as corruption rather than skipped.
 //!
-//! A journal has a single writer: one open [`Journal`] per document.
+//! A journal has a single writer: one open [`Journal`] per document, in the
+//! one process that holds the document open for writing (the engine's
+//! document lock enforces that across processes).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -37,11 +46,68 @@ use std::sync::Arc;
 
 use forma_model::{Actor, Font, FontId, FontInfo, Glyph, GlyphId, Master, Rev};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::StoreError;
 use crate::atomic::{sync_dir, sync_file, sync_file_data};
 use crate::canonical::canonical_line;
 use crate::parts::{ensure_glyph_finite, ensure_masters_finite};
+
+/// The document a journal belongs to: a font, in one file.
+///
+/// The file is named by its canonical path (as the engine resolves it), so
+/// that two copies of a font never share a journal and a journal is never
+/// replayed over another file.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct JournalKey {
+    font_id: FontId,
+    document: PathBuf,
+}
+
+impl JournalKey {
+    /// The journal of the font `font_id` stored at `document`, the canonical
+    /// path of a `.forma` file or `.formapackage` folder.
+    #[must_use]
+    pub fn new(font_id: FontId, document: &Path) -> JournalKey {
+        JournalKey {
+            font_id,
+            document: document.to_path_buf(),
+        }
+    }
+
+    /// The font id.
+    #[must_use]
+    pub fn font_id(&self) -> FontId {
+        self.font_id
+    }
+
+    /// The canonical path of the document file.
+    #[must_use]
+    pub fn document(&self) -> &Path {
+        &self.document
+    }
+
+    /// The path as the records carry it in [`JournalRecord::document`]
+    /// (lossy for a path that is not valid Unicode).
+    #[must_use]
+    pub fn document_text(&self) -> String {
+        self.document.to_string_lossy().into_owned()
+    }
+
+    /// The name of the journal file: `<font id>-<hash>.journal`, where
+    /// `<hash>` is the first 16 lowercase hexadecimal digits of the SHA-256 of
+    /// the path (of its bytes as the operating system encodes them).
+    #[must_use]
+    pub fn file_name(&self) -> String {
+        let digest = Sha256::digest(self.document.as_os_str().as_encoded_bytes());
+        let hash: String = digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("{}-{hash}.journal", self.font_id)
+    }
+}
 
 /// The state of everything one committed edit touched.
 ///
@@ -49,6 +115,10 @@ use crate::parts::{ensure_glyph_finite, ensure_masters_finite};
 /// record stays small however large the font is.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JournalRecord {
+    /// The canonical path of the document file the record belongs to (see
+    /// [`JournalKey::document_text`]). A journal only takes, and only
+    /// replays, records of its own document.
+    pub document: String,
     /// The revision of the document after the edit.
     pub rev: Rev,
     /// Who made the edit.
@@ -98,14 +168,24 @@ pub struct Journal {
     /// (also after [`Journal::truncate`] emptied it).
     file: File,
     path: PathBuf,
+    /// The `document` every record must carry.
+    document: String,
     /// The length of the file as far as this journal knows: where the next
     /// record starts.
     len: u64,
 }
 
 /// The journal file of a document.
-fn journal_path(dir: &Path, font_id: FontId) -> PathBuf {
-    dir.join(format!("{font_id}.journal"))
+fn journal_path(dir: &Path, key: &JournalKey) -> PathBuf {
+    dir.join(key.file_name())
+}
+
+/// The error of a record that belongs to another document.
+fn another_document(found: &str, key: &JournalKey) -> StoreError {
+    StoreError::Invalid(format!(
+        "the journal holds records of another document ('{found}', not '{}')",
+        key.document_text()
+    ))
 }
 
 /// Cuts the file at `path` to `len` bytes and flushes it.
@@ -124,7 +204,7 @@ fn is_blank(line: &[u8]) -> bool {
 }
 
 impl Journal {
-    /// Opens the journal of the font `font_id` in `dir`, creating the folder
+    /// Opens the journal of the document `key` in `dir`, creating the folder
     /// and the file if they do not exist. New records are added after the ones
     /// already there.
     ///
@@ -136,9 +216,9 @@ impl Journal {
     ///
     /// [`StoreError::Io`] if the folder or the file cannot be created, opened
     /// or repaired.
-    pub fn open(dir: &Path, font_id: FontId) -> Result<Journal, StoreError> {
+    pub fn open(dir: &Path, key: &JournalKey) -> Result<Journal, StoreError> {
         fs::create_dir_all(dir)?;
-        let path = journal_path(dir, font_id);
+        let path = journal_path(dir, key);
         let mut file = OpenOptions::new()
             .read(true)
             .append(true)
@@ -147,7 +227,12 @@ impl Journal {
         // A new file is only safe once its directory entry is.
         sync_dir(dir);
         let len = repair_tail(&mut file, &path)?;
-        Ok(Journal { file, path, len })
+        Ok(Journal {
+            file,
+            path,
+            document: key.document_text(),
+            len,
+        })
     }
 
     /// Appends `rec` and flushes it to disk before returning.
@@ -158,11 +243,18 @@ impl Journal {
     ///
     /// # Errors
     ///
-    /// * [`StoreError::Invalid`] if the record holds a number that JSON cannot
-    ///   represent (NaN, infinity); nothing is written;
+    /// * [`StoreError::Invalid`] if the record belongs to another document
+    ///   (its `document` is not this journal's) or holds a number that JSON
+    ///   cannot represent (NaN, infinity); nothing is written;
     /// * [`StoreError::Json`] if it cannot be serialized;
     /// * [`StoreError::Io`] if writing or flushing fails.
     pub fn append(&mut self, rec: &JournalRecord) -> Result<(), StoreError> {
+        if rec.document != self.document {
+            return Err(StoreError::Invalid(format!(
+                "a record of '{}' cannot go into the journal of '{}'",
+                rec.document, self.document
+            )));
+        }
         let line = rec.to_line()?;
         if let Err(err) = self.file.write_all(&line) {
             // Best effort: the write error is the one worth reporting.
@@ -224,7 +316,8 @@ fn repair_tail(file: &mut File, path: &Path) -> Result<u64, StoreError> {
     }
 }
 
-/// Reads the records of the journal of `font_id` in `dir`, oldest first.
+/// Reads the records of the journal of the document `key` in `dir`, oldest
+/// first.
 ///
 /// A journal that does not exist has no records. An incomplete last line, the
 /// trace of a crash in the middle of an append, is ignored.
@@ -234,15 +327,19 @@ fn repair_tail(file: &mut File, path: &Path) -> Result<u64, StoreError> {
 /// * [`StoreError::Invalid`] (`journal corrupt at line N`, counting from 1) if
 ///   a line that is not the last one cannot be read as a record: that is not
 ///   something a crash does, and silently skipping it would drop edits;
+/// * [`StoreError::Invalid`] if a record belongs to another document (its
+///   `document` is not the path of `key`): the file was copied or renamed,
+///   and its records must not be put over this document;
 /// * [`StoreError::Io`] if the file exists but cannot be read.
-pub fn replay(dir: &Path, font_id: FontId) -> Result<Vec<JournalRecord>, StoreError> {
-    let bytes = match fs::read(journal_path(dir, font_id)) {
+pub fn replay(dir: &Path, key: &JournalKey) -> Result<Vec<JournalRecord>, StoreError> {
+    let bytes = match fs::read(journal_path(dir, key)) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err.into()),
     };
 
     // Work on bytes: a crash can cut a multi-byte character in two.
+    let document = key.document_text();
     let lines: Vec<&[u8]> = bytes.split(|&byte| byte == b'\n').collect();
     let last = lines.iter().rposition(|line| !is_blank(line));
     let mut records = Vec::new();
@@ -250,7 +347,10 @@ pub fn replay(dir: &Path, font_id: FontId) -> Result<Vec<JournalRecord>, StoreEr
         if is_blank(line) {
             continue;
         }
-        match serde_json::from_slice(line) {
+        match serde_json::from_slice::<JournalRecord>(line) {
+            Ok(record) if record.document != document => {
+                return Err(another_document(&record.document, key));
+            }
             Ok(record) => records.push(record),
             Err(_) if Some(index) == last => break,
             Err(_) => {
@@ -264,15 +364,15 @@ pub fn replay(dir: &Path, font_id: FontId) -> Result<Vec<JournalRecord>, StoreEr
     Ok(records)
 }
 
-/// Deletes the journal of `font_id` in `dir`. A journal that does not exist is
-/// not an error. Call it after the document was saved and closed, when there
-/// is nothing left to recover.
+/// Deletes the journal of the document `key` in `dir`. A journal that does
+/// not exist is not an error. Call it after the document was saved and
+/// closed, when there is nothing left to recover.
 ///
 /// # Errors
 ///
 /// [`StoreError::Io`] if the file exists but cannot be deleted.
-pub fn remove(dir: &Path, font_id: FontId) -> Result<(), StoreError> {
-    match fs::remove_file(journal_path(dir, font_id)) {
+pub fn remove(dir: &Path, key: &JournalKey) -> Result<(), StoreError> {
+    match fs::remove_file(journal_path(dir, key)) {
         Ok(()) => {
             sync_dir(dir);
             Ok(())
@@ -286,7 +386,8 @@ pub fn remove(dir: &Path, font_id: FontId) -> Result<(), StoreError> {
 /// and returns the font as it was at the last record.
 ///
 /// Per record: a present `font_info`, `units_per_em`, `masters` or
-/// `glyph_order` replaces the font's; a glyph with `Some` state is inserted
+/// `glyph_order` replaces the font's (`document` only says which file the
+/// record belongs to, see [`replay`]); a glyph with `Some` state is inserted
 /// or replaced and one with `None` is removed. Other parts of the font (its
 /// id, `lib`) are never touched by a record and stay as they are in `base`.
 ///

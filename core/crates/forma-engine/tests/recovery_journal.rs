@@ -437,18 +437,40 @@ fn copies_of_a_font_do_not_share_a_journal() {
     );
     assert_eq!(sandbox.journal_records(), 1);
 
-    // The copy has the same font id: it neither sees the first one's records
-    // as recoverable nor writes into its journal.
+    // The copy has the same font id but is another file: it neither sees the
+    // first one's records as recoverable nor writes into its journal; it
+    // keeps a journal of its own.
     let twin = ok(&mut engine, "document_open", json!({ "path": copy }));
     assert!(twin.get("recovery_available").is_none(), "{twin}");
+    assert!(twin.get("journal_warning").is_none(), "{twin}");
     let twin = doc_of(&twin);
     let done = ok(
         &mut engine,
         "glyph_create",
         json!({ "doc": twin, "base_rev": 0, "name": "B", "advance_width": 500 }),
     );
-    assert!(done["journal_warning"].is_string(), "{done}");
-    assert_eq!(sandbox.journal_records(), 1);
+    assert!(done.get("journal_warning").is_none(), "{done}");
+    let files = sandbox.journal_files();
+    assert_eq!(files.len(), 2, "{files:?}");
+
+    // After a crash, each file recovers its own changes.
+    drop(engine);
+    let mut engine = sandbox.engine();
+    for (path, glyph) in [(&first, "A"), (&copy, "B")] {
+        let opened = ok(
+            &mut engine,
+            "document_open",
+            json!({ "path": path, "recover": true }),
+        );
+        assert_eq!(opened["recovered"], json!(1), "{opened}");
+        let names = ok(&mut engine, "glyph_list", json!({ "doc": doc_of(&opened) }))["glyphs"]
+            .as_array()
+            .expect("glyphs")
+            .iter()
+            .map(|glyph| glyph["name"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(names, [json!(glyph)]);
+    }
     let error = err(
         &mut engine,
         "document_open",

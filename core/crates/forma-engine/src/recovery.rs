@@ -4,11 +4,12 @@
 //! set, every state change of a document that has a file (a commit, undo,
 //! redo, revert or restore, plans included) appends one
 //! [`JournalRecord`] with the resulting state of the entities it touched to
-//! the journal of the document's font (`<journal_dir>/<font id>.journal`).
-//! A save empties the journal; closing the document removes it. After a
-//! crash, `document_open` reports the records left over
-//! (`recovery_available`) and, with `recover: true`, puts them back over the
-//! saved file.
+//! the journal of the document's *file* (`<journal_dir>/<font id>-<hash of
+//! the path>.journal`, see [`JournalKey`]). A save empties the journal (a save
+//! to another file moves the document, and its journal, to that file); closing
+//! the document removes it. After a crash, `document_open` reports the records
+//! left over (`recovery_available`) and, with `recover: true`, puts them back
+//! over the saved file.
 //!
 //! A journal failure never fails the change it follows: the result gains a
 //! `journal_warning` instead. After a journal that could not be opened or
@@ -19,23 +20,28 @@
 //! only what its change touched and replaying it without the missing ones
 //! would rebuild a state that never existed, or none at all.
 //!
-//! A journal has a single writer. A document opened while records of an
-//! earlier session are pending, and not recovered, leaves them alone (they
-//! stay recoverable) and journals nothing until it is saved; a document with
-//! the same font id as another open one (a copy of its file) journals
-//! nothing.
+//! A journal has a single writer: the engine that holds the lock of the
+//! document's file (see `locks`). A read-only handle (the file is open for
+//! writing in another process) and a read-only engine never read, extend,
+//! empty or delete a journal, and are never offered its records. A document
+//! opened while records of an earlier session are pending, and not
+//! recovered, leaves them alone (they stay recoverable) and journals nothing
+//! until it is saved.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use forma_edit::{Document, EditError, TxOutcome};
-use forma_model::{Actor, EntityKey, Font, FontId};
-use forma_store::{Journal, JournalRecord, StoreError, apply_records, remove_journal, replay};
+use forma_model::{Actor, EntityKey, Font};
+use forma_store::{
+    Journal, JournalKey, JournalRecord, StoreError, apply_records, remove_journal, replay,
+};
 
 use crate::engine::{DocHandle, Engine};
 use crate::errors::{ToolError, from_store_error};
+use crate::locks::read_only_handle;
 
-/// Where an open document stands with the journal of its font.
+/// Where an open document that owns its file stands with its journal.
 #[derive(Debug)]
 pub(crate) enum JournalState {
     /// The document's session writes the journal (opened on first use).
@@ -56,9 +62,6 @@ pub(crate) enum JournalState {
         /// and are kept for a later recovery.
         ours: bool,
     },
-    /// Another open document, with the same font id, owns the journal of the
-    /// font: this one journals nothing.
-    Shared(DocHandle),
 }
 
 /// A state change committed to a document.
@@ -87,6 +90,20 @@ pub(crate) struct Opened {
     pub warning: Option<String>,
 }
 
+impl Opened {
+    /// A font opened without looking at any journal.
+    pub(crate) fn untouched(font: Font) -> Opened {
+        Opened {
+            font,
+            dirty: false,
+            state: None,
+            recovered: None,
+            recovery_available: None,
+            warning: None,
+        }
+    }
+}
+
 /// The warning of a change that is not journaled, and why.
 fn not_journaled(reason: &str) -> String {
     format!(
@@ -101,7 +118,7 @@ impl JournalState {
     fn earlier_session(records: usize) -> JournalState {
         JournalState::Stale {
             warning: not_journaled(&format!(
-                "the journal of this font holds {records} unsaved changes of an earlier session \
+                "the journal of this file holds {records} unsaved changes of an earlier session \
                  (see `recovery_available` of document_open), which it must not extend"
             )),
             ours: false,
@@ -114,16 +131,17 @@ impl JournalState {
         match self {
             JournalState::Active(_) => None,
             JournalState::Stale { warning, .. } => Some(warning.clone()),
-            JournalState::Shared(owner) => Some(shared(owner)),
         }
     }
-}
 
-fn shared(owner: &DocHandle) -> String {
-    format!(
-        "this change is not journaled for crash recovery: the open document {owner} has the same \
-         font id (it is a copy of the same font) and keeps the journal of that font"
-    )
+    /// Whether closing the document removes the journal: its records are this
+    /// session's.
+    fn removed_on_close(&self) -> bool {
+        matches!(
+            self,
+            JournalState::Active(_) | JournalState::Stale { ours: true, .. }
+        )
+    }
 }
 
 fn failed(what: &str, error: &StoreError) -> String {
@@ -132,6 +150,7 @@ fn failed(what: &str, error: &StoreError) -> String {
 
 /// The journal record of a change that touched `touched` and left `font`.
 fn record_of(
+    key: &JournalKey,
     font: &Font,
     touched: &BTreeSet<EntityKey>,
     rev: forma_model::Rev,
@@ -143,6 +162,7 @@ fn record_of(
         .iter()
         .any(|key| matches!(key, EntityKey::VerticalMetrics(_)));
     JournalRecord {
+        document: key.document_text(),
         rev,
         actor: actor.clone(),
         label,
@@ -170,16 +190,20 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// `NOT_FOUND` for an unknown handle; the mapped error of `change`. A
-    /// journal failure is not an error: it is reported in
-    /// [`Committed::journal_warning`].
+    /// `NOT_FOUND` for an unknown handle; `UNSUPPORTED` for a read-only
+    /// handle; the mapped error of `change`. A journal failure is not an
+    /// error: it is reported in [`Committed::journal_warning`].
     pub(crate) fn commit_change(
         &mut self,
         handle: &DocHandle,
         actor: &Actor,
         change: impl FnOnce(&mut Document) -> Result<TxOutcome, EditError>,
     ) -> Result<Committed, ToolError> {
-        let outcome = self.doc_mut(handle)?.change(change)?;
+        let open = self.doc_mut(handle)?;
+        if open.read_only() {
+            return Err(read_only_handle());
+        }
+        let outcome = open.change(change)?;
         let journal_warning = self.journal_change(handle, actor, &outcome);
         Ok(Committed {
             outcome,
@@ -187,12 +211,24 @@ impl Engine {
         })
     }
 
+    /// The folder and key of the journal of `handle`, if the document is
+    /// journaled: there is a journal folder, the document has a file and this
+    /// engine owns that file (it is not read-only).
+    fn journal_of(&self, handle: &DocHandle) -> Option<(PathBuf, JournalKey)> {
+        let dir = self.cfg.journal_dir.clone()?;
+        let open = self.docs.get(handle)?;
+        if !open.lock.owns_file() {
+            return None;
+        }
+        let path = open.source_path.as_deref()?;
+        Some((dir, JournalKey::new(open.font().id, path)))
+    }
+
     /// The `journal_warning` for a result about `handle` when its changes
     /// are not journaled (until the next save), without touching the
     /// journal; `None` when they are, or when nothing is journaled at all.
     pub(crate) fn journal_notice(&self, handle: &DocHandle) -> Option<String> {
-        self.cfg.journal_dir.as_ref()?;
-        self.docs.get(handle)?.source_path.as_ref()?;
+        self.journal_of(handle)?;
         self.journals.get(handle)?.notice()
     }
 
@@ -206,20 +242,24 @@ impl Engine {
         actor: &Actor,
         outcome: &TxOutcome,
     ) -> Option<String> {
-        let dir = self.cfg.journal_dir.clone()?;
-        let open = self.docs.get(handle)?;
-        open.source_path.as_ref()?;
+        let (dir, key) = self.journal_of(handle)?;
         // Not journaled: answer before building a record for nothing.
         if let Some(notice) = self.journals.get(handle).and_then(JournalState::notice) {
             return Some(notice);
         }
-        let font = open.font();
+        let open = self.docs.get(handle)?;
         let label = open
             .document
             .last_entry()
             .map_or_else(String::new, |entry| entry.label.clone());
-        let record = record_of(font, &outcome.touched, outcome.rev, actor, label);
-        let font_id = font.id;
+        let record = record_of(
+            &key,
+            open.font(),
+            &outcome.touched,
+            outcome.rev,
+            actor,
+            label,
+        );
         let state = self
             .journals
             .entry(handle.clone())
@@ -229,7 +269,7 @@ impl Engine {
         };
         let written = match slot {
             Some(journal) => journal.append(&record).map_err(|error| ("written", error)),
-            None => Journal::open(&dir, font_id)
+            None => Journal::open(&dir, &key)
                 .map_err(|error| ("opened", error))
                 .and_then(|journal| {
                     slot.insert(journal)
@@ -253,78 +293,95 @@ impl Engine {
         ))
     }
 
-    /// After a successful save of `handle`: its journal is emptied, since the
-    /// file now holds everything (this also retires the records of an earlier
-    /// session that were not recovered). Returns why that failed, if it did.
-    pub(crate) fn journal_saved(&mut self, handle: &DocHandle) -> Option<String> {
-        let dir = self.cfg.journal_dir.clone()?;
-        let font_id = self.docs.get(handle)?.font().id;
-        let state = self
-            .journals
-            .remove(handle)
-            .unwrap_or(JournalState::Active(None));
-        let journal = match state {
-            shared @ JournalState::Shared(_) => {
-                self.journals.insert(handle.clone(), shared);
-                return None;
+    /// After a successful save of `handle`, which belonged to the file
+    /// `previous` before (`None` for a document without a file): its journal
+    /// is emptied, since the file now holds everything (this also retires the
+    /// records of an earlier session that were not recovered). A save to
+    /// another file moves the journal along: the journal of the previous file
+    /// is removed when its records are this session's (they are saved in the
+    /// new file), and kept when they are an earlier session's (they still
+    /// belong to the previous file, which did not change). Returns why
+    /// something failed, if it did.
+    pub(crate) fn journal_saved(
+        &mut self,
+        handle: &DocHandle,
+        previous: Option<&Path>,
+    ) -> Option<String> {
+        let (dir, key) = self.journal_of(handle)?;
+        let state = self.journals.remove(handle);
+        let mut warnings = Vec::new();
+        let state = match previous {
+            Some(previous) if previous != key.document() => {
+                // `state`, and any journal it holds, is closed before the
+                // previous file's journal is deleted (Windows refuses to
+                // delete an open file).
+                let removes = state.as_ref().is_some_and(JournalState::removed_on_close);
+                drop(state);
+                if removes {
+                    let old = JournalKey::new(key.font_id(), previous);
+                    if let Err(error) = remove_journal(&dir, &old) {
+                        warnings.push(failed("removed", &error));
+                    }
+                }
+                None
             }
-            JournalState::Active(Some(journal)) => Ok(journal),
-            JournalState::Active(None) | JournalState::Stale { .. } => Journal::open(&dir, font_id),
+            _ => state,
+        };
+        let journal = match state {
+            Some(JournalState::Active(Some(journal))) => Ok(journal),
+            _ => Journal::open(&dir, &key),
         };
         let emptied = journal.and_then(|mut journal| journal.truncate().map(|()| journal));
-        let (state, warning) = match emptied {
-            Ok(journal) => (JournalState::Active(Some(journal)), None),
+        let state = match emptied {
+            Ok(journal) => JournalState::Active(Some(journal)),
             // Records that no longer match the saved file must never be
             // extended: journal nothing until a save manages to empty them.
-            Err(error) => (
+            Err(error) => {
+                warnings.push(format!(
+                    "{}; changes are not journaled until a save empties it",
+                    failed("emptied", &error)
+                ));
                 JournalState::Stale {
                     warning: not_journaled(&format!(
                         "the journal could not be emptied after the last save ({})",
                         failed("emptied", &error)
                     )),
                     ours: true,
-                },
-                Some(format!(
-                    "{}; changes are not journaled until a save empties it",
-                    failed("emptied", &error)
-                )),
-            ),
+                }
+            }
         };
         self.journals.insert(handle.clone(), state);
-        warning
+        (!warnings.is_empty()).then(|| warnings.join("; "))
     }
 
     /// When `handle` is about to close: the journal of its session is removed
     /// (a clean document has nothing to recover; a document closed with
     /// `discard_changes` had its changes discarded on purpose), also when it
-    /// stopped after a failed write. Records of an earlier session, a journal
-    /// that cannot be read, and the journal of another document, are kept.
+    /// stopped after a failed write. Records of an earlier session and a
+    /// journal that cannot be read are kept, and a document that does not own
+    /// its file (a read-only handle or engine) never removes anything.
     /// Returns why the removal failed, if it did.
     pub(crate) fn journal_closed(&mut self, handle: &DocHandle) -> Option<String> {
-        let (dir, font_id) = self.release_journal(handle)?;
+        let (dir, key) = self.release_journal(handle)?;
         debug_assert!(!self.holds_journal(handle));
-        remove_journal(&dir, font_id)
+        remove_journal(&dir, &key)
             .err()
             .map(|error| failed("removed", &error))
     }
 
     /// Forgets the journal state of `handle`, closing its journal file, and
-    /// says where that file is if closing the document must delete it. Only
-    /// a folder and a font id come out, never the open [`Journal`], so the
-    /// file is always closed before it is deleted (Windows refuses to delete
-    /// an open file).
-    fn release_journal(&mut self, handle: &DocHandle) -> Option<(PathBuf, FontId)> {
-        let removes = self.journals.remove(handle).is_none_or(|state| {
-            // `state`, and any journal it holds, is dropped right here.
-            matches!(
-                state,
-                JournalState::Active(_) | JournalState::Stale { ours: true, .. }
-            )
-        });
-        let dir = self.cfg.journal_dir.clone()?;
-        let open = self.docs.get(handle)?;
-        open.source_path.as_ref()?;
-        removes.then(|| (dir, open.font().id))
+    /// says which file that is if closing the document must delete it. Only
+    /// a folder and a key come out, never the open [`Journal`], so the file
+    /// is always closed before it is deleted (Windows refuses to delete an
+    /// open file).
+    fn release_journal(&mut self, handle: &DocHandle) -> Option<(PathBuf, JournalKey)> {
+        // `state`, and any journal it holds, is dropped right here.
+        let removes = self
+            .journals
+            .remove(handle)
+            .is_some_and(|state| state.removed_on_close());
+        let journal = self.journal_of(handle)?;
+        removes.then_some(journal)
     }
 
     /// Whether the engine holds the journal file of `handle` open.
@@ -335,39 +392,31 @@ impl Engine {
         )
     }
 
-    /// For `document_open`: what the journal of the freshly loaded `font`
-    /// holds and, with `recover`, the font with its records applied.
+    /// For `document_open` of the file `path`, which this engine owns (it
+    /// holds its lock, or locks nothing): what the journal of the freshly
+    /// loaded `font` holds and, with `recover`, the font with its records
+    /// applied.
     ///
     /// # Errors
     ///
-    /// With `recover` only: `INVALID_ARGUMENT` if another open document has
-    /// the same font id, or if the journal is damaged or does not apply to
-    /// the file; `IO_ERROR` if it cannot be read.
-    pub(crate) fn journal_on_open(&self, font: Font, recover: bool) -> Result<Opened, ToolError> {
+    /// With `recover` only: `INVALID_ARGUMENT` if the journal is damaged,
+    /// belongs to another file or does not apply to the file; `IO_ERROR` if
+    /// it cannot be read.
+    pub(crate) fn journal_on_open(
+        &self,
+        font: Font,
+        path: &Path,
+        recover: bool,
+    ) -> Result<Opened, ToolError> {
         let mut opened = Opened {
-            font,
-            dirty: false,
-            state: None,
             recovered: recover.then_some(0),
-            recovery_available: None,
-            warning: None,
+            ..Opened::untouched(font)
         };
         let Some(dir) = self.cfg.journal_dir.as_deref() else {
             return Ok(opened);
         };
-        let font_id = opened.font.id;
-        if let Some((owner, _)) = self.docs.iter().find(|(_, open)| open.font().id == font_id) {
-            if recover {
-                return Err(ToolError::invalid_argument(format!(
-                    "the open document {owner} has the same font id (it is a copy of the same \
-                     font); close it before recovering this one"
-                )));
-            }
-            opened.warning = Some(shared(owner));
-            opened.state = Some(JournalState::Shared(owner.clone()));
-            return Ok(opened);
-        }
-        let records = match replay(dir, font_id) {
+        let key = JournalKey::new(opened.font.id, path);
+        let records = match replay(dir, &key) {
             Ok(records) => records,
             Err(error) if recover => return Err(from_store_error(error)),
             Err(error) => {
@@ -377,7 +426,7 @@ impl Engine {
                 ));
                 opened.state = Some(JournalState::Stale {
                     warning: not_journaled(&format!(
-                        "the journal of this font cannot be read ({error})"
+                        "the journal of this file cannot be read ({error})"
                     )),
                     ours: false,
                 });
@@ -439,8 +488,9 @@ mod tests {
             "glyph_create",
             json!({ "doc": doc, "base_rev": 0, "name": "A", "advance_width": 500 }),
         ));
-        let font_id = engine.doc(&doc).expect("open").font().id;
-        let file = journals.join(format!("{font_id}.journal"));
+        let open = engine.doc(&doc).expect("open");
+        let key = JournalKey::new(open.font().id, open.source_path.as_deref().expect("a file"));
+        let file = journals.join(key.file_name());
         assert!(file.is_file());
         assert!(
             engine.holds_journal(&doc),
@@ -450,28 +500,36 @@ mod tests {
         // What comes out of the release is where the file is, and the engine
         // no longer holds it open: the file can be deleted (on Windows too).
         let (dir, released) = engine.release_journal(&doc).expect("removed on close");
-        assert_eq!((dir.as_path(), released), (journals.as_path(), font_id));
+        assert_eq!((dir.as_path(), &released), (journals.as_path(), &key));
         assert!(!engine.holds_journal(&doc));
         assert!(!engine.journals.contains_key(&doc));
-        remove_journal(&dir, released).expect("remove");
+        remove_journal(&dir, &released).expect("remove");
         assert!(!file.exists());
 
         // A journal this session stopped is removed too; one of an earlier
-        // session or of another document is only released.
+        // session, or one the engine knows nothing about, is only released.
         let stopped = JournalState::Stale {
             warning: String::new(),
             ours: true,
         };
         engine.journals.insert(doc.clone(), stopped);
         assert!(engine.release_journal(&doc).is_some());
-        for kept in [
-            JournalState::earlier_session(3),
-            JournalState::Shared(DocHandle::from("doc_other")),
-        ] {
-            engine.journals.insert(doc.clone(), kept);
-            assert!(engine.release_journal(&doc).is_none());
-            assert!(!engine.journals.contains_key(&doc));
-        }
+        engine
+            .journals
+            .insert(doc.clone(), JournalState::earlier_session(3));
+        assert!(engine.release_journal(&doc).is_none());
+        assert!(!engine.journals.contains_key(&doc));
+        assert!(engine.release_journal(&doc).is_none());
+        // A read-only handle never removes a journal, whatever its state.
+        let lock = std::mem::replace(
+            &mut engine.doc_mut(&doc).expect("open").lock,
+            crate::locks::FileLock::HeldElsewhere,
+        );
+        engine
+            .journals
+            .insert(doc.clone(), JournalState::Active(None));
+        assert!(engine.release_journal(&doc).is_none());
+        engine.doc_mut(&doc).expect("open").lock = lock;
 
         // Through document_close: the file is gone after a clean close.
         let saved = json_of(engine.call(

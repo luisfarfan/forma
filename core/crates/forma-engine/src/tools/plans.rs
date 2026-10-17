@@ -62,6 +62,7 @@ use serde_json::{Map, Value, json};
 use crate::engine::{DocHandle, Engine, Policy};
 use crate::errors::{ErrorCode, ToolError};
 use crate::limits::MASS_THRESHOLD;
+use crate::locks::read_only_handle;
 use crate::plans::{BoundedDiff, MAX_AFFECTED_NAMES, NewPlan, Plan, rfc3339, sha256};
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, find, schema_of};
 use crate::tools::json_output;
@@ -355,14 +356,25 @@ pub(crate) struct Committing {
 /// * `UNSUPPORTED` when it needs approval under the `strict` policy;
 /// * `REVISION_CONFLICT` when a plan being committed no longer describes the
 ///   call;
+/// * `UNSUPPORTED` for a read-only document handle, unless the call only
+///   writes a new file (an export);
 /// * `IO_ERROR` if no secure random source is available to make a plan;
-/// * `NOT_FOUND` for an unknown document handle (dry run).
+/// * `NOT_FOUND` for an unknown document handle.
 pub(crate) fn approval_gate(
     engine: &mut Engine,
     proposal: &Proposal<'_>,
 ) -> Result<Gate, ToolError> {
     let destructive = proposal.destructive;
     let mass = proposal.mass();
+    // A read-only handle (its file is open for writing in another process)
+    // neither changes the document nor writes or discards it; the tools
+    // refuse that earlier, this keeps any path from reaching a plan.
+    let changes = matches!(proposal.change, Change::Font { .. });
+    if (changes || destructive || proposal.tool == "document_save")
+        && engine.doc(proposal.doc)?.read_only()
+    {
+        return Err(read_only_handle());
+    }
 
     // The one pass a plan being committed grants: to the planned call.
     if let Some(commit) = engine.committing.take()
@@ -578,16 +590,16 @@ mod tests {
     #[test]
     fn the_pass_of_a_commit_is_for_the_planned_call_only() {
         let mut engine = Engine::new(EngineConfig::default());
-        let doc = engine.insert_doc(OpenDoc {
-            document: Document::new(Font::new("Test", 1000)),
-            source_path: None,
-            dirty: false,
-        });
-        let other = engine.insert_doc(OpenDoc {
-            document: Document::new(Font::new("Other", 1000)),
-            source_path: None,
-            dirty: false,
-        });
+        let doc = engine.insert_doc(OpenDoc::new(
+            Document::new(Font::new("Test", 1000)),
+            None,
+            false,
+        ));
+        let other = engine.insert_doc(OpenDoc::new(
+            Document::new(Font::new("Other", 1000)),
+            None,
+            false,
+        ));
         let actor = Actor::Agent("test".into());
         let args = json!({ "doc": doc, "base_rev": 0 });
         let pass = || {

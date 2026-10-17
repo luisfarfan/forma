@@ -6,9 +6,7 @@
 //! `--yes`.
 
 use std::fs;
-use std::path::Path;
-#[cfg(unix)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use assert_cmd::assert::Assert;
@@ -26,8 +24,26 @@ fn forma(cwd: &Path) -> Command {
     cmd.current_dir(cwd)
         .env_remove("FORMA_LOG")
         .env_remove("RUST_LOG")
+        // Document locks of the tests stay out of the user's data folder.
+        .env("FORMA_LOCK_DIR", test_lock_dir())
         .timeout(std::time::Duration::from_secs(120));
     cmd
+}
+
+/// The document lock folder of every `forma` the tests run (every test works
+/// on its own temporary files, so their locks never meet).
+fn test_lock_dir() -> PathBuf {
+    std::env::temp_dir().join("forma-cli-tests").join("locks")
+}
+
+/// The number of lock files in `dir`.
+fn lock_files(dir: &Path) -> usize {
+    fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".lock"))
+            .count()
+    })
 }
 
 fn stdout_text(assert: &Assert) -> String {
@@ -972,6 +988,35 @@ fn mcp_journal_dir_is_created() {
         &opening(),
     );
     assert!(journal.is_dir());
+}
+
+#[test]
+fn every_command_locks_documents_in_the_lock_folder() {
+    let dir = temp();
+    // One-shot commands: $FORMA_LOCK_DIR.
+    let from_env = dir.path().join("env-locks");
+    forma(dir.path())
+        .env("FORMA_LOCK_DIR", &from_env)
+        .args(["new", "a.forma", "--family", "A"])
+        .assert()
+        .success();
+    assert_eq!(lock_files(&from_env), 1);
+    // `forma mcp --lock-dir` wins over the environment.
+    let from_flag = dir.path().join("flag-locks");
+    let mut requests = opening();
+    requests.push(tools_call(
+        3,
+        "document_create",
+        &json!({ "family_name": "B", "path": "b.forma" }),
+    ));
+    let run = run_mcp(
+        dir.path(),
+        &["--lock-dir", from_flag.to_str().expect("utf-8")],
+        &requests,
+    );
+    assert_eq!(run.response(3)["result"]["isError"], json!(false));
+    assert_eq!(lock_files(&from_flag), 1);
+    assert_eq!(lock_files(&from_env), 1);
 }
 
 /// `…/recovery` somewhere under `root`. Only the Unix-only test of the default journal

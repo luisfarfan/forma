@@ -16,7 +16,7 @@ use crate::cli::{
 };
 use crate::docs;
 use crate::output::{EXIT_FAILURE, Exit, Failure, print_json, report};
-use crate::session::{OpenedDoc, Session, path_value};
+use crate::session::{OpenedDoc, Session, lock_dir, path_value};
 
 /// Runs `command` and returns the process exit code.
 pub fn run(command: Command) -> ExitCode {
@@ -258,6 +258,7 @@ fn mcp(args: McpArgs) -> Exit {
         policy: args.policy.into(),
         audit_log: args.audit_log,
         journal_dir: journal_dir(args.journal_dir, args.no_journal),
+        lock_dir: lock_dir(args.lock_dir),
         read_only: args.read_only,
         toolsets: args.toolsets.map(with_core),
     };

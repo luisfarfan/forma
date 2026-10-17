@@ -30,6 +30,7 @@ mod audit;
 mod engine;
 pub mod errors;
 pub mod limits;
+mod locks;
 pub mod paths;
 pub mod plans;
 mod recovery;

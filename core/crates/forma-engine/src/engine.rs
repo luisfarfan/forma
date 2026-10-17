@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::audit::AuditEntry;
 use crate::errors::{ToolError, from_edit_error};
+use crate::locks::FileLock;
 use crate::plans::{Clock, PlanStore, SystemClock};
 use crate::recovery::JournalState;
 use crate::registry::{CommandSpec, ToolOutput, Toolset, find, registry};
@@ -25,6 +26,12 @@ use crate::tools::plans::Committing;
 /// they only change the engine's in-memory state. Their effects (and so their
 /// annotations) still say they are not read-only.
 const ALLOWED_IN_READ_ONLY: [&str; 1] = ["document_close"];
+
+/// Tools that are not read-only but may be called with a read-only document
+/// handle (one whose file another process holds open for writing), because
+/// only some of their calls change something: they refuse those themselves
+/// (closing with `discard_changes`, exporting over an existing file).
+const CHECK_READ_ONLY_HANDLE_THEMSELVES: [&str; 2] = ["document_close", "export_font"];
 
 /// How destructive or massive operations are approved.
 ///
@@ -71,8 +78,16 @@ pub struct EngineConfig {
     /// The folder of the crash-recovery journals (created if missing): every
     /// change of a document that has a file is journaled there until the
     /// document is saved, and `document_open` offers to recover what a crash
-    /// left unsaved.
+    /// left unsaved. A journal belongs to one document file and is only
+    /// touched by the engine that holds that file's lock.
     pub journal_dir: Option<PathBuf>,
+    /// The folder of the document locks (created if missing): an engine holds
+    /// an exclusive OS lock on `<lock_dir>/<sha256 of the path>.lock` for
+    /// every document file it has open, so that a document has a single
+    /// writer; another engine with the same `lock_dir` (another `forma`
+    /// process) opens it read-only. `None` locks nothing. Processes only
+    /// exclude each other when they use the same folder.
+    pub lock_dir: Option<PathBuf>,
     /// Refuse every tool that is not read-only (except `document_close`,
     /// which only changes the engine's in-memory state).
     pub read_only: bool,
@@ -151,9 +166,36 @@ pub struct OpenDoc {
     pub source_path: Option<PathBuf>,
     /// Whether there are changes that have not been saved.
     pub dirty: bool,
+    /// The lock of the document's file (see `locks`).
+    pub(crate) lock: FileLock,
 }
 
 impl OpenDoc {
+    /// An open document that holds no lock (see [`OpenDoc::read_only`]).
+    #[must_use]
+    pub fn new(document: Document, source_path: Option<PathBuf>, dirty: bool) -> OpenDoc {
+        OpenDoc {
+            document,
+            source_path,
+            dirty,
+            lock: FileLock::Unlocked,
+        }
+    }
+
+    /// Whether the handle is read-only: another FORMA process held the file
+    /// open for writing when it was opened, or the engine is read-only.
+    #[must_use]
+    pub fn read_only(&self) -> bool {
+        self.lock.read_only()
+    }
+
+    /// Whether another FORMA process held the file open for writing when the
+    /// document was opened (the handle is then read-only).
+    #[must_use]
+    pub fn locked_by_other_process(&self) -> bool {
+        self.lock.held_elsewhere()
+    }
+
     /// The current revision.
     #[must_use]
     pub fn rev(&self) -> Rev {
@@ -203,6 +245,9 @@ pub struct DocSummary {
     pub rev: u64,
     /// Whether there are unsaved changes.
     pub dirty: bool,
+    /// Whether the handle is read-only (another FORMA process holds the file
+    /// open for writing, or the server is read-only).
+    pub read_only: bool,
 }
 
 /// The FORMA engine: open documents, the path sandbox and the dispatch of
@@ -386,7 +431,22 @@ impl Engine {
         // The text and nesting limits hold for every tool, before any
         // argument is parsed; tools that take outlines also count their nodes.
         check_raw_args(&args)?;
+        self.check_handle_writable(spec, &args)?;
         (spec.handler)(self, actor, args)
+    }
+
+    /// Refuses a tool that changes the document `args.doc` when that handle
+    /// is read-only (see `locks`), before the tool does anything; the tools
+    /// of [`CHECK_READ_ONLY_HANDLE_THEMSELVES`] refuse their changing calls
+    /// themselves.
+    fn check_handle_writable(&self, spec: &CommandSpec, args: &Value) -> Result<(), ToolError> {
+        if spec.effects.read_only || CHECK_READ_ONLY_HANDLE_THEMSELVES.contains(&spec.name) {
+            return Ok(());
+        }
+        match args.get("doc").and_then(Value::as_str) {
+            Some(handle) => self.ensure_writable(handle),
+            None => Ok(()),
+        }
     }
 
     /// A summary of every open document, sorted by handle.
@@ -400,6 +460,7 @@ impl Engine {
                 family_name: open.font().info.family_name.clone(),
                 rev: open.rev().0,
                 dirty: open.dirty,
+                read_only: open.read_only(),
             })
             .collect()
     }
@@ -467,11 +528,7 @@ mod tests {
     use crate::errors::ErrorCode;
 
     fn open_doc() -> OpenDoc {
-        OpenDoc {
-            document: Document::new(Font::new("Test", 1000)),
-            source_path: None,
-            dirty: false,
-        }
+        OpenDoc::new(Document::new(Font::new("Test", 1000)), None, false)
     }
 
     #[test]

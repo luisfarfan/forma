@@ -183,6 +183,10 @@ fn export_font(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
     check_extension(&call.path, call.format)?;
     let target = engine.check_allowed(&call.path, false)?;
     let overwrites = overwrites(&target, call.format)?;
+    if overwrites {
+        // A read-only handle exports to new files only.
+        engine.ensure_writable(call.doc.as_str())?;
+    }
 
     let label = if overwrites {
         format!("overwrites {}", path_text(&target))

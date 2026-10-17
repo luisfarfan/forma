@@ -82,6 +82,8 @@ El servidor guarda un diario de recuperación de cada cambio confirmado en la ca
 
 Si un documento se cerró mal, `document_open` responde `recovery_available: { records }`. El agente **le pregunta a la persona**; si acepta, cierra el documento y lo abre con `recover: true`.
 
+Un documento tiene **un solo escritor**: el proceso de FORMA que lo abrió primero mantiene un bloqueo del sistema sobre él (en `…/org.forma.forma/locks` dentro de la misma carpeta de datos; `--lock-dir <carpeta>` o la variable `FORMA_LOCK_DIR` eligen otra). Si otro proceso (otro agente, otra terminal) lo abre mientras tanto, recibe un handle de solo lectura (`read_only: true`, `locked_by_other_process: true`): puede leer, previsualizar, validar y exportar a archivos nuevos, pero cualquier cambio o guardado devuelve `UNSUPPORTED`. Para editarlo, ciérralo en el primer proceso y vuelve a abrirlo.
+
 ## 9. Usar la CLI y diagnosticar
 
 - `forma call <herramienta> --args '<json>' --doc-path mi.forma --save` ejecuta cualquier herramienta desde la terminal; `--yes` aprueba un plan. `forma new`, `info`, `export`, `validate`, `pack` y `unpack` cubren lo habitual.
