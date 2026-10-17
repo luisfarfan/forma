@@ -363,7 +363,8 @@ fn shape() -> impl Strategy<Value = Shape> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(200))]
+    // A fixed seed unless FORMA_PROPTEST_RANDOM=1 (see `proptest_config`).
+    #![proptest_config(proptest_config(200))]
 
     /// Removing overlaps twice gives the same contours, area for area, and
     /// the contours of the union nest the way they run.

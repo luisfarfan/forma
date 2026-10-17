@@ -143,3 +143,32 @@ fn nested_contours_that_do_not_touch_keep_their_depths() {
     assert_eq!(contour_depths(&paths), vec![0, 1, 2, 3, 0]);
     assert_eq!(wrong_directions(&paths), vec![]);
 }
+
+#[test]
+fn counter_hanging_from_the_outer_edge_is_inner() {
+    // A clockwise counter whose top side lies on the top edge of the outer
+    // square, drawn as 40 edges of 20 units starting on that edge: the
+    // longest edges of the counter all lie on the outer contour, so every
+    // probe next to them is ambiguous and the shorter edges must be tried.
+    let outer = with_id(rect(0.0, 0.0, 1000.0, 1000.0, true), 0);
+    let mut nodes = Vec::new();
+    for i in 0..40 {
+        nodes.push(line(100.0 + 20.0 * f64::from(i), 1000.0)); // top, to the right
+    }
+    for i in 0..10 {
+        nodes.push(line(900.0, 1000.0 - 10.0 * f64::from(i))); // right side, down
+    }
+    for i in 0..80 {
+        nodes.push(line(900.0 - 10.0 * f64::from(i), 900.0)); // bottom, to the left
+    }
+    for i in 0..10 {
+        nodes.push(line(100.0, 900.0 + 10.0 * f64::from(i))); // left side, up
+    }
+    let counter = with_id(closed(nodes), 1);
+    assert!(area(&counter) < 0.0, "the counter is drawn clockwise");
+    let paths = vec![outer, counter];
+
+    assert_eq!(contour_depths(&paths), vec![0, 1]);
+    assert_eq!(wrong_directions(&paths), vec![]);
+    assert_eq!(fix_paths(&paths, &[IssueKind::WrongDirection], 0.0), paths);
+}

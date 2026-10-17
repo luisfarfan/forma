@@ -39,9 +39,15 @@ const SMOOTH_JOIN_GAP: f64 = 1.0;
 /// segments, however thin the stroke.
 const SMOOTH_JOIN_ANGLE: f64 = 10.0;
 
-/// A corner inside a segment (see `split_at_turns`) closer than this, in font
+/// A corner inside a segment (see `split_at_cusps`) closer than this, in font
 /// units, to a sample is put at the sample.
 const CORNER_SNAP: f64 = 1e-3;
+
+/// The fraction of the bound on a segment's speed under which the segment
+/// nearly stops: its samples there are less than 0.02 units apart (instead
+/// of up to [`SAMPLE_STEP`]), so a turn between two of them happens on the
+/// spot (see `split_at_cusps`).
+const CUSP_SPEED: f64 = 0.01;
 
 /// How many steps the search for a cusp between two samples takes; each one
 /// keeps two thirds of the interval, so the cusp is found to within about
@@ -143,10 +149,9 @@ pub struct StrokeStyle {
 /// Where the skeleton bends more tightly than half the stroke width, the
 /// offset on the inside of the bend stops at the centre of curvature instead
 /// of folding back over itself (which would cut a false counter there); the
-/// stroke fills the bend. Where the direction turns abruptly inside a segment
-/// (a cusp, where the curve turns back on itself, or a bend tighter than the
-/// sampling), the segment is cut there and the pieces are joined round, like
-/// a corner.
+/// stroke fills the bend. At a cusp inside a segment, where the curve turns
+/// on the spot (typically back on itself), the segment is cut and the pieces
+/// are joined round, like a corner; smooth bends are never cut.
 ///
 /// # Errors
 ///
@@ -354,8 +359,8 @@ fn curvature_at(segment: &PathSeg, t: f64) -> f64 {
 
 /// Samples a segment at even steps of `t`, at most [`SAMPLE_STEP`] apart,
 /// with widths from `w0` at its start to `w1` at its end, interpolated by
-/// distance, and cuts the samples into runs where the direction turns
-/// abruptly (see `split_at_turns`). `None` for a segment without length.
+/// distance, and cuts the samples into runs at its cusps (see
+/// `split_at_cusps`). `None` for a segment without length.
 fn sample_segment(
     segment: &PathSeg,
     w0: f64,
@@ -399,7 +404,7 @@ fn sample_segment(
         let tangent = unit(derivative(segment, t));
         if tangent.is_none() && k != 0 && k != steps {
             // The segment stops dead inside: a cusp, where its direction is
-            // not defined. The split below puts a corner there.
+            // not defined. `split_at_cusps` puts a corner there.
             continue;
         }
         let dir = tangent
@@ -414,7 +419,7 @@ fn sample_segment(
         };
         samples.push((t, Station::new(at, dir, width, curvature_at(segment, t))));
     }
-    Ok(Some(split_at_turns(segment, &samples)))
+    Ok(Some(split_at_cusps(segment, bound, &samples)))
 }
 
 /// Whether the direction turns by at most [`SMOOTH_JOIN_ANGLE`] from `a` to
@@ -423,27 +428,29 @@ fn turns_smoothly(a: &Station, b: &Station) -> bool {
     a.dir.dot(b.dir) >= SMOOTH_JOIN_ANGLE.to_radians().cos()
 }
 
-/// Cuts the samples of a segment into runs wherever the direction turns by
-/// more than [`SMOOTH_JOIN_ANGLE`] from one sample to the next: at a cusp,
-/// where the segment turns back on itself, or at a bend too tight for the
-/// sampling to follow. The offsets cannot follow such a turn (they would
-/// leave a bite out of the stroke there); consecutive runs meet at a corner
-/// instead, drawn like the corners between segments. The corner is where the
-/// segment moves slowest between the two samples (the cusp itself), unless
-/// that is within [`CORNER_SNAP`] of one of them.
+/// Cuts the samples of a segment into runs at its cusps, where it turns on
+/// the spot: where the direction turns by more than 90 degrees from one
+/// sample to the next, or by more than [`SMOOTH_JOIN_ANGLE`] where the
+/// segment nearly stops (its speed drops below [`CUSP_SPEED`] of `bound`, the
+/// bound on its speed, between the two samples; a sample where it stops dead
+/// has been left out already). The offsets cannot follow such a turn (they
+/// would leave a bite out of the stroke); consecutive runs meet at a corner
+/// instead, drawn like the corners between segments, where the segment moves
+/// slowest between the two samples (the cusp itself) unless that is within
+/// [`CORNER_SNAP`] of one of them. Smooth bends, however tight, are not cut:
+/// the offsets follow them (see `reach` for the inside).
 ///
 /// Runs left with a single station (two corners at the same sample) are
 /// dropped: the runs around them meet at that point.
-fn split_at_turns(segment: &PathSeg, samples: &[(f64, Station)]) -> Vec<Vec<Station>> {
+fn split_at_cusps(segment: &PathSeg, bound: f64, samples: &[(f64, Station)]) -> Vec<Vec<Station>> {
     let mut runs: Vec<Vec<Station>> = Vec::new();
     let mut run: Vec<Station> = Vec::new();
     let mut previous: Option<&(f64, Station)> = None;
     for sample in samples {
         let (t, station) = *sample;
         if let Some(&(t0, before)) = previous
-            && !turns_smoothly(&before, &station)
+            && let Some(slowest) = cusp_between(segment, bound, (t0, &before), (t, &station))
         {
-            let slowest = slowest_point(segment, t0, t);
             let at = if slowest.distance(before.at) <= CORNER_SNAP {
                 before.at
             } else if slowest.distance(station.at) <= CORNER_SNAP {
@@ -467,10 +474,20 @@ fn split_at_turns(segment: &PathSeg, samples: &[(f64, Station)]) -> Vec<Vec<Stat
     runs
 }
 
-/// Where `segment` moves slowest between `t0` and `t1`: its cusp, if it
-/// has one there (a ternary search on the speed).
-fn slowest_point(segment: &PathSeg, t0: f64, t1: f64) -> Point {
-    let speed = |t: f64| derivative(segment, t).hypot2();
+/// Where `segment` has a cusp between two consecutive samples (see
+/// `split_at_cusps`): the point where it moves slowest between them, or
+/// `None` if it turns smoothly there.
+fn cusp_between(
+    segment: &PathSeg,
+    bound: f64,
+    (t0, a): (f64, &Station),
+    (t1, b): (f64, &Station),
+) -> Option<Point> {
+    if turns_smoothly(a, b) {
+        return None;
+    }
+    let speed = |t: f64| derivative(segment, t).hypot();
+    // A ternary search for the slowest point.
     let (mut lo, mut hi) = (t0, t1);
     for _ in 0..CUSP_SEARCH_STEPS {
         let third = (hi - lo) / 3.0;
@@ -480,7 +497,9 @@ fn slowest_point(segment: &PathSeg, t0: f64, t1: f64) -> Point {
             lo += third;
         }
     }
-    segment.eval((lo + hi) / 2.0)
+    let slowest = (lo + hi) / 2.0;
+    let turns_back = a.dir.dot(b.dir) < 0.0;
+    (turns_back || speed(slowest) <= CUSP_SPEED * bound).then(|| segment.eval(slowest))
 }
 
 /// Whether two stations at the same point continue each other smoothly: the

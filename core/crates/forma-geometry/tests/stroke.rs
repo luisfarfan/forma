@@ -330,10 +330,28 @@ fn stroke_cusp_is_filled() {
         uncovered.first()
     );
 
-    // Around the cusp, the area within w/2 - 1 of the skeleton that is not
-    // filled (measured on a grid of 0.25 units).
+    // The normals near the cusp are horizontal, so the probes above miss
+    // what lies beyond the cusp: the stroke must cover the whole disc of
+    // radius w/2 - 1 around it, like a round cap.
     let segment = skeleton_segments(&skeleton)[0];
     let cusp = segment.eval(0.5);
+    let around_cusp: Vec<Point> = (0..=19)
+        .flat_map(|r| {
+            (0..72).map(move |k| {
+                cusp + Vec2::from_angle(f64::from(k) * 5f64.to_radians()) * f64::from(r)
+            })
+        })
+        .filter(|&p| polygon_winding(&outline, p) != 1)
+        .collect();
+    assert!(
+        around_cusp.is_empty(),
+        "{} points around the cusp {cusp:?} are not filled, e.g. {:?}",
+        around_cusp.len(),
+        around_cusp.first()
+    );
+
+    // Around the cusp, the area within w/2 - 1 of the skeleton that is not
+    // filled (measured on a grid of 0.25 units).
     let near: Vec<Point> = (0..=8000)
         .map(|i| segment.eval(f64::from(i) / 8000.0))
         .filter(|p| p.distance(cusp) <= 2.0 * width)
@@ -352,6 +370,78 @@ fn stroke_cusp_is_filled() {
     assert!(
         unfilled < 1.0,
         "{unfilled} square units around the cusp are not filled"
+    );
+}
+
+#[test]
+fn tight_smooth_bends_are_not_cut_into_corners() {
+    // A quarter circle of radius 8 stroked 10 wide turns by about 11 degrees
+    // from one sample to the next; it is smooth, not a cusp, and must not be
+    // drawn as a chain of round corners (49 nodes when it was).
+    let k = 0.552_284_749_830_793_4 * 8.0;
+    let skeleton = open(vec![
+        sk(8.0, 0.0, NodeKind::Line, None),
+        sk(8.0, k, NodeKind::OffCurve, None),
+        sk(k, 8.0, NodeKind::OffCurve, None),
+        sk(0.0, 8.0, NodeKind::Curve, None),
+    ]);
+    let result = stroke(std::slice::from_ref(&skeleton), &style(10.0, Cap::Round)).expect("stroke");
+    assert_clean(&result);
+    let nodes: usize = result.iter().map(|path| path.nodes.len()).sum();
+    assert!(nodes <= 24, "{nodes} nodes for a quarter circle");
+    let outline = polygons(&result, 0.001);
+    let uncovered: Vec<Point> = covered_points(&skeleton, 200, 4.0, 4)
+        .into_iter()
+        .filter(|&p| polygon_winding(&outline, p) != 1)
+        .collect();
+    assert!(uncovered.is_empty(), "not filled: {uncovered:?}");
+}
+
+/// Upstream bug, kept so that it is not lost: `linesweeper` 0.5 leaves a
+/// piece of the filled area out of the union of this stroke's contours
+/// (`binary_op` itself, before any clean-up of ours), so part of the
+/// skeleton ends up outside the outline. `random_strokes_are_clean` found
+/// it with a random seed, about one stroke in 200 000. Run it with
+/// `--ignored` when upgrading linesweeper or swapping the `PathOps` engine.
+#[test]
+#[ignore = "upstream bug in linesweeper 0.5: the union drops part of the filled area"]
+fn union_keeps_the_whole_stroke() {
+    let skeleton = Skeleton {
+        nodes: vec![
+            sk(
+                -293.069_580_058_457,
+                -265.980_971_974_825_4,
+                NodeKind::Curve,
+                None,
+            ),
+            sk(0.0, 0.0, NodeKind::Line, None),
+            sk(0.0, 0.0, NodeKind::Line, None),
+            sk(0.0, 0.0, NodeKind::Line, None),
+            sk(
+                175.472_767_232_757_35,
+                74.791_788_149_243_69,
+                NodeKind::Line,
+                None,
+            ),
+            sk(0.0, -291.338_601_501_574_7, NodeKind::OffCurve, None),
+            sk(
+                -206.794_394_571_577_73,
+                -41.175_034_043_934_91,
+                NodeKind::OffCurve,
+                None,
+            ),
+        ],
+        closed: true,
+    };
+    let result = stroke(std::slice::from_ref(&skeleton), &style(10.0, Cap::Round)).expect("stroke");
+    let outline = polygons(&result, 0.001);
+    let uncovered: Vec<Point> = covered_points(&skeleton, 32, 0.0, 0)
+        .into_iter()
+        .filter(|&p| polygon_winding(&outline, p) != 1)
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "skeleton points not filled: {uncovered:?}"
     );
 }
 
@@ -575,7 +665,8 @@ fn cap() -> impl Strategy<Value = Cap> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    // A fixed seed unless FORMA_PROPTEST_RANDOM=1 (see `proptest_config`).
+    #![proptest_config(proptest_config(64))]
 
     /// Any skeleton, however tangled, strokes to a clean outline.
     #[test]

@@ -159,46 +159,31 @@ fn boundary_distance(polygon: &[Point], p: Point) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-/// How many edges of a contour, the longest ones, propose a probe point (see
-/// [`inside_points`]). It bounds the cost of a contour flattened into many
-/// edges; one probe clear of the other contour is enough.
-const PROBE_EDGES: usize = 32;
+/// How many probe points (see [`Nesting`]) are made for each contour in
+/// advance, next to its longest edges. One probe clear of the other contour
+/// is enough, so the probes next to the other edges are only made, one at a
+/// time, when all of these are ambiguous.
+const EAGER_PROBES: usize = 32;
 
-/// Points just inside a closed polygon, `offset` away from the middle of its
-/// [`PROBE_EDGES`] longest edges (longest first) towards the interior: the
-/// side given by the sign of the polygon's area. A point the even-odd test
-/// does not put inside the polygon (on a lobe of a self-intersecting
-/// contour) is left out.
+/// The edges of a closed polygon in the order their probes are tried:
+/// longest first.
 ///
-/// The choice depends on the shape only, not on where the contour starts or
+/// The order depends on the shape only, not on where the contour starts or
 /// which way it runs: lengths are compared to within `offset`, and edges of
 /// the same length are taken from left to right, then from bottom to top.
 /// Reversing a contour (to fix its direction) must not change its depth.
-fn inside_points(polygon: &[Point], offset: f64) -> Vec<Point> {
-    let area = polygon_area(polygon);
-    if !(area.is_finite() && area != 0.0 && offset > 0.0) {
-        return Vec::new();
-    }
-    let mut longest: Vec<(f64, Point, Point)> = edges(polygon)
-        .filter(|(a, b)| a != b)
+fn probe_order(polygon: &[Point], offset: f64) -> Vec<(Point, Point)> {
+    let mut order: Vec<(f64, Point, Point)> = edges(polygon)
+        .filter(|&(a, b)| a.distance(b) > 0.0)
         .map(|(a, b)| ((a.distance(b) / offset).round(), a, b))
         .collect();
-    let middle = |a: Point, b: Point| a.midpoint(b);
-    longest.sort_by(|(l1, a1, b1), (l2, a2, b2)| {
-        let (m1, m2) = (middle(*a1, *b1), middle(*a2, *b2));
+    order.sort_by(|(l1, a1, b1), (l2, a2, b2)| {
+        let (m1, m2) = (a1.midpoint(*b1), a2.midpoint(*b2));
         l2.total_cmp(l1)
             .then(m1.x.total_cmp(&m2.x))
             .then(m1.y.total_cmp(&m2.y))
     });
-    longest.truncate(PROBE_EDGES);
-    longest
-        .into_iter()
-        .map(|(_, a, b)| {
-            let inward = (b - a).turn_90() * (area.signum() / a.distance(b));
-            a.midpoint(b) + inward * offset
-        })
-        .filter(|&p| contains(polygon, p))
-        .collect()
+    order.into_iter().map(|(_, a, b)| (a, b)).collect()
 }
 
 /// The relative size, against the diagonal of a contour's bounding box,
@@ -210,6 +195,13 @@ const BOUNDARY_TOLERANCE_RATIO: f64 = 1e-6;
 const MIN_BOUNDARY_TOLERANCE: f64 = 1e-9;
 
 /// A closed contour prepared for nesting tests.
+///
+/// It is tested at probe points just inside it: `tolerance` away from the
+/// middle of an edge of its polygon, towards the interior (the side given by
+/// the sign of the polygon's area), every edge in turn ([`probe_order`]). A
+/// point the even-odd test does not put inside the polygon (on a lobe of a
+/// self-intersecting contour) is skipped; a contour without a direction has
+/// no probes.
 struct Nesting {
     /// The contour flattened to within [`FLATTEN_TOLERANCE`].
     polygon: Vec<Point>,
@@ -217,8 +209,13 @@ struct Nesting {
     /// Closer than this to `polygon`, a point is on the contour's boundary.
     /// It is also how far inside the contour its probe points are.
     tolerance: f64,
-    /// Points just inside the contour (see [`inside_points`]).
+    /// 1 if the interior is on the left of the edges, -1 if on the right, 0
+    /// if the contour has no direction.
+    inward: f64,
+    /// The probe points next to the [`EAGER_PROBES`] first edges.
     probes: Vec<Point>,
+    /// The other edges, whose probes are made when needed.
+    later: Vec<(Point, Point)>,
     /// The first on-curve node: the probe of last resort.
     first: Point,
 }
@@ -237,14 +234,48 @@ impl Nesting {
             .fold(Rect::from_points(first, first), |rect, &p| rect.union_pt(p));
         let tolerance = (BOUNDARY_TOLERANCE_RATIO * bounds.size().to_vec2().hypot())
             .max(MIN_BOUNDARY_TOLERANCE);
-        let probes = inside_points(&polygon, tolerance);
-        Some(Self {
+        let area = polygon_area(&polygon);
+        let inward = if area.is_finite() && area != 0.0 {
+            area.signum()
+        } else {
+            0.0
+        };
+        let mut eager = if inward == 0.0 {
+            Vec::new()
+        } else {
+            probe_order(&polygon, tolerance)
+        };
+        let later = eager.split_off(EAGER_PROBES.min(eager.len()));
+        let mut nesting = Self {
             polygon,
             bounds,
             tolerance,
-            probes,
+            inward,
+            probes: Vec::new(),
+            later,
             first,
-        })
+        };
+        nesting.probes = eager
+            .into_iter()
+            .filter_map(|(a, b)| nesting.probe_at(a, b))
+            .collect();
+        Some(nesting)
+    }
+
+    /// The probe point next to the edge from `a` to `b`, if it is inside.
+    fn probe_at(&self, a: Point, b: Point) -> Option<Point> {
+        let inward = (b - a).turn_90() * (self.inward * self.tolerance / a.distance(b));
+        let probe = a.midpoint(b) + inward;
+        contains(&self.polygon, probe).then_some(probe)
+    }
+
+    /// Every probe point, in the order they are tried; the later ones are
+    /// made as the iteration reaches them.
+    fn probe_points(&self) -> impl Iterator<Item = Point> + '_ {
+        self.probes
+            .iter()
+            .copied()
+            .chain(self.later.iter().filter_map(|&(a, b)| self.probe_at(a, b)))
     }
 
     /// Whether this contour contains `other`, tested at one of `other`'s
@@ -266,7 +297,7 @@ impl Nesting {
         let safe = other.tolerance + FLATTEN_TOLERANCE.max(self.tolerance);
         let reach = self.bounds.inflate(safe, safe);
         let mut best: Option<(f64, Point)> = None;
-        for &p in &other.probes {
+        for p in other.probe_points() {
             if !reach.contains(p) {
                 return false; // far outside this contour
             }
@@ -285,13 +316,13 @@ impl Nesting {
 /// The nesting depth of each contour: how many *other* closed contours
 /// contain it (even-odd rule on the flattened contours).
 ///
-/// A contour is tested at a point just inside it (next to the middle of one
-/// of its longest edges) that is clear of the boundary of the contour it is
-/// tested against, so contours that touch each other, at a node or along an
-/// edge, wherever they start, are nested correctly. Contours that cross each
-/// other have no well-defined nesting; they get the answer of whichever
-/// point is used. Only when every such point is ambiguous is the contour's
-/// first on-curve node tested instead.
+/// A contour is tested at a point just inside it, next to the middle of one
+/// of its edges (the longest first), that is clear of the boundary of the
+/// contour it is tested against, so contours that touch each other, at a
+/// node or along edges, wherever they start, are nested correctly. Contours
+/// that cross each other have no well-defined nesting; they get the answer
+/// of whichever point is used. Only when the points next to every edge are
+/// ambiguous is the contour's first on-curve node tested instead.
 ///
 /// Open contours, and contours that cannot be converted, have depth `0` and
 /// never contain anything.

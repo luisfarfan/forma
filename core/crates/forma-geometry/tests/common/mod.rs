@@ -1,9 +1,37 @@
-//! Helpers shared by the overlap-removal and stroke tests.
+//! Helpers shared by the integration tests of this crate.
 #![allow(dead_code)]
 
 use forma_geometry::to_bezpath;
 use forma_model::{Node, NodeKind, Path, PathId};
 use kurbo::{Line, ParamCurve, ParamCurveArclen, PathEl, Point, Rect, Shape};
+use proptest::test_runner::{Config, RngSeed};
+
+// ------------------------------------------------------- property tests
+
+/// The seed every property test of this crate starts from ("FORMA").
+const PROPTEST_SEED: u64 = 0x46_4f_52_4d_41;
+
+/// The configuration of a property test: `cases` cases generated from a
+/// fixed seed, so every run (CI included) tests the same cases. Random
+/// strokes and unions can hit rare failures of the overlap-removal engine
+/// that are known and out of our hands (see `union_keeps_the_whole_stroke`
+/// in `stroke.rs`); a fresh seed on every run would turn CI red at random.
+///
+/// Set `FORMA_PROPTEST_RANDOM=1` to explore with a fresh random seed
+/// instead, for example with many more cases:
+/// `FORMA_PROPTEST_RANDOM=1 cargo test -p forma-geometry --release`.
+pub fn proptest_config(cases: u32) -> Config {
+    let random = std::env::var_os("FORMA_PROPTEST_RANDOM").is_some_and(|value| value == "1");
+    Config {
+        cases,
+        rng_seed: if random {
+            RngSeed::Random
+        } else {
+            RngSeed::Fixed(PROPTEST_SEED)
+        },
+        ..Config::default()
+    }
+}
 
 // ------------------------------------------------------------------ nodes
 

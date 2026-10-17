@@ -1,5 +1,7 @@
 //! Integration tests for cubic curve fitting and path simplification.
 
+mod common;
+
 use forma_geometry::{GeometryError, fit_cubics, simplify_path, to_bezpath};
 use forma_model::{Node, NodeKind, Path, PathId};
 use kurbo::{CubicBez, ParamCurve, ParamCurveDeriv, ParamCurveNearest, PathSeg, Point, Vec2};
@@ -128,7 +130,8 @@ fn noisy_samples(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1000))]
+    // A fixed seed unless FORMA_PROPTEST_RANDOM=1 (see `proptest_config`).
+    #![proptest_config(common::proptest_config(1000))]
 
     #[test]
     fn fit_respects_max_error(
@@ -608,7 +611,8 @@ fn simplify_rejects_bad_input() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(200))]
+    // A fixed seed unless FORMA_PROPTEST_RANDOM=1 (see `proptest_config`).
+    #![proptest_config(common::proptest_config(200))]
 
     /// A noisy flattened circle simplifies to no more nodes, stays within the
     /// tolerance of the input nodes and remains a valid contour.
