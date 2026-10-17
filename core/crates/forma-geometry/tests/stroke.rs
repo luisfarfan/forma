@@ -7,9 +7,10 @@ use std::f64::consts::PI;
 use common::*;
 use forma_geometry::{
     Cap, GeometryError, IssueKind, Skeleton, SkeletonNode, StrokeStyle, bbox, check_paths, stroke,
+    to_bezpath,
 };
-use forma_model::NodeKind;
-use kurbo::Point;
+use forma_model::{Node, NodeKind, Path, PathId};
+use kurbo::{ParamCurve, ParamCurveDeriv, PathSeg, Point, Vec2};
 use proptest::prelude::*;
 
 fn sk(x: f64, y: f64, kind: NodeKind, width: Option<f64>) -> SkeletonNode {
@@ -42,7 +43,10 @@ fn assert_clean(paths: &[forma_model::Path]) {
         .filter(|issue| {
             matches!(
                 issue.kind,
-                IssueKind::InvalidContour | IssueKind::OpenContour | IssueKind::DuplicatePoints
+                IssueKind::InvalidContour
+                    | IssueKind::OpenContour
+                    | IssueKind::DuplicatePoints
+                    | IssueKind::WrongDirection
             )
         })
         .collect();
@@ -55,6 +59,62 @@ fn assert_near(got: f64, expected: f64, tolerance: f64, what: &str) {
         (got - expected).abs() <= tolerance,
         "{what}: {got} is not within {tolerance} of {expected}"
     );
+}
+
+/// The segments of a skeleton's centre line.
+fn skeleton_segments(skeleton: &Skeleton) -> Vec<PathSeg> {
+    let path = Path {
+        id: PathId(0),
+        closed: skeleton.closed,
+        nodes: skeleton
+            .nodes
+            .iter()
+            .map(|n| Node {
+                x: n.x,
+                y: n.y,
+                kind: n.kind,
+                smooth: false,
+            })
+            .collect(),
+    };
+    to_bezpath(&path)
+        .expect("valid skeleton")
+        .segments()
+        .collect()
+}
+
+/// The unit normal (to the left) of a segment at `t`, where it has one.
+fn normal_at(segment: &PathSeg, t: f64) -> Option<Vec2> {
+    let d = match *segment {
+        PathSeg::Line(l) => l.p1 - l.p0,
+        PathSeg::Quad(q) => q.deriv().eval(t).to_vec2(),
+        PathSeg::Cubic(c) => c.deriv().eval(t).to_vec2(),
+    };
+    let length = d.hypot();
+    (length > 1e-9).then(|| d.turn_90() / length)
+}
+
+/// Points of the skeleton that must be inside the stroke: `samples + 1`
+/// points along each segment, each also moved along the normal by up to
+/// `reach` (in `steps` steps on either side).
+fn covered_points(skeleton: &Skeleton, samples: usize, reach: f64, steps: usize) -> Vec<Point> {
+    let mut points = Vec::new();
+    for segment in skeleton_segments(skeleton) {
+        for i in 0..=samples {
+            let t = i as f64 / samples as f64;
+            let at = segment.eval(t);
+            points.push(at);
+            let Some(normal) = normal_at(&segment, t) else {
+                continue;
+            };
+            for k in 1..=steps {
+                let offset = normal * (reach * k as f64 / steps as f64);
+                points.push(at + offset);
+                points.push(at - offset);
+            }
+        }
+    }
+    points
 }
 
 #[test]
@@ -237,6 +297,62 @@ fn stroke_corner_has_round_join() {
         0
     );
     assert_clean(&result);
+}
+
+#[test]
+fn stroke_cusp_is_filled() {
+    // A cubic that turns back on itself in the middle: at t = 0.5 its
+    // derivative vanishes and it comes back down the way it went up, at
+    // (150, 225). The stroke must cover the cusp like a round cap.
+    let width = 40.0;
+    let skeleton = open(vec![
+        sk(0.0, 0.0, NodeKind::Line, None),
+        sk(300.0, 300.0, NodeKind::OffCurve, None),
+        sk(0.0, 300.0, NodeKind::OffCurve, None),
+        sk(300.0, 0.0, NodeKind::Curve, None),
+    ]);
+    let result =
+        stroke(std::slice::from_ref(&skeleton), &style(width, Cap::Round)).expect("stroke");
+    assert_clean(&result);
+    let outline = polygons(&result, 0.001);
+    let reach = width / 2.0 - 1.0;
+
+    // Every point of the skeleton, and every point up to w/2 - 1 away from
+    // it along its normal, is filled.
+    let uncovered: Vec<Point> = covered_points(&skeleton, 2000, reach, 4)
+        .into_iter()
+        .filter(|&p| polygon_winding(&outline, p) != 1)
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "{} points not filled, e.g. {:?}",
+        uncovered.len(),
+        uncovered.first()
+    );
+
+    // Around the cusp, the area within w/2 - 1 of the skeleton that is not
+    // filled (measured on a grid of 0.25 units).
+    let segment = skeleton_segments(&skeleton)[0];
+    let cusp = segment.eval(0.5);
+    let near: Vec<Point> = (0..=8000)
+        .map(|i| segment.eval(f64::from(i) / 8000.0))
+        .filter(|p| p.distance(cusp) <= 2.0 * width)
+        .collect();
+    let step = 0.25;
+    let cells = (2.0 * width / step) as i32;
+    let mut unfilled = 0.0;
+    for i in -cells / 2..=cells / 2 {
+        for j in -cells / 2..=cells / 2 {
+            let q = cusp + Vec2::new(f64::from(i) * step, f64::from(j) * step);
+            if near.iter().any(|p| p.distance(q) <= reach) && polygon_winding(&outline, q) != 1 {
+                unfilled += step * step;
+            }
+        }
+    }
+    assert!(
+        unfilled < 1.0,
+        "{unfilled} square units around the cusp are not filled"
+    );
 }
 
 #[test]
@@ -468,9 +584,16 @@ proptest! {
         width in 10.0f64..130.0,
         cap in cap(),
     ) {
-        let result = stroke(&[skeleton], &style(width, cap)).expect("stroke");
+        let result = stroke(std::slice::from_ref(&skeleton), &style(width, cap)).expect("stroke");
         prop_assert!(!result.is_empty());
         prop_assert!(total_area(&result) > 0.0);
         assert_clean(&result);
+        // Coverage: every sample of the skeleton is filled, exactly once.
+        let outline = polygons(&result, 0.001);
+        let uncovered: Vec<Point> = covered_points(&skeleton, 32, 0.0, 0)
+            .into_iter()
+            .filter(|&p| polygon_winding(&outline, p) != 1)
+            .collect();
+        prop_assert!(uncovered.is_empty(), "skeleton points not filled: {:?}", uncovered);
     }
 }

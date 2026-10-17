@@ -24,33 +24,46 @@ const MIN_SWEEP_TOLERANCE: f64 = 1e-6;
 /// more of those results stable.
 const MAX_SWEEPS: usize = 3;
 
-/// The size, in font units, under which a piece of the sweep's output is an
-/// artefact of the sweep rather than part of the shape (see `tidy`). The
-/// artefacts measured grow with the square root of the size of the curves,
-/// about 0.01 units at a radius of 100 and 0.1 at 10 000; anything this small
-/// disappears when coordinates are rounded to the font's integer grid.
+/// The size under which a piece of the sweep's output is an artefact of the
+/// sweep rather than part of the shape (see `tidy`), in absolute font units:
+/// it does not scale with the glyph or the units per em. Whenever
+/// [`Linesweeper`] computes a union (not on the clean-input fast path),
+/// segments no longer than this, contour ends this close to their start and
+/// slivers no wider than this are dropped, including features of the input
+/// that small. The artefacts measured grow with the square root of the size
+/// of the curves, about 0.01 units at a radius of 100 and 0.1 at 10 000;
+/// anything this small disappears when coordinates are rounded to the font's
+/// integer grid.
 const ARTEFACT_SIZE: f64 = 0.1;
 
 /// A Boolean-operations engine for contours.
 pub trait PathOps {
     /// The union of the closed contours of `paths` under the non-zero fill
-    /// rule: the outline of the area a rasterizer fills, without overlaps.
+    /// rule: the outline of the area a rasterizer fills.
     ///
-    /// * The result has no self-intersections and no overlapping contours.
-    ///   Outer contours run counter-clockwise and counters clockwise
-    ///   (PostScript direction), and curves have on-curve nodes at their x
-    ///   and y extrema.
+    /// What every engine promises:
+    ///
+    /// * Outer contours run counter-clockwise and counters clockwise
+    ///   (PostScript direction). Counters (areas the contours surround but
+    ///   do not fill) are kept as counters.
     /// * Contours that run against each other cancel where they overlap, as
     ///   they do when rendered: a clockwise contour over a counter-clockwise
     ///   one cuts it out.
+    /// * Overlaps and self-intersections are resolved as well as the engine
+    ///   can: an engine that checks and retries its result does so a bounded
+    ///   number of times and then returns what it has, so on adversarial
+    ///   input (wild self-intersecting curves) a crossing can remain, and
+    ///   the contours around it may not nest cleanly.
     /// * Open contours enclose nothing: they are kept unchanged after the
     ///   united ones.
-    /// * Contours are numbered from 0 in order; nodes are not smooth unless a
-    ///   curve was split at an extremum.
     /// * When the closed contours already are the outline of their union (no
     ///   overlaps, no self-intersections, PostScript direction), `paths` is
-    ///   returned unchanged (same nodes and ids), so that callers can tell
-    ///   that there was nothing to do.
+    ///   returned unchanged: same nodes and ids, nothing added, nothing
+    ///   renumbered, so that callers can tell that there was nothing to do.
+    ///
+    /// Everything else (where nodes go, whether extrema get nodes, how
+    /// contours are numbered, the tolerances) is up to the engine; see
+    /// [`Linesweeper`].
     ///
     /// # Errors
     ///
@@ -64,10 +77,21 @@ pub trait PathOps {
 /// sweep-line algorithm that works on Bezier paths directly, so curves stay
 /// curves (quadratic segments stay quadratic).
 ///
-/// Its results are exact up to its tolerance (about 1e-6 font units for
-/// glyph-sized coordinates): contours may touch, or share a stretch of
-/// boundary, within it. On wild input (random self-intersecting curves) a
-/// result can still, rarely, keep a sliver whose sides cross; see `sweep`.
+/// When the input is not clean already (see [`PathOps::union`] for the fast
+/// path), the united contours are numbered from 0 in order, curves get
+/// on-curve nodes at their x and y extrema, and nodes are not smooth unless a
+/// curve was split at an extremum. Pieces of the result no larger than 0.1
+/// font units (absolute, whatever the size of the glyph) are dropped as
+/// artefacts of the sweep: segments that short, contour ends that close to
+/// their start, slivers that thin; features of the input that small go too.
+///
+/// The results are exact up to the sweep's tolerance (about 1e-6 font units
+/// for glyph-sized coordinates): contours may touch, or share a stretch of
+/// boundary, within it. The result is swept again as a check and united
+/// again if needed, at most 3 unions in all. On wild input (random
+/// self-intersecting curves) the result can still, rarely, keep a sliver
+/// whose sides cross; and in testing, `linesweeper` itself once left out a
+/// piece of the filled area (one random stroke in some 200 000).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Linesweeper;
 
@@ -99,11 +123,8 @@ impl PathOps for Linesweeper {
             return Ok(paths.to_vec());
         };
 
-        // The sweep orients its contours already. `normalize_direction` must
-        // not run here: its nesting test probes the first node of each
-        // contour, and the sweep's contours may share a point with their
-        // parent, which makes that probe ambiguous (it reversed a correct
-        // outer contour in testing).
+        // The sweep orients its contours already (outer counter-clockwise,
+        // counters clockwise), so they are not normalized again.
         let mut united = Vec::with_capacity(contours.len() + open.len());
         for contour in &contours {
             let first_id = next_id(united.len())?;
@@ -126,8 +147,8 @@ impl PathOps for Linesweeper {
 
 /// Removes the overlaps of `paths` with the default engine, [`Linesweeper`].
 ///
-/// See [`PathOps::union`] for what the result looks like; in particular, a
-/// glyph without overlaps comes back unchanged.
+/// See [`PathOps::union`] and [`Linesweeper`] for what the result looks
+/// like; in particular, a glyph without overlaps comes back unchanged.
 ///
 /// # Errors
 ///

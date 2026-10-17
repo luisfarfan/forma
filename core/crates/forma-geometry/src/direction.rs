@@ -1,25 +1,81 @@
 //! Signed area, nesting depth and contour direction.
 
+use std::cmp::Ordering;
+
 use forma_model::{Node, NodeKind, Path};
-use kurbo::{PathEl, Point};
+use kurbo::{ParamCurve, PathEl, PathSeg, Point, Rect};
 
 use crate::convert::{outline, to_bezpath};
 use crate::{FLATTEN_TOLERANCE, GeometryError};
 
 /// The flattened polygon of a closed, valid contour; `None` for open or
 /// unconvertible contours.
+///
+/// Each curve is flattened from whichever of its two ends gives the smaller
+/// sequence of control points, so that a contour and its reversal have the
+/// same polygon, in reverse order (flattening a curve backwards picks other
+/// points). Reversing a contour to fix its direction must not move it: the
+/// nesting test would then answer differently for contours that cross it.
 fn flattened(path: &Path) -> Option<Vec<Point>> {
     if !path.closed {
         return None;
     }
     let bez = to_bezpath(path).ok()?;
     let mut points = Vec::new();
-    kurbo::flatten(bez.elements().iter().copied(), FLATTEN_TOLERANCE, |el| {
-        if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
-            points.push(p);
+    for segment in bez.segments() {
+        if points.is_empty() {
+            points.push(segment.start());
         }
-    });
+        if let PathSeg::Line(line) = segment {
+            points.push(line.p1);
+            continue;
+        }
+        let backwards = runs_backwards(&segment);
+        let canonical = if backwards {
+            segment.reverse()
+        } else {
+            segment
+        };
+        let mut piece = Vec::new();
+        let elements = [PathEl::MoveTo(canonical.start()), canonical.as_path_el()];
+        kurbo::flatten(elements, FLATTEN_TOLERANCE, |el| {
+            if let PathEl::LineTo(p) = el {
+                piece.push(p);
+            }
+        });
+        if backwards {
+            // From the segment's end back to its start: drop the start,
+            // walk the rest the other way and end at the segment's end.
+            piece.pop();
+            piece.reverse();
+            piece.push(segment.end());
+        }
+        points.extend(piece);
+    }
     Some(points)
+}
+
+/// Whether a curve's control points, read from its end, come before the same
+/// points read from its start (comparing x, then y): the curve is then
+/// flattened from its end.
+fn runs_backwards(segment: &PathSeg) -> bool {
+    let (controls, count) = match *segment {
+        PathSeg::Line(l) => ([l.p0, l.p1, Point::ZERO, Point::ZERO], 2),
+        PathSeg::Quad(q) => ([q.p0, q.p1, q.p2, Point::ZERO], 3),
+        PathSeg::Cubic(c) => ([c.p0, c.p1, c.p2, c.p3], 4),
+    };
+    let controls = &controls[..count];
+    controls
+        .iter()
+        .zip(controls.iter().rev())
+        .map(|(forward, backward)| {
+            backward
+                .x
+                .total_cmp(&forward.x)
+                .then(backward.y.total_cmp(&forward.y))
+        })
+        .find(|order| order.is_ne())
+        .is_some_and(Ordering::is_lt)
 }
 
 /// Shoelace formula; positive for counter-clockwise polygons with y up.
@@ -54,10 +110,14 @@ pub fn signed_area(path: &Path) -> f64 {
 }
 
 /// Even-odd ray test: whether `q` lies inside `polygon`.
+///
+/// Each edge is measured from its lower end, so that the answer does not
+/// depend on which way the polygon runs.
 fn contains(polygon: &[Point], q: Point) -> bool {
     let mut inside = false;
-    for (a, b) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
+    for (a, b) in edges(polygon) {
         if (a.y > q.y) != (b.y > q.y) {
+            let (a, b) = if a.y < b.y { (a, b) } else { (b, a) };
             let x_at_q = (b.x - a.x) * (q.y - a.y) / (b.y - a.y) + a.x;
             if q.x < x_at_q {
                 inside = !inside;
@@ -67,37 +127,192 @@ fn contains(polygon: &[Point], q: Point) -> bool {
     inside
 }
 
-/// The nesting depth of each contour: how many *other* closed contours contain
-/// its first on-curve node (even-odd rule on the flattened contours).
+/// The edges of a closed polygon, the closing one included.
+fn edges(polygon: &[Point]) -> impl Iterator<Item = (Point, Point)> + '_ {
+    polygon
+        .iter()
+        .zip(polygon.iter().cycle().skip(1))
+        .map(|(&a, &b)| (a, b))
+}
+
+/// The distance from `p` to the segment `ab`, the same either way round.
+fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
+    let (a, b) = if (a.x, a.y) <= (b.x, b.y) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let ab = b - a;
+    let length2 = ab.hypot2();
+    let t = if length2 > 0.0 {
+        ((p - a).dot(ab) / length2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(a + ab * t)
+}
+
+/// The distance from `p` to the boundary of `polygon`.
+fn boundary_distance(polygon: &[Point], p: Point) -> f64 {
+    edges(polygon)
+        .map(|(a, b)| segment_distance(p, a, b))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// How many edges of a contour, the longest ones, propose a probe point (see
+/// [`inside_points`]). It bounds the cost of a contour flattened into many
+/// edges; one probe clear of the other contour is enough.
+const PROBE_EDGES: usize = 32;
+
+/// Points just inside a closed polygon, `offset` away from the middle of its
+/// [`PROBE_EDGES`] longest edges (longest first) towards the interior: the
+/// side given by the sign of the polygon's area. A point the even-odd test
+/// does not put inside the polygon (on a lobe of a self-intersecting
+/// contour) is left out.
+///
+/// The choice depends on the shape only, not on where the contour starts or
+/// which way it runs: lengths are compared to within `offset`, and edges of
+/// the same length are taken from left to right, then from bottom to top.
+/// Reversing a contour (to fix its direction) must not change its depth.
+fn inside_points(polygon: &[Point], offset: f64) -> Vec<Point> {
+    let area = polygon_area(polygon);
+    if !(area.is_finite() && area != 0.0 && offset > 0.0) {
+        return Vec::new();
+    }
+    let mut longest: Vec<(f64, Point, Point)> = edges(polygon)
+        .filter(|(a, b)| a != b)
+        .map(|(a, b)| ((a.distance(b) / offset).round(), a, b))
+        .collect();
+    let middle = |a: Point, b: Point| a.midpoint(b);
+    longest.sort_by(|(l1, a1, b1), (l2, a2, b2)| {
+        let (m1, m2) = (middle(*a1, *b1), middle(*a2, *b2));
+        l2.total_cmp(l1)
+            .then(m1.x.total_cmp(&m2.x))
+            .then(m1.y.total_cmp(&m2.y))
+    });
+    longest.truncate(PROBE_EDGES);
+    longest
+        .into_iter()
+        .map(|(_, a, b)| {
+            let inward = (b - a).turn_90() * (area.signum() / a.distance(b));
+            a.midpoint(b) + inward * offset
+        })
+        .filter(|&p| contains(polygon, p))
+        .collect()
+}
+
+/// The relative size, against the diagonal of a contour's bounding box,
+/// under which a distance to the contour counts as zero: a point that close
+/// lies on its boundary.
+const BOUNDARY_TOLERANCE_RATIO: f64 = 1e-6;
+
+/// The absolute distance under which a point lies on a contour's boundary.
+const MIN_BOUNDARY_TOLERANCE: f64 = 1e-9;
+
+/// A closed contour prepared for nesting tests.
+struct Nesting {
+    /// The contour flattened to within [`FLATTEN_TOLERANCE`].
+    polygon: Vec<Point>,
+    bounds: Rect,
+    /// Closer than this to `polygon`, a point is on the contour's boundary.
+    /// It is also how far inside the contour its probe points are.
+    tolerance: f64,
+    /// Points just inside the contour (see [`inside_points`]).
+    probes: Vec<Point>,
+    /// The first on-curve node: the probe of last resort.
+    first: Point,
+}
+
+impl Nesting {
+    /// `None` for open contours and contours that cannot be converted.
+    fn new(path: &Path) -> Option<Self> {
+        let polygon = flattened(path)?;
+        let first = path
+            .nodes
+            .iter()
+            .find(|n| n.kind != NodeKind::OffCurve)
+            .map(|n| Point::new(n.x, n.y))?;
+        let bounds = polygon
+            .iter()
+            .fold(Rect::from_points(first, first), |rect, &p| rect.union_pt(p));
+        let tolerance = (BOUNDARY_TOLERANCE_RATIO * bounds.size().to_vec2().hypot())
+            .max(MIN_BOUNDARY_TOLERANCE);
+        let probes = inside_points(&polygon, tolerance);
+        Some(Self {
+            polygon,
+            bounds,
+            tolerance,
+            probes,
+            first,
+        })
+    }
+
+    /// Whether this contour contains `other`, tested at one of `other`'s
+    /// probe points.
+    ///
+    /// The probes lie a distance `d` (`other`'s tolerance) inside `other`. If
+    /// the two contours do not cross, a probe farther than `d` from this
+    /// contour's boundary gives the right answer: were this contour inside
+    /// `other` (a counter touching its outer contour, say), the probe could
+    /// only lie inside this one if this boundary passed between the probe and
+    /// `other`'s boundary, within `d` of the probe. So the first probe
+    /// farther than `d` plus the flattening tolerance (the test runs on the
+    /// flattened contours; the curves may be that far from them) is used;
+    /// failing that, the probe farthest from this boundary if it is clear of
+    /// it at all; failing that (every probe is ambiguous), `other`'s first
+    /// on-curve node.
+    fn contains_contour(&self, other: &Nesting) -> bool {
+        let clear = other.tolerance + self.tolerance;
+        let safe = other.tolerance + FLATTEN_TOLERANCE.max(self.tolerance);
+        let reach = self.bounds.inflate(safe, safe);
+        let mut best: Option<(f64, Point)> = None;
+        for &p in &other.probes {
+            if !reach.contains(p) {
+                return false; // far outside this contour
+            }
+            let distance = boundary_distance(&self.polygon, p);
+            if distance > safe {
+                return contains(&self.polygon, p);
+            }
+            if distance > clear && best.is_none_or(|(farthest, _)| distance > farthest) {
+                best = Some((distance, p));
+            }
+        }
+        contains(&self.polygon, best.map_or(other.first, |(_, p)| p))
+    }
+}
+
+/// The nesting depth of each contour: how many *other* closed contours
+/// contain it (even-odd rule on the flattened contours).
+///
+/// A contour is tested at a point just inside it (next to the middle of one
+/// of its longest edges) that is clear of the boundary of the contour it is
+/// tested against, so contours that touch each other, at a node or along an
+/// edge, wherever they start, are nested correctly. Contours that cross each
+/// other have no well-defined nesting; they get the answer of whichever
+/// point is used. Only when every such point is ambiguous is the contour's
+/// first on-curve node tested instead.
 ///
 /// Open contours, and contours that cannot be converted, have depth `0` and
 /// never contain anything.
 #[must_use]
 pub fn contour_depths(paths: &[Path]) -> Vec<usize> {
-    let polygons: Vec<Option<Vec<Point>>> = paths.iter().map(flattened).collect();
-    paths
+    let nestings: Vec<Option<Nesting>> = paths.iter().map(Nesting::new).collect();
+    nestings
         .iter()
         .enumerate()
-        .map(|(i, path)| {
-            if polygons[i].is_none() {
-                return 0;
-            }
-            let Some(probe) = path
-                .nodes
-                .iter()
-                .find(|n| n.kind != NodeKind::OffCurve)
-                .map(|n| Point::new(n.x, n.y))
-            else {
+        .map(|(i, nesting)| {
+            let Some(nesting) = nesting else {
                 return 0;
             };
-            polygons
+            nestings
                 .iter()
                 .enumerate()
-                .filter(|&(j, polygon)| {
+                .filter(|&(j, other)| {
                     j != i
-                        && polygon
-                            .as_deref()
-                            .is_some_and(|polygon| contains(polygon, probe))
+                        && other
+                            .as_ref()
+                            .is_some_and(|other| other.contains_contour(nesting))
                 })
                 .count()
         })

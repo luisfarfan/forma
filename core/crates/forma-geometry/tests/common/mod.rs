@@ -100,8 +100,14 @@ pub fn total_area(paths: &[Path]) -> f64 {
 /// counted on the contours flattened to within 0.001 units (kurbo's own
 /// `winding` can be off within about a unit of a curve).
 pub fn winding(paths: &[Path], p: Point) -> i32 {
+    polygon_winding(&polygons(paths, 0.001), p)
+}
+
+/// The non-zero winding number of `p` with respect to closed polygons (see
+/// [`polygons`]); flatten once with a tolerance of 0.001 to probe many points.
+pub fn polygon_winding(polygons: &[Vec<Point>], p: Point) -> i32 {
     let mut total = 0;
-    for polygon in polygons(paths, 0.001) {
+    for polygon in polygons {
         for (i, &a) in polygon.iter().enumerate() {
             let b = polygon[(i + 1) % polygon.len()];
             let side = (b - a).cross(p - a);

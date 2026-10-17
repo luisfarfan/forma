@@ -6,8 +6,8 @@ use std::f64::consts::PI;
 
 use common::*;
 use forma_geometry::{
-    CoordinateSystem, GeometryError, IssueKind, Linesweeper, PathOps, check_paths, paths_from_svg,
-    remove_overlap, to_bezpath,
+    CoordinateSystem, GeometryError, IssueKind, Linesweeper, PathOps, check_paths, fix_paths,
+    paths_from_svg, remove_overlap, to_bezpath,
 };
 use forma_model::{NodeKind, Path, PathId};
 use kurbo::Point;
@@ -146,15 +146,18 @@ fn duplicate_contours_leave_no_slivers() {
     }
 }
 
+/// A self-intersecting contour whose union is an outer contour with a counter
+/// that touches it at the counter's first node.
+const TOUCHING_COUNTER_SVG: &str = "M100 -150 C-200 -150 -250 -250 -150 -200 \
+    C-50 -150 150 200 300 0 L150 -150 Q-50 -200 150 200 Q300 250 -250 -100 Z";
+
 #[test]
 fn contours_touching_their_counter_keep_their_direction() {
-    // A self-intersecting contour whose union is an outer contour with a
-    // counter that touches it at the counter's first node. Nesting by probing
-    // that node is ambiguous; `normalize_direction` reversed both contours of
-    // this very case (the counter outward, the outer inward).
-    let svg = "M100 -150 C-200 -150 -250 -250 -150 -200 C-50 -150 150 200 300 0 \
-               L150 -150 Q-50 -200 150 200 Q300 250 -250 -100 Z";
-    let paths = paths_from_svg(svg, CoordinateSystem::Font).expect("valid svg");
+    // Nesting by probing the counter's first node was ambiguous here;
+    // `normalize_direction` reversed both contours of this very case (the
+    // counter outward, the outer inward) before the nesting test probed a
+    // point inside each contour.
+    let paths = paths_from_svg(TOUCHING_COUNTER_SVG, CoordinateSystem::Font).expect("valid svg");
     let result = remove_overlap(&paths).expect("union");
 
     let areas = areas(&result);
@@ -164,6 +167,71 @@ fn contours_touching_their_counter_keep_their_direction() {
     let largest = areas.iter().copied().fold(f64::MIN, f64::max);
     assert!((largest - 79_371.0).abs() < 1.0, "{areas:?}");
     assert_filled_on_the_left(&result);
+}
+
+#[test]
+fn union_output_passes_direction_check() {
+    // The union's contours may touch each other, often at a contour's first
+    // node; the nesting test of `check_paths` must still see them right.
+    let fixtures: Vec<(&str, Vec<Path>)> = vec![
+        (
+            "two circles",
+            vec![
+                circle(0.0, 0.0, 100.0, true),
+                circle(100.0, 0.0, 100.0, true),
+            ],
+        ),
+        (
+            "O and a bar",
+            vec![
+                circle(0.0, 0.0, 200.0, true),
+                circle(0.0, 0.0, 100.0, false),
+                rect(150.0, -30.0, 320.0, 30.0, true),
+            ],
+        ),
+        (
+            // The rectangle starts where it touches the O.
+            "O and a rectangle touching it from outside",
+            vec![
+                circle(0.0, 0.0, 200.0, true),
+                circle(0.0, 0.0, 100.0, false),
+                closed(vec![
+                    line(200.0, 0.0),
+                    line(200.0, -50.0),
+                    line(300.0, -50.0),
+                    line(300.0, 80.0),
+                    line(200.0, 80.0),
+                ]),
+            ],
+        ),
+        (
+            "O and a rectangle touching its counter",
+            vec![
+                circle(0.0, 0.0, 200.0, true),
+                circle(0.0, 0.0, 100.0, false),
+                rect(-20.0, -100.0, 20.0, -40.0, true),
+            ],
+        ),
+        (
+            "a counter touching its outer contour",
+            paths_from_svg(TOUCHING_COUNTER_SVG, CoordinateSystem::Font).expect("valid svg"),
+        ),
+    ];
+    for (name, paths) in fixtures {
+        let result = remove_overlap(&paths).expect("union");
+        assert_filled_on_the_left(&result);
+        let wrong: Vec<_> = check_paths(&result, 0.0)
+            .into_iter()
+            .filter(|issue| issue.kind == IssueKind::WrongDirection)
+            .collect();
+        assert!(wrong.is_empty(), "{name}: {wrong:?}\n{:?}", areas(&result));
+        // Nothing for geometry_fix to reverse either.
+        assert_eq!(
+            fix_paths(&result, &[IssueKind::WrongDirection], 0.0),
+            result,
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -297,12 +365,18 @@ fn shape() -> impl Strategy<Value = Shape> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
-    /// Removing overlaps twice gives the same contours, area for area.
+    /// Removing overlaps twice gives the same contours, area for area, and
+    /// the contours of the union nest the way they run.
     #[test]
     fn union_is_idempotent(shapes in prop::collection::vec(shape(), 1..6)) {
         let paths: Vec<Path> = shapes.iter().map(Shape::path).collect();
         let once = remove_overlap(&paths).expect("first union");
         let twice = remove_overlap(&once).expect("second union");
+        let wrong: Vec<_> = check_paths(&once, 0.0)
+            .into_iter()
+            .filter(|issue| issue.kind == IssueKind::WrongDirection)
+            .collect();
+        prop_assert!(wrong.is_empty(), "{:?}", wrong);
 
         prop_assert_eq!(once.len(), twice.len());
         let (a1, a2) = (total_area(&once), total_area(&twice));
