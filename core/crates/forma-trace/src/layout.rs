@@ -20,8 +20,14 @@ use crate::TraceError;
 use crate::candidates::{Analysis, TraceOptions, analyze_parts};
 use crate::measure::distance_transform;
 
-/// Pieces merge only when the gap between them is below this many strokes...
+/// Pieces merge only when the gap between them is at most this many
+/// strokes (or [`MAX_GAP_MIN_PX`] pixels if that is more)...
 const MAX_GAP_STROKES: f64 = 0.8;
+const MAX_GAP_MIN_PX: f64 = 1.5;
+/// ...and the gap inside a group is less than this fraction of the
+/// smallest gap between the groups of the row (a letter's pieces sit
+/// closer together than the letters do).
+const GAP_CONTRAST: f64 = 0.5;
 /// ...and they overlap vertically by at least this fraction of the shorter.
 const MIN_VERTICAL_OVERLAP: f64 = 0.5;
 /// A group wider than this many times the row's median width pays
@@ -29,8 +35,10 @@ const MIN_VERTICAL_OVERLAP: f64 = 0.5;
 const WIDE_FACTOR: f64 = 1.6;
 const WIDE_PENALTY: f64 = 10.0;
 /// A row is ambiguous when its second-best partition costs less than this
-/// many times the best.
-const AMBIGUITY_RATIO: f64 = 1.15;
+/// many times the best. Conservative: merging the wrong pieces would join
+/// two letters, and the gates cannot see it (each glyph matches its own,
+/// wrongly grouped, ink).
+const AMBIGUITY_RATIO: f64 = 2.0;
 /// Costs below this are equal (a partition of single pieces costs 0).
 const COST_EPSILON: f64 = 1e-9;
 
@@ -91,7 +99,7 @@ fn group_cost(pieces: &[Piece], from: usize, to: usize, stroke: f64, median_w: f
         let gap = (b.x0 - right).max(0.0);
         let shorter = (a.y1 - a.y0).min(b.y1 - b.y0).max(1.0);
         let overlap = (a.y1.min(b.y1) - a.y0.max(b.y0)).max(0.0) / shorter;
-        if gap >= MAX_GAP_STROKES * stroke || overlap < MIN_VERTICAL_OVERLAP {
+        if gap > (MAX_GAP_STROKES * stroke).max(MAX_GAP_MIN_PX) || overlap < MIN_VERTICAL_OVERLAP {
             return None;
         }
         cost += gap / stroke.max(1.0);
@@ -139,6 +147,30 @@ fn best_two(pieces: &[Piece], k: usize, stroke: f64, median_w: f64) -> Vec<Parti
         }
     }
     std::mem::take(&mut best[k][n])
+}
+
+/// The gaps inside the groups of a partition and between them: whether
+/// every gap inside is less than [`GAP_CONTRAST`] times the smallest gap
+/// between groups (true when nothing is merged or there is one group).
+fn contrasted(pieces: &[Piece], cuts: &[usize]) -> bool {
+    let mut inside: f64 = 0.0;
+    let mut between = f64::INFINITY;
+    let mut from = 0;
+    let mut previous_right: Option<f64> = None;
+    for &to in cuts {
+        let group = &pieces[from..to];
+        let mut right = group[0].x1;
+        for p in &group[1..] {
+            inside = inside.max((p.x0 - right).max(0.0));
+            right = right.max(p.x1);
+        }
+        if let Some(prev) = previous_right {
+            between = between.min((group[0].x0 - prev).max(0.0));
+        }
+        previous_right = Some(right);
+        from = to;
+    }
+    between.is_infinite() || inside < GAP_CONTRAST * between
 }
 
 fn median(values: &mut [f64]) -> f64 {
@@ -217,8 +249,13 @@ pub fn match_rows(analysis: &Analysis, expected: &[usize], stroke_px: f64) -> Ve
                              apart or not side by side)"
                         .to_owned(),
                 },
-                [only] => RowMatch::Grouped {
+                [only] if contrasted(&pieces, &only.1) => RowMatch::Grouped {
                     groups: to_groups(&only.1),
+                },
+                [only] => RowMatch::Ambiguous {
+                    best: to_groups(&only.1),
+                    second: Vec::new(),
+                    ratio: 1.0,
                 },
                 [first, second, ..] => {
                     let ratio = if first.0 <= COST_EPSILON {
@@ -230,7 +267,7 @@ pub fn match_rows(analysis: &Analysis, expected: &[usize], stroke_px: f64) -> Ve
                     } else {
                         second.0 / first.0
                     };
-                    if ratio < AMBIGUITY_RATIO {
+                    if ratio < AMBIGUITY_RATIO || !contrasted(&pieces, &first.1) {
                         RowMatch::Ambiguous {
                             best: to_groups(&first.1),
                             second: to_groups(&second.1),
@@ -247,10 +284,11 @@ pub fn match_rows(analysis: &Analysis, expected: &[usize], stroke_px: f64) -> Ve
         .collect()
 }
 
-/// The typical stroke width of the ink of `image`, in pixels: four times
-/// the median distance of its ink pixels to the background (a stroke of
-/// width `w` spreads those distances evenly over `0..w/2`), at the image's
-/// own resolution. 0 without ink.
+/// The typical stroke width of the ink of `image`, in pixels: twice the
+/// median distance to the background along the ridge of the ink (the
+/// pixels at least as far from the background as their four neighbours:
+/// the middle of each stroke), at the image's own resolution. 0 without
+/// ink.
 ///
 /// # Errors
 ///
@@ -264,13 +302,24 @@ pub fn typical_stroke_px(image: &RgbImage, opts: &TraceOptions) -> Result<f64, T
         return Ok(0.0);
     }
     let edt = distance_transform(&inside, w, h);
-    let mut d: Vec<f64> = edt
-        .iter()
-        .zip(&inside)
-        .filter(|&(_, &i)| i)
-        .map(|(v, _)| v.sqrt())
-        .collect();
-    Ok(4.0 * median(&mut d))
+    let at = |x: usize, y: usize| edt[y * w + x];
+    let mut ridge = Vec::new();
+    for y in 1..h.saturating_sub(1) {
+        for x in 1..w.saturating_sub(1) {
+            let d = at(x, y);
+            if d > 0.0
+                && d >= at(x - 1, y)
+                && d >= at(x + 1, y)
+                && d >= at(x, y - 1)
+                && d >= at(x, y + 1)
+            {
+                ridge.push(d.sqrt());
+            }
+        }
+    }
+    // A pixel centre in the middle of a stroke of width w is w/2 from the
+    // background's pixel centres, give or take half a pixel.
+    Ok((2.0 * median(&mut ridge) - 1.0).max(1.0))
 }
 
 #[cfg(test)]
@@ -320,11 +369,11 @@ mod tests {
     #[test]
     fn a_letter_in_two_close_pieces_is_grouped() {
         // A, then an H drawn as a left stem with bar and a right stem
-        // 4 px apart, then I.
+        // 1 px apart, then I.
         let a = analysis(&[
             (10, 10, 70, 110),
             (100, 10, 140, 110),
-            (144, 10, 160, 110),
+            (141, 10, 160, 110),
             (200, 10, 216, 110),
         ]);
         assert_eq!(
@@ -352,8 +401,9 @@ mod tests {
 
     #[test]
     fn two_equally_good_groupings_are_ambiguous() {
-        // Three pieces evenly spaced, two glyphs: (0,1)(2) or (0)(1,2).
-        let a = analysis(&[(10, 10, 40, 110), (44, 10, 74, 110), (78, 10, 108, 110)]);
+        // Three pieces evenly spaced 1 px apart, two glyphs: (0,1)(2) or
+        // (0)(1,2).
+        let a = analysis(&[(10, 10, 40, 110), (41, 10, 71, 110), (72, 10, 102, 110)]);
         let out = match_rows(&a, &[2], 12.0);
         assert!(matches!(out[0], RowMatch::Ambiguous { .. }), "{out:?}");
     }
@@ -371,6 +421,23 @@ mod tests {
                     ..
                 }
             ),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn neighbouring_letters_are_never_joined_on_a_guess() {
+        // H I O with a 10 px stroke: the H's bar stops 7 px short of its
+        // right stem, the I is 4 px from it. Either merge would be a guess.
+        let a = analysis(&[
+            (10, 10, 60, 110),
+            (67, 10, 77, 110),
+            (81, 10, 91, 110),
+            (120, 10, 180, 110),
+        ]);
+        let out = match_rows(&a, &[3], 10.0);
+        assert!(
+            !matches!(out[0], RowMatch::Grouped { .. } | RowMatch::Exact { .. }),
             "{out:?}"
         );
     }

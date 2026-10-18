@@ -421,7 +421,10 @@ fn parse_color(text: &str) -> Result<[u8; 3], ToolError> {
 }
 
 /// The options of an image call.
-fn trace_options(color: Option<&str>, tolerance: Option<f64>) -> Result<TraceOptions, ToolError> {
+pub(crate) fn trace_options(
+    color: Option<&str>,
+    tolerance: Option<f64>,
+) -> Result<TraceOptions, ToolError> {
     let mut opts = TraceOptions {
         color: color.map(parse_color).transpose()?,
         ..TraceOptions::default()
@@ -447,7 +450,10 @@ fn read_image(engine: &Engine, path: &str) -> Result<RgbImage, ToolError> {
 
 /// Reads and decodes the image at `path`, with the lowercase hex SHA-256 of
 /// its bytes (recorded in the provenance of traced glyphs).
-fn read_image_hashed(engine: &Engine, path: &str) -> Result<(RgbImage, String), ToolError> {
+pub(crate) fn read_image_hashed(
+    engine: &Engine,
+    path: &str,
+) -> Result<(RgbImage, String), ToolError> {
     let resolved = engine.check_allowed(FsPath::new(path), true)?;
     let metadata = std::fs::metadata(&resolved)
         .map_err(|error| ToolError::io(format!("cannot read '{path}': {error}")))?;
@@ -498,7 +504,7 @@ fn read_at_most(path: &FsPath, limit: u64) -> std::io::Result<Vec<u8>> {
 }
 
 /// The cap height of `master`.
-fn cap_height(font: &Font, master: MasterId) -> Result<f64, ToolError> {
+pub(crate) fn cap_height(font: &Font, master: MasterId) -> Result<f64, ToolError> {
     font.masters
         .iter()
         .find(|candidate| candidate.id == master)
@@ -633,7 +639,7 @@ fn traced_px_rect(glyph: &TracedGlyph) -> [f64; 4] {
 
 /// The provenance of a glyph traced from the image with hash `image_sha256`.
 fn traced_provenance(image_sha256: &str, glyph: &TracedGlyph) -> Provenance {
-    Provenance::pending(
+    let mut provenance = Provenance::pending(
         Source::Traced,
         forma_trace::THRESHOLDS.version,
         ProvenanceDetail::Traced {
@@ -643,13 +649,17 @@ fn traced_provenance(image_sha256: &str, glyph: &TracedGlyph) -> Provenance {
             iou_mask: glyph.iou.clamp(0.0, 1.0),
             hausdorff_p95_px: Some(glyph.quality.hausdorff_p95_px),
             topology_ok: Some(glyph.quality.topology_ok),
+            attempt: Some(glyph.attempt.clone()),
+            isoline: Some(glyph.isoline),
         },
-    )
+    );
+    provenance.attention = glyph.reasons.clone();
+    provenance
 }
 
 /// The commands that give each assigned glyph its traced outline and advance
 /// width, and record that it was traced (pending review).
-fn trace_commands(
+pub(crate) fn trace_commands(
     font: &Font,
     master: Option<MasterId>,
     assignments: &[Assignment],

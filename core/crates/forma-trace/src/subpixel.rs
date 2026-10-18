@@ -268,38 +268,36 @@ fn orient_by_nesting(loops: &mut [Vec<Point>]) {
     }
 }
 
-/// How soft the edges of the field are: of the pixels next to the edge
-/// (a 4-neighbour on the other side of `level`), the fraction whose
-/// coverage is in between (0.15 to 0.85). Anti-aliased drawings give most
-/// of them; hard-edged pixel art and thresholded scans give almost none,
-/// and then the steps of the pixels are noise, half a pixel high.
+/// How soft the edges of the field are: of the edge pixels at a *step*
+/// (with neighbours across the level both sideways and up or down, which
+/// only slanted and curved edges have), the fraction whose coverage is in
+/// between (0.15 to 0.85). Anti-aliased drawings give most of them;
+/// hard-edged pixel art and thresholded scans give almost none, and then
+/// the steps of the pixels are noise, half a pixel high. Edges along the
+/// pixel grid are exact either way and do not count; a field with no steps
+/// reads as soft.
 pub(crate) fn edge_softness(field: &Field, level: f32) -> f64 {
     let (w, h) = (field.width, field.height);
-    let (mut edge, mut soft) = (0usize, 0usize);
+    let (mut steps, mut soft) = (0usize, 0usize);
+    let across =
+        |x: usize, y: usize, side: bool| x < w && y < h && (field.at(x, y) >= level) != side;
     for j in 0..h {
         for i in 0..w {
             let v = field.at(i, j);
             let side = v >= level;
-            let neighbours = [
-                (i.wrapping_sub(1), j),
-                (i + 1, j),
-                (i, j.wrapping_sub(1)),
-                (i, j + 1),
-            ];
-            let at_edge = neighbours
-                .iter()
-                .any(|&(x, y)| x < w && y < h && (field.at(x, y) >= level) != side);
-            if at_edge {
-                edge += 1;
+            let sideways = across(i.wrapping_sub(1), j, side) || across(i + 1, j, side);
+            let vertical = across(i, j.wrapping_sub(1), side) || across(i, j + 1, side);
+            if sideways && vertical {
+                steps += 1;
                 if (0.15..=0.85).contains(&v) {
                     soft += 1;
                 }
             }
         }
     }
-    if edge == 0 {
+    if steps == 0 {
         1.0
     } else {
-        soft as f64 / edge as f64
+        soft as f64 / steps as f64
     }
 }

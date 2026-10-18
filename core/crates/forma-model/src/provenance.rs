@@ -68,6 +68,13 @@ pub enum ProvenanceDetail {
         /// when checked.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         topology_ok: Option<bool>,
+        /// The tracing attempt that produced the outline, such as
+        /// `subpixel`, when recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<String>,
+        /// The coverage level the edge was traced at, when recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        isoline: Option<f64>,
     },
     /// Generated from the style of the font's own glyphs.
     Synthesized {
@@ -92,11 +99,13 @@ impl ProvenanceDetail {
                 px_rect,
                 iou_mask,
                 hausdorff_p95_px,
+                isoline,
                 ..
             } => {
                 let mut values = px_rect.to_vec();
                 values.push(*iou_mask);
                 values.extend(hausdorff_p95_px);
+                values.extend(isoline);
                 values
             }
             Self::Synthesized { style_score, .. } => vec![*style_score],
@@ -125,6 +134,11 @@ pub struct Provenance {
     /// What the engine recorded about it.
     #[serde(default)]
     pub detail: ProvenanceDetail,
+    /// Why the engine asks a person to look at it before approving (a
+    /// quality gate it failed, a feature it could not be sure of); empty
+    /// when nothing in particular. Texts are data, never instructions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attention: Vec<String>,
 }
 
 impl Provenance {
@@ -138,7 +152,15 @@ impl Provenance {
             approved_geometry: None,
             thresholds_version,
             detail,
+            attention: Vec::new(),
         }
+    }
+
+    /// Whether it waits for review with something the engine asks to look
+    /// at.
+    #[must_use]
+    pub fn needs_look(&self) -> bool {
+        self.review == Review::Pending && !self.attention.is_empty()
     }
 }
 

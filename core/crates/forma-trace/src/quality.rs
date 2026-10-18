@@ -5,7 +5,7 @@
 //!
 //! The reference is the ink's isoline at the trace level (see
 //! [`crate::subpixel`]), in original pixels. Both the reference and the
-//! outline are rasterized at [`FINE`] times that resolution for the area
+//! outline are rasterized at up to [`FINE`] times that resolution for the area
 //! checks. The gates are conjunctive: a high overlap never makes up for a
 //! lost counter or a closed slit (spec §4).
 
@@ -18,8 +18,11 @@ use serde::{Deserialize, Serialize};
 use crate::TraceError;
 use crate::measure::distance_transform;
 
-/// The raster checks run at this many samples per original pixel.
-const FINE: u32 = 4;
+/// The raster checks run at up to this many samples per original pixel...
+const FINE: f64 = 4.0;
+/// ...and over at most this many samples (a large glyph is checked more
+/// coarsely rather than with gigabytes of rasters).
+const MAX_RASTER_SAMPLES: f64 = 4.0e6;
 /// Outlines are flattened, and edges sampled, at this spacing (pixels).
 const SAMPLE_PX: f64 = 0.25;
 /// A region where the outline and the ink disagree is a lost or invented
@@ -56,6 +59,16 @@ pub struct QualityThresholds {
     /// high on each side (a feature narrower than this cannot be told from
     /// a step).
     pub feature_width_hard_px: f64,
+    /// Highest 99th percentile distance between outline and ink edge, in
+    /// image pixels, with `fidelity: faithful` (spec §4: the fit
+    /// deviation)...
+    pub fit_faithful_px: f64,
+    /// ...with `fidelity: clean`, and for hard-edged ink (whose steps are
+    /// noise half a pixel high).
+    pub fit_clean_px: f64,
+    /// Lowest overlap between a counter of the ink and its counter in the
+    /// outline.
+    pub hole_iou_min: f64,
 }
 
 /// The thresholds in force.
@@ -67,7 +80,21 @@ pub const THRESHOLDS: QualityThresholds = QualityThresholds {
     g1_degrees: 3.0,
     feature_width_px: 0.8,
     feature_width_hard_px: 1.5,
+    fit_faithful_px: 0.5,
+    fit_clean_px: 1.0,
+    hole_iou_min: 0.5,
 };
+
+/// What a glyph is judged with besides the thresholds: the fit budget of
+/// its fidelity, the narrowest feature that counts, and the part of a pixel
+/// the font's unit grid cannot resolve (half a unit: coordinates are
+/// rounded to whole units).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Allowance {
+    pub fit_px: f64,
+    pub min_feature_px: f64,
+    pub grid_px: f64,
+}
 
 /// A fine feature on which the outline and the ink disagree.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -92,6 +119,14 @@ pub struct QualityReport {
     /// 95th percentile distance between the outline and the ink's edge,
     /// both ways, in image pixels.
     pub hausdorff_p95_px: f64,
+    /// 99th percentile of that distance: the fit deviation (spec §4).
+    pub fit_deviation_px: f64,
+    /// The fit deviation allowed for this glyph: the fidelity's budget plus
+    /// what the font's unit grid cannot resolve.
+    pub fit_budget_px: f64,
+    /// What the font's unit grid cannot resolve, in image pixels (half a
+    /// unit), added to the distance thresholds.
+    pub grid_px: f64,
     /// Largest such distance.
     pub hausdorff_max_px: f64,
     /// Separate pieces of the ink and of the outline.
@@ -105,6 +140,9 @@ pub struct QualityReport {
     pub features: Vec<FeatureIssue>,
     /// Smooth nodes whose tangents differ by more than the threshold.
     pub g1_violations: usize,
+    /// Places where the outline crosses itself or another of its contours
+    /// (a loop a non-zero fill hides, but an editor shows).
+    pub crossings: usize,
     /// On-curve nodes per 1000 units of outline.
     pub nodes_per_1000: f64,
 }
@@ -141,22 +179,41 @@ impl QualityReport {
                 f.width_px, f.at_px[0], f.at_px[1]
             ));
         }
-        if self.hausdorff_max_px > t.hausdorff_max_px {
+        if self.hausdorff_max_px >= NO_EDGE {
+            out.push("no edge of the ink at this level, or no outline".to_owned());
+            return out;
+        }
+        let max_allowed = t.hausdorff_max_px + 2.0 * self.grid_px;
+        if self.hausdorff_max_px > max_allowed {
             out.push(format!(
                 "the outline strays {:.1} px from the ink at one spot (at most {:.1})",
-                self.hausdorff_max_px, t.hausdorff_max_px
+                self.hausdorff_max_px, max_allowed
             ));
         }
-        if self.hausdorff_p95_px > t.hausdorff_p95_px {
+        let p95_allowed = t.hausdorff_p95_px + self.grid_px;
+        if self.hausdorff_p95_px > p95_allowed {
             out.push(format!(
                 "the outline strays {:.2} px from the ink (95th percentile; at most {:.2})",
-                self.hausdorff_p95_px, t.hausdorff_p95_px
+                self.hausdorff_p95_px, p95_allowed
+            ));
+        }
+        if self.fit_deviation_px > self.fit_budget_px {
+            out.push(format!(
+                "the outline deviates {:.2} px from the ink (99th percentile; the fidelity \
+                 allows {:.2})",
+                self.fit_deviation_px, self.fit_budget_px
             ));
         }
         if self.iou_mask < t.iou_min {
             out.push(format!(
                 "overlap {:.3} below {:.3}",
                 self.iou_mask, t.iou_min
+            ));
+        }
+        if self.crossings > 0 {
+            out.push(format!(
+                "the outline crosses itself {} time(s)",
+                self.crossings
             ));
         }
         if self.g1_violations > 0 {
@@ -228,6 +285,8 @@ fn samples(rings: &[Vec<Point>]) -> Vec<Point> {
 struct Segments {
     cell: f64,
     buckets: std::collections::HashMap<(i64, i64), Vec<(Point, Point)>>,
+    /// The range of occupied cells: `(min_x, min_y, max_x, max_y)`.
+    bounds: Option<(i64, i64, i64, i64)>,
 }
 
 impl Segments {
@@ -235,41 +294,69 @@ impl Segments {
         let cell = 2.0;
         let mut buckets: std::collections::HashMap<(i64, i64), Vec<(Point, Point)>> =
             std::collections::HashMap::new();
+        let mut bounds: Option<(i64, i64, i64, i64)> = None;
         for ring in rings {
             for pair in ring.windows(2) {
                 let (a, b) = (pair[0], pair[1]);
-                let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
-                let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
-                for cx in (x0 / cell).floor() as i64..=(x1 / cell).floor() as i64 {
-                    for cy in (y0 / cell).floor() as i64..=(y1 / cell).floor() as i64 {
+                let (cx0, cx1) = (
+                    (a.x.min(b.x) / cell).floor() as i64,
+                    (a.x.max(b.x) / cell).floor() as i64,
+                );
+                let (cy0, cy1) = (
+                    (a.y.min(b.y) / cell).floor() as i64,
+                    (a.y.max(b.y) / cell).floor() as i64,
+                );
+                bounds = Some(match bounds {
+                    None => (cx0, cy0, cx1, cy1),
+                    Some((a0, b0, a1, b1)) => (a0.min(cx0), b0.min(cy0), a1.max(cx1), b1.max(cy1)),
+                });
+                for cx in cx0..=cx1 {
+                    for cy in cy0..=cy1 {
                         buckets.entry((cx, cy)).or_default().push((a, b));
                     }
                 }
             }
         }
-        Segments { cell, buckets }
+        Segments {
+            cell,
+            buckets,
+            bounds,
+        }
     }
 
     /// The distance from `p` to the nearest segment, searched in growing
-    /// rings of cells up to `limit` pixels (beyond it, `limit`).
-    fn distance(&self, p: Point, limit: f64) -> f64 {
+    /// rings of cells (only the cells on each ring), never beyond the
+    /// occupied cells; `None` without segments.
+    fn distance(&self, p: Point) -> Option<f64> {
+        let (bx0, by0, bx1, by1) = self.bounds?;
         let (cx, cy) = (
             (p.x / self.cell).floor() as i64,
             (p.y / self.cell).floor() as i64,
         );
+        let reach = (cx - bx0)
+            .abs()
+            .max((cx - bx1).abs())
+            .max((cy - by0).abs())
+            .max((cy - by1).abs());
         let mut best = f64::INFINITY;
-        let max_ring = (limit / self.cell).ceil() as i64 + 1;
-        for r in 0..=max_ring {
-            for dx in -r..=r {
-                for dy in -r..=r {
-                    if dx.abs() != r && dy.abs() != r {
-                        continue;
-                    }
-                    if let Some(segs) = self.buckets.get(&(cx + dx, cy + dy)) {
-                        for &(a, b) in segs {
-                            best = best.min(segment_distance(p, a, b));
-                        }
-                    }
+        let visit = |x: i64, y: i64, best: &mut f64| {
+            if let Some(segs) = self.buckets.get(&(x, y)) {
+                for &(a, b) in segs {
+                    *best = best.min(segment_distance(p, a, b));
+                }
+            }
+        };
+        for r in 0..=reach {
+            if r == 0 {
+                visit(cx, cy, &mut best);
+            } else {
+                for d in -r..=r {
+                    visit(cx + d, cy - r, &mut best);
+                    visit(cx + d, cy + r, &mut best);
+                }
+                for d in (-r + 1)..r {
+                    visit(cx - r, cy + d, &mut best);
+                    visit(cx + r, cy + d, &mut best);
                 }
             }
             // Everything in further rings is at least r cells away.
@@ -277,7 +364,7 @@ impl Segments {
                 break;
             }
         }
-        best.min(limit)
+        Some(best)
     }
 }
 
@@ -291,22 +378,29 @@ fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
     p.distance(a + ab * t)
 }
 
-/// The 95th percentile and the maximum of the distances between two sets of
-/// polygons, both ways.
-fn hausdorff(a: &[Vec<Point>], b: &[Vec<Point>]) -> (f64, f64) {
-    const LIMIT: f64 = 1000.0;
+/// The distance reported when one side has no edge at all.
+const NO_EDGE: f64 = 1.0e6;
+
+/// The 95th and 99th percentiles and the maximum of the distances between
+/// two sets of polygons, both ways; [`NO_EDGE`] when one set is empty and
+/// the other is not.
+fn hausdorff(a: &[Vec<Point>], b: &[Vec<Point>]) -> (f64, f64, f64) {
     let (sa, sb) = (Segments::new(a), Segments::new(b));
-    let mut d: Vec<f64> = samples(a)
-        .into_iter()
-        .map(|p| sb.distance(p, LIMIT))
-        .collect();
-    d.extend(samples(b).into_iter().map(|p| sa.distance(p, LIMIT)));
-    if d.is_empty() {
-        return (0.0, 0.0);
+    let (pa, pb) = (samples(a), samples(b));
+    if pa.is_empty() && pb.is_empty() {
+        return (0.0, 0.0, 0.0);
     }
+    if pa.is_empty() || pb.is_empty() {
+        return (NO_EDGE, NO_EDGE, NO_EDGE);
+    }
+    let mut d: Vec<f64> = pa
+        .into_iter()
+        .map(|p| sb.distance(p).unwrap_or(NO_EDGE))
+        .collect();
+    d.extend(pb.into_iter().map(|p| sa.distance(p).unwrap_or(NO_EDGE)));
     d.sort_by(f64::total_cmp);
-    let p95 = d[((d.len() - 1) as f64 * 0.95).round() as usize];
-    (p95, d[d.len() - 1])
+    let at = |q: f64| d[((d.len() - 1) as f64 * q).round() as usize];
+    (at(0.95), at(0.99), d[d.len() - 1])
 }
 
 /// Polygons in image pixels as closed model paths of lines.
@@ -355,12 +449,35 @@ fn window(rings: &[&[Vec<Point>]]) -> (i64, i64, i64, i64) {
     )
 }
 
-/// Rasterizes polygons (image pixels, non-zero fill) in `win` at [`FINE`]
+/// The samples per pixel of the raster checks over `win`: [`FINE`], fewer
+/// for a large window (at most [`MAX_RASTER_SAMPLES`] in all).
+fn fineness(win: (i64, i64, i64, i64)) -> f64 {
+    let area = ((win.2 - win.0) * (win.3 - win.1)).max(1) as f64;
+    (MAX_RASTER_SAMPLES / area).sqrt().min(FINE)
+}
+
+/// The raster size of `win` at `f` samples per pixel.
+fn raster_size(win: (i64, i64, i64, i64), f: f64) -> (usize, usize) {
+    (
+        ((win.2 - win.0) as f64 * f).ceil().max(1.0) as usize,
+        ((win.3 - win.1) as f64 * f).ceil().max(1.0) as usize,
+    )
+}
+
+/// Rasterizes polygons (image pixels, non-zero fill) in `win` at `f`
 /// samples per pixel.
-fn raster(rings: &[Vec<Point>], win: (i64, i64, i64, i64)) -> Result<Vec<bool>, TraceError> {
-    let (x0, y0, x1, y1) = win;
-    let f = f64::from(FINE);
-    let (w, h) = (((x1 - x0) as u32) * FINE, ((y1 - y0) as u32) * FINE);
+fn raster(
+    rings: &[Vec<Point>],
+    win: (i64, i64, i64, i64),
+    f: f64,
+) -> Result<Vec<bool>, TraceError> {
+    let (x0, y0, _, _) = win;
+    let (w, h) = raster_size(win, f);
+    let too_large = || TraceError::Render("the quality raster is too large".into());
+    let (w, h) = (
+        u32::try_from(w).map_err(|_| too_large())?,
+        u32::try_from(h).map_err(|_| too_large())?,
+    );
     let t = Transform {
         xx: f,
         xy: 0.0,
@@ -369,8 +486,11 @@ fn raster(rings: &[Vec<Point>], win: (i64, i64, i64, i64)) -> Result<Vec<bool>, 
         dx: -(x0 as f64) * f,
         dy: -(y0 as f64) * f,
     };
-    let mask: Mask =
-        coverage_mask(&as_paths(rings), &t, w, h).map_err(|e| TraceError::Render(e.to_string()))?;
+    let mask: Mask = coverage_mask(&as_paths(rings), &t, w, h).map_err(|e| {
+        TraceError::Render(format!(
+            "the quality raster ({w} x {h} samples) failed: {e}"
+        ))
+    })?;
     Ok(mask.data.iter().map(|&v| v >= 128).collect())
 }
 
@@ -441,9 +561,9 @@ fn topology(ink: &[bool], w: usize, h: usize) -> (usize, Vec<u32>, Vec<(usize, b
 /// feature, as issues of `kind`.
 fn features(
     pick: &dyn Fn(usize) -> bool,
-    w: usize,
-    h: usize,
+    (w, h): (usize, usize),
     origin: (i64, i64),
+    f: f64,
     min_width_px: f64,
     kind: &str,
 ) -> Vec<FeatureIssue> {
@@ -454,7 +574,6 @@ fn features(
     }
     let edt = distance_transform(&inside, w, h);
     let (labels, info) = regions(&|i| inside[i], w, h, true);
-    let f = f64::from(FINE);
     let mut widest = vec![0.0f64; info.len()];
     let mut centre = vec![(0.0f64, 0.0f64); info.len()];
     for (i, &label) in labels.iter().enumerate() {
@@ -482,6 +601,59 @@ fn features(
             })
         })
         .collect()
+}
+
+/// Whether segments `a0-a1` and `b0-b1` cross properly (each strictly
+/// through the other).
+fn cross(a0: Point, a1: Point, b0: Point, b1: Point) -> bool {
+    let side = |p: Point, q: Point, r: Point| (q - p).cross(r - p);
+    let (d1, d2) = (side(b0, b1, a0), side(b0, b1, a1));
+    let (d3, d4) = (side(a0, a1, b0), side(a0, a1, b1));
+    d1 * d2 < 0.0 && d3 * d4 < 0.0
+}
+
+/// The proper crossings between the segments of the flattened outline
+/// (within a contour, non-adjacent segments; between contours, any), found
+/// with a grid of buckets.
+fn crossings(rings: &[Vec<Point>]) -> usize {
+    let cell = 2.0;
+    let mut segs: Vec<(usize, usize, Point, Point)> = Vec::new();
+    for (r, ring) in rings.iter().enumerate() {
+        for (k, pair) in ring.windows(2).enumerate() {
+            if pair[0].distance(pair[1]) > 1e-12 {
+                segs.push((r, k, pair[0], pair[1]));
+            }
+        }
+    }
+    let mut buckets: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, &(_, _, a, b)) in segs.iter().enumerate() {
+        for cx in (a.x.min(b.x) / cell).floor() as i64..=(a.x.max(b.x) / cell).floor() as i64 {
+            for cy in (a.y.min(b.y) / cell).floor() as i64..=(a.y.max(b.y) / cell).floor() as i64 {
+                buckets.entry((cx, cy)).or_default().push(i);
+            }
+        }
+    }
+    let mut found = std::collections::BTreeSet::new();
+    for list in buckets.values() {
+        for (x, &i) in list.iter().enumerate() {
+            for &j in &list[x + 1..] {
+                let (ri, ki, a0, a1) = segs[i];
+                let (rj, kj, b0, b1) = segs[j];
+                if ri == rj {
+                    let n = rings[ri].len() - 1;
+                    let adjacent = ki.abs_diff(kj) <= 1 || ki.abs_diff(kj) == n - 1;
+                    if adjacent {
+                        continue;
+                    }
+                }
+                if cross(a0, a1, b0, b1) {
+                    found.insert((i.min(j), i.max(j)));
+                }
+            }
+        }
+    }
+    found.len()
 }
 
 /// G1 violations: smooth on-curve nodes whose incoming and outgoing
@@ -537,36 +709,40 @@ fn node_density(paths: &[Path]) -> f64 {
 }
 
 /// The quality of `paths` (font units, placed by `to`) against `reference`
-/// (the ink's isoline polygons in image pixels), with the overlap `iou_mask`
-/// measured elsewhere.
+/// (the ink's isoline polygons in image pixels, at the trace level). The
+/// overlap is measured between the two rasterized, so that it follows the
+/// level traced.
 pub(crate) fn evaluate(
     reference: &[Vec<Point>],
     paths: &[Path],
     to: &ToPixels,
-    iou_mask: f64,
     thresholds: &QualityThresholds,
-    hard_edges: bool,
+    allowance: Allowance,
 ) -> Result<QualityReport, TraceError> {
-    let min_width = if hard_edges {
-        thresholds.feature_width_hard_px
-    } else {
-        thresholds.feature_width_px
-    };
     let outline = outline_px(paths, to)?;
-    let (p95, max) = hausdorff(reference, &outline);
+    let (p95, p99, max) = hausdorff(reference, &outline);
     let win = window(&[reference, &outline]);
-    let (w, h) = (
-        ((win.2 - win.0) as u32 * FINE) as usize,
-        ((win.3 - win.1) as u32 * FINE) as usize,
-    );
-    let ink = raster(reference, win)?;
-    let out = raster(&outline, win)?;
+    let f = fineness(win);
+    let (w, h) = raster_size(win, f);
+    let ink = raster(reference, win, f)?;
+    let out = raster(&outline, win, f)?;
+    let (both, either) = ink
+        .iter()
+        .zip(&out)
+        .fold((0usize, 0usize), |(i, u), (&a, &b)| {
+            (i + usize::from(a && b), u + usize::from(a || b))
+        });
+    let iou = if either == 0 {
+        1.0
+    } else {
+        both as f64 / either as f64
+    };
     let (ink_parts, ink_holes, ink_bg) = topology(&ink, w, h);
     let (out_parts, out_holes, out_bg) = topology(&out, w, h);
     let holes_of = |bg: &[(usize, bool)]| bg.iter().filter(|(_, border)| !border).count();
     let (n_ink_holes, n_out_holes) = (holes_of(&ink_bg), holes_of(&out_bg));
-    // Each counter of the ink must overlap a counter of the outline by at
-    // least half its area.
+    // Each counter of the ink must overlap one counter of the outline with
+    // an IoU of at least `hole_iou_min`.
     let matched = ink_bg.iter().enumerate().all(|(k, &(count, border))| {
         if border {
             return true;
@@ -578,30 +754,40 @@ pub(crate) fn evaluate(
                 *overlap.entry(out_holes[i]).or_default() += 1;
             }
         }
-        overlap.values().any(|&v| v * 2 >= count)
+        overlap.iter().any(|(&o, &shared)| {
+            let other = out_bg[o as usize - 1].0;
+            shared as f64 / (count + other - shared).max(1) as f64 >= thresholds.hole_iou_min
+        })
     });
     let topology_ok = ink_parts == out_parts && n_ink_holes == n_out_holes && matched;
     let origin = (win.0, win.1);
-    let mut found = features(&|i| !ink[i] && out[i], w, h, origin, min_width, "filled");
+    let size = (w, h);
+    let min = allowance.min_feature_px;
+    let mut found = features(&|i| !ink[i] && out[i], size, origin, f, min, "filled");
     found.extend(features(
         &|i| ink[i] && !out[i],
-        w,
-        h,
+        size,
         origin,
-        min_width,
+        f,
+        min,
         "lost",
     ));
     found.sort_by(|a, b| b.area_px2.total_cmp(&a.area_px2));
     found.truncate(MAX_LISTED);
+    let round = |v: f64| (v * 1000.0).round() / 1000.0;
     Ok(QualityReport {
-        iou_mask,
-        hausdorff_p95_px: (p95 * 1000.0).round() / 1000.0,
-        hausdorff_max_px: (max * 1000.0).round() / 1000.0,
+        iou_mask: iou,
+        hausdorff_p95_px: round(p95),
+        fit_deviation_px: round(p99),
+        fit_budget_px: round(allowance.fit_px + allowance.grid_px),
+        grid_px: round(allowance.grid_px),
+        hausdorff_max_px: round(max),
         components: [ink_parts, out_parts],
         holes: [n_ink_holes, n_out_holes],
         topology_ok,
         features: found,
         g1_violations: g1_violations(paths, thresholds.g1_degrees),
+        crossings: crossings(&outline),
         nodes_per_1000: (node_density(paths) * 10.0).round() / 10.0,
     })
 }
@@ -616,15 +802,12 @@ pub(crate) fn faint_counters(
     stricter: &[Vec<Point>],
 ) -> Result<Vec<FeatureIssue>, TraceError> {
     let win = window(&[reference, stricter]);
-    let (w, h) = (
-        ((win.2 - win.0) as u32 * FINE) as usize,
-        ((win.3 - win.1) as u32 * FINE) as usize,
-    );
-    let ink = raster(reference, win)?;
-    let strict = raster(stricter, win)?;
+    let f = fineness(win);
+    let (w, h) = raster_size(win, f);
+    let ink = raster(reference, win, f)?;
+    let strict = raster(stricter, win, f)?;
     let (_, ink_labels, ink_bg) = topology(&ink, w, h);
     let (_, labels, bg) = topology(&strict, w, h);
-    let f = f64::from(FINE);
     let mut found = Vec::new();
     for (k, &(count, border)) in bg.iter().enumerate() {
         let area_px2 = count as f64 / (f * f);
@@ -671,17 +854,15 @@ pub(crate) fn faint_features(
     min_width_px: f64,
 ) -> Result<Vec<FeatureIssue>, TraceError> {
     let win = window(&[reference, stricter]);
-    let (w, h) = (
-        ((win.2 - win.0) as u32 * FINE) as usize,
-        ((win.3 - win.1) as u32 * FINE) as usize,
-    );
-    let ink = raster(reference, win)?;
-    let strict = raster(stricter, win)?;
+    let f = fineness(win);
+    let (w, h) = raster_size(win, f);
+    let ink = raster(reference, win, f)?;
+    let strict = raster(stricter, win, f)?;
     let mut found = features(
         &|i| ink[i] && !strict[i],
-        w,
-        h,
+        (w, h),
         (win.0, win.1),
+        f,
         min_width_px,
         "faint",
     );
@@ -726,6 +907,12 @@ mod tests {
         }
     }
 
+    const ALLOW: Allowance = Allowance {
+        fit_px: 0.5,
+        min_feature_px: 0.8,
+        grid_px: 0.0,
+    };
+
     const IDENTITY: ToPixels = ToPixels {
         scale: 1.0,
         lsb: 0.0,
@@ -741,7 +928,7 @@ mod tests {
             square(38.0, 38.0, 4.0, true),
         ];
         let outline = vec![path(&square(10.0, 10.0, 60.0, false))];
-        let q = evaluate(&reference, &outline, &IDENTITY, 0.995, &THRESHOLDS, false).expect("q");
+        let q = evaluate(&reference, &outline, &IDENTITY, &THRESHOLDS, ALLOW).expect("q");
         assert!(!q.topology_ok, "{q:?}");
         assert_eq!(q.holes, [1, 0]);
         assert!(!q.failures(&THRESHOLDS).is_empty());
@@ -763,7 +950,7 @@ mod tests {
         slitted.push(slitted[0]);
         let reference = vec![slitted];
         let outline = vec![path(&square(10.0, 10.0, 60.0, false))];
-        let q = evaluate(&reference, &outline, &IDENTITY, 0.99, &THRESHOLDS, false).expect("q");
+        let q = evaluate(&reference, &outline, &IDENTITY, &THRESHOLDS, ALLOW).expect("q");
         assert!(q.features.iter().any(|f| f.kind == "filled"), "{q:?}");
     }
 
@@ -771,7 +958,52 @@ mod tests {
     fn a_faithful_outline_passes() {
         let reference = vec![square(10.0, 10.0, 60.0, false)];
         let outline = vec![path(&square(10.1, 10.1, 59.8, false))];
-        let q = evaluate(&reference, &outline, &IDENTITY, 0.995, &THRESHOLDS, false).expect("q");
+        let q = evaluate(&reference, &outline, &IDENTITY, &THRESHOLDS, ALLOW).expect("q");
         assert!(q.failures(&THRESHOLDS).is_empty(), "{q:?}");
+    }
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_side_is_reported_at_once_not_searched() {
+        let ring = vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 0.0),
+        ];
+        let started = std::time::Instant::now();
+        let (p95, _, max) = hausdorff(&[], &[ring]);
+        assert!(p95 >= NO_EDGE && max >= NO_EDGE);
+        assert!(started.elapsed().as_secs_f64() < 1.0);
+    }
+
+    #[test]
+    fn large_windows_are_checked_more_coarsely() {
+        assert!((fineness((0, 0, 100, 100)) - FINE).abs() < 1e-9);
+        let f = fineness((0, 0, 4000, 4000));
+        let (w, h) = raster_size((0, 0, 4000, 4000), f);
+        assert!((w * h) as f64 <= MAX_RASTER_SAMPLES * 1.01, "{w} x {h}");
+    }
+}
+
+#[cfg(test)]
+mod crossing_tests {
+    use super::*;
+
+    #[test]
+    fn a_loop_is_a_crossing_and_a_square_is_not() {
+        let ring = |pts: &[(f64, f64)]| {
+            let mut v: Vec<Point> = pts.iter().map(|&(x, y)| Point::new(x, y)).collect();
+            v.push(v[0]);
+            v
+        };
+        let square = ring(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        assert_eq!(crossings(&[square]), 0);
+        let bow = ring(&[(0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0)]);
+        assert_eq!(crossings(&[bow]), 1);
     }
 }

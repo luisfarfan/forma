@@ -662,12 +662,18 @@ fn fit_plain(points: &[Point], tolerance: f64, px: f64, closed: bool) -> Vec<(Se
         .collect()
 }
 
-/// The smallest fitting and simplification error: [`SIMPLIFY_ERROR`] units,
-/// or one mask pixel (`1/upsample` of an original pixel) if that is more.
-/// Detail finer than the mask is not in the image; fitting to it only adds
-/// nodes (at 17 units per pixel, 1.5 units is a tenth of a pixel).
+/// The smallest fitting and simplification error: a quarter of an original
+/// pixel, or one mask pixel (`1/upsample` of an original pixel) if that is
+/// more, at most [`SIMPLIFY_ERROR`] units and at least a quarter unit.
+/// Detail finer than that is not in the image; fitting to it only adds
+/// nodes.
 fn error_floor(px: f64, upsample: u32) -> f64 {
-    SIMPLIFY_ERROR.max(px / f64::from(upsample.max(1)))
+    // A quarter of an original pixel (or one mask pixel), never more than
+    // SIMPLIFY_ERROR units: in a high-resolution image a fixed budget in
+    // units would be pixels wide (spec §3.1: budgets are in source pixels).
+    (px * 0.25)
+        .max(px / f64::from(upsample.max(1)))
+        .clamp(0.25, SIMPLIFY_ERROR)
 }
 
 /// The refit tolerance of a stretch: `floor` (see [`error_floor`]) for a clean

@@ -165,3 +165,52 @@ pub(crate) fn binary_mask(soft: &Coverage, upsample: u32) -> Mask {
         data,
     }
 }
+
+/// The ink coverage of an image, for drawing it under traced glyphs.
+#[derive(Clone, Debug)]
+pub struct InkCoverage {
+    coverage: Coverage,
+}
+
+impl InkCoverage {
+    /// The coverage over `rect` (image pixels: left, top, right, bottom)
+    /// sampled on a `width` by `height` grid at the centres of its cells,
+    /// read bilinearly, as 0..=255, row by row from the top.
+    #[must_use]
+    pub fn crop(&self, rect: [f64; 4], width: u32, height: u32) -> Vec<u8> {
+        let [x0, y0, x1, y1] = rect;
+        let (w, h) = (width.max(1), height.max(1));
+        let mut out = Vec::with_capacity(w as usize * h as usize);
+        for j in 0..h {
+            for i in 0..w {
+                let x = x0 + (f64::from(i) + 0.5) / f64::from(w) * (x1 - x0) - 0.5;
+                let y = y0 + (f64::from(j) + 0.5) / f64::from(h) * (y1 - y0) - 0.5;
+                let (fx, fy) = (x.floor(), y.floor());
+                let (tx, ty) = ((x - fx) as f32, (y - fy) as f32);
+                let (ix, iy) = (fx as i64, fy as i64);
+                let c = &self.coverage;
+                let top = c.at(ix, iy) * (1.0 - tx) + c.at(ix + 1, iy) * tx;
+                let bottom = c.at(ix, iy + 1) * (1.0 - tx) + c.at(ix + 1, iy + 1) * tx;
+                let v = top * (1.0 - ty) + bottom * ty;
+                out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+        }
+        out
+    }
+}
+
+/// The ink coverage of `image` with the ink and background
+/// [`crate::analyze`] finds under `opts`.
+///
+/// # Errors
+///
+/// The errors of [`crate::analyze`].
+pub fn ink_coverage(
+    image: &RgbImage,
+    opts: &crate::TraceOptions,
+) -> Result<InkCoverage, crate::TraceError> {
+    let parts = crate::candidates::analyze_parts(image, opts)?;
+    Ok(InkCoverage {
+        coverage: parts.coverage,
+    })
+}

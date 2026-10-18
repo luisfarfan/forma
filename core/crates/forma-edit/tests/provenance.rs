@@ -27,6 +27,8 @@ fn approved(font: &Font, name: &str) -> Provenance {
             iou_mask: 0.99,
             hausdorff_p95_px: None,
             topology_ok: None,
+            attempt: None,
+            isoline: None,
         },
     );
     provenance.review = Review::Approved;

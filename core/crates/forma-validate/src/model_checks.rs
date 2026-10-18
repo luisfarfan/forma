@@ -38,12 +38,20 @@ fn check_review(font: &Font) -> Vec<Finding> {
         if let Some(provenance) = &glyph.provenance {
             let generated = matches!(provenance.source, Source::Traced | Source::Synthesized);
             if generated && provenance.review == Review::Pending {
+                let look = if provenance.attention.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " (the engine asks for a look: {})",
+                        provenance.attention.join("; ")
+                    )
+                };
                 findings.push(Finding::new(
                     "glyph.pending_review",
                     Severity::Warning,
                     Some(&glyph.name),
                     format!(
-                        "the {} glyph has not been reviewed; approve or reject it with \
+                        "the {} glyph has not been reviewed{look}; approve or reject it with \
                          glyph_review",
                         source_word(provenance.source)
                     ),

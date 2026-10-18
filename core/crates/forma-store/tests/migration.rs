@@ -521,6 +521,8 @@ fn provenance_roundtrips_both_formats() {
             iou_mask: 0.991,
             hausdorff_p95_px: Some(0.4),
             topology_ok: Some(true),
+            attempt: Some("subpixel".into()),
+            isoline: Some(0.5),
         },
     );
     provenance.review = Review::Approved;

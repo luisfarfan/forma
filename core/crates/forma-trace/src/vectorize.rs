@@ -42,7 +42,7 @@ use visioncortex::{BinaryImage, CompoundPathElement, PathSimplifyMode};
 use crate::candidates::{Analysis, Extractor, Fidelity, PxRect, TraceOptions, analyze_parts};
 use crate::cleanup::Fit;
 use crate::mask::Coverage;
-use crate::quality::{FeatureIssue, QualityReport, THRESHOLDS, ToPixels};
+use crate::quality::{Allowance, FeatureIssue, QualityReport, THRESHOLDS, ToPixels};
 use crate::subpixel::{Field, edge_softness, isolines};
 use crate::{TraceError, cleanup, fidelity, quality};
 
@@ -101,6 +101,8 @@ pub struct TracedGlyph {
     pub quality: QualityReport,
     /// The attempt that produced them (see [`trace_groups`]).
     pub attempt: String,
+    /// The coverage level the edge was traced at.
+    pub isoline: f64,
     /// Whether a person (or an agent) should look at the glyph: it fails a
     /// quality gate, or the image holds a feature too faint to be sure of.
     pub needs_review: bool,
@@ -275,15 +277,16 @@ pub(crate) fn group_ink(
              in one row"
         )));
     }
-    let union = indices.iter().fold(candidate.bbox, |b, &i| {
-        let c = analysis.candidates[i].bbox;
-        PxRect {
-            x0: b.x0.min(c.x0),
-            y0: b.y0.min(c.y0),
-            x1: b.x1.max(c.x1),
-            y1: b.y1.max(c.y1),
-        }
-    });
+    if indices.len() > 1 {
+        // Several pieces: each one's own ink (the pieces of its box that do
+        // not continue outside it), joined. Other candidates lying in the
+        // union of their boxes stay out.
+        let parts: Vec<CandidateInk> = indices
+            .iter()
+            .map(|&i| group_ink(prepared, &[i], cap_height_units))
+            .collect::<Result<_, _>>()?;
+        return Ok(join_inks(&parts));
+    }
     let row = analysis
         .rows
         .get(candidate.row)
@@ -298,7 +301,7 @@ pub(crate) fn group_ink(
     let scale = cap_height_units / row_height;
     let u = prepared.upsample as usize;
     let mask = &prepared.mask;
-    let b = union;
+    let b = candidate.bbox;
     let region = (
         (b.x0 as usize * u).min(mask.width as usize),
         (b.y0 as usize * u).min(mask.height as usize),
@@ -432,6 +435,57 @@ fn midline(walk: &[Point]) -> Vec<Point> {
         out.push(first);
     }
     out
+}
+
+/// The union of the inks of several candidates of one row (same upsample,
+/// scale and baseline): one cut-out covering them all.
+fn join_inks(parts: &[CandidateInk]) -> CandidateInk {
+    let first = &parts[0];
+    let x0 = parts.iter().map(|p| p.x0).min().unwrap_or(first.x0);
+    let y0 = parts.iter().map(|p| p.y0).min().unwrap_or(first.y0);
+    let x1 = parts
+        .iter()
+        .map(|p| p.x0 + p.width as i64)
+        .max()
+        .unwrap_or(x0);
+    let y1 = parts
+        .iter()
+        .map(|p| p.y0 + p.height as i64)
+        .max()
+        .unwrap_or(y0);
+    let (width, height) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    let mut pixels = vec![false; width * height];
+    for p in parts {
+        for j in 0..p.height {
+            for i in 0..p.width {
+                if p.pixels[j * p.width + i] {
+                    let (gx, gy) = (p.x0 + i as i64 - x0, p.y0 + j as i64 - y0);
+                    pixels[gy as usize * width + gx as usize] = true;
+                }
+            }
+        }
+    }
+    let bbox = parts.iter().fold(first.bbox, |b, p| PxRect {
+        x0: b.x0.min(p.bbox.x0),
+        y0: b.y0.min(p.bbox.y0),
+        x1: b.x1.max(p.bbox.x1),
+        y1: b.y1.max(p.bbox.y1),
+    });
+    CandidateInk {
+        upsample: first.upsample,
+        x0,
+        y0,
+        width,
+        height,
+        pixels,
+        ink_left_px: parts
+            .iter()
+            .map(|p| p.ink_left_px)
+            .fold(f64::INFINITY, f64::min),
+        bbox,
+        baseline_px: first.baseline_px,
+        scale: first.scale,
+    }
 }
 
 /// The edge of the candidate's ink as closed polygons in original pixels:
@@ -664,19 +718,46 @@ pub fn trace_groups(
             )
         };
         let mut best: Option<Outcome> = None;
+        let allowance = Allowance {
+            fit_px: if hard || opts.fidelity == Fidelity::Clean {
+                THRESHOLDS.fit_clean_px
+            } else {
+                THRESHOLDS.fit_faithful_px
+            },
+            min_feature_px: if hard {
+                THRESHOLDS.feature_width_hard_px
+            } else {
+                THRESHOLDS.feature_width_px
+            },
+            // Coordinates are rounded to whole font units: half a unit, in
+            // image pixels, is beyond what any outline can follow.
+            grid_px: 0.5 / ink.scale,
+        };
+        let mut last_error = None;
         for attempt in attempts(opts, hard) {
-            let loops = if attempt.extractor == Extractor::Subpixel {
-                reference.clone()
-            } else {
-                edge_loops(&prepared, &ink, attempt.extractor, opts.isoline)?
+            // An attempt that cannot be traced or judged is a failed
+            // attempt, not a failed call: the next one may do.
+            let tried = (|| {
+                let loops = if attempt.extractor == Extractor::Subpixel {
+                    reference.clone()
+                } else {
+                    edge_loops(&prepared, &ink, attempt.extractor, opts.isoline)?
+                };
+                let upsample = if attempt.extractor == Extractor::EdgeWalk {
+                    ink.upsample
+                } else {
+                    4
+                };
+                let traced = vectorize(&ink, &loops, lsb, attempt.fit, upsample)?;
+                judge(&ink, &reference, traced, lsb, attempt.name, allowance)
+            })();
+            let outcome = match tried {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
             };
-            let upsample = if attempt.extractor == Extractor::EdgeWalk {
-                ink.upsample
-            } else {
-                4
-            };
-            let traced = vectorize(&ink, &loops, lsb, attempt.fit, upsample)?;
-            let outcome = judge(&ink, &reference, traced, lsb, attempt.name, hard)?;
             let passed = outcome.failures.is_empty();
             let better = best
                 .as_ref()
@@ -689,13 +770,23 @@ pub fn trace_groups(
             }
         }
         let Some(chosen) = best else {
-            return Err(TraceError::Vectorize(
-                "no attempt traced the candidate".into(),
-            ));
+            return Err(last_error.unwrap_or_else(|| {
+                TraceError::Vectorize("no attempt traced the candidate".into())
+            }));
         };
         let bounds = forma_geometry::bbox(&chosen.paths);
         let ink_width = bounds.map_or(0.0, |r| r.width());
         let mut reasons = chosen.failures.clone();
+        if reference.is_empty() {
+            reasons.push(format!(
+                "the ink never reaches the coverage level {} here: there is no edge to trace \
+                 (trace with a lower isoline)",
+                opts.isoline
+            ));
+        } else if chosen.paths.is_empty() {
+            reasons.push("no outline could be traced from this ink".to_owned());
+        }
+        reasons.dedup();
         for f in &faint_counters {
             reasons.push(format!(
                 "a counter of {:.0} square px shows at a stricter level at ({:.0}, {:.0}): the \
@@ -717,6 +808,7 @@ pub fn trace_groups(
             },
             quality: chosen.quality,
             attempt: chosen.attempt.to_owned(),
+            isoline: opts.isoline,
             needs_review: !reasons.is_empty(),
             reasons,
             faint,
@@ -748,7 +840,7 @@ fn judge(
     traced: Vec<Path>,
     lsb: f64,
     attempt: &'static str,
-    hard: bool,
+    allowance: Allowance,
 ) -> Result<Outcome, TraceError> {
     // Cleanup moves the outline's left edge by a fraction of a pixel:
     // shift it (by whole units, keeping the grid) back onto the side
@@ -779,7 +871,7 @@ fn judge(
         lsb,
         origin: (ink.ink_left_px - shift / ink.scale, ink.baseline_px),
     };
-    let quality = quality::evaluate(reference, &paths, &to, iou, &THRESHOLDS, hard)?;
+    let quality = quality::evaluate(reference, &paths, &to, &THRESHOLDS, allowance)?;
     let failures = quality.failures(&THRESHOLDS);
     Ok(Outcome {
         attempt,

@@ -27,6 +27,7 @@ pub use decode::{MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, decode};
 pub use error::TraceError;
 pub use fidelity::{Comparison, compare};
 pub use layout::{RowMatch, match_rows, typical_stroke_px};
+pub use mask::{InkCoverage, ink_coverage};
 pub use measure::{StyleMeasure, measure};
 pub use palette::PaletteEntry;
 pub use quality::{FeatureIssue, QualityReport, QualityThresholds, THRESHOLDS};
