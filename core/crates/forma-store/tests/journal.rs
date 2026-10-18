@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forma_model::{
-    Actor, Font, FontInfo, Glyph, GlyphId, Layer, Master, MasterId, Node, NodeKind,
-    Path as Contour, PathId, Rev, VerticalMetrics,
+    Actor, Font, FontInfo, Glyph, GlyphId, KernRef, KernSide, Kerning, KerningGroup,
+    KerningGroupId, Layer, Master, MasterId, Node, NodeKind, Path as Contour, PathId, Rev,
+    VerticalMetrics,
 };
 use forma_store::{
     Journal, JournalKey, JournalRecord, StoreError, apply_records, remove_journal, replay,
@@ -51,6 +52,7 @@ fn glyph_in(font: &Font, n: u128, name: &str, advance_width: f64, apex: f64) -> 
                     closed: true,
                     nodes: vec![corner(0.0, 0.0), corner(500.0, 0.0), corner(250.0, apex)],
                 }],
+                components: Vec::new(),
             },
         )]
         .into(),
@@ -106,6 +108,7 @@ impl Sim {
                 .iter()
                 .map(|id| (*id, font.glyphs.get(id).map(|glyph| (**glyph).clone())))
                 .collect(),
+            kerning: None,
         });
     }
 
@@ -174,6 +177,7 @@ fn empty_record(rev: u64, label: &str) -> JournalRecord {
         masters: None,
         glyph_order: None,
         glyphs: Vec::new(),
+        kerning: None,
     }
 }
 
@@ -813,6 +817,91 @@ fn units_per_em_is_journaled_and_older_lines_still_read() {
     assert_eq!(font.info, base.info);
     let unchanged = apply_records(base.clone(), &records[1..]).unwrap();
     assert_eq!(unchanged.units_per_em, base.units_per_em);
+}
+
+/// The kerning of `base_font()`: the first-side group `a` with glyph `a`,
+/// and the pair `a`/`b` of `value`.
+fn kerning_of(font: &Font, value: f64) -> Kerning {
+    let group = KerningGroupId(Uuid::from_u128(0x6a));
+    let mut kerning = Kerning::default();
+    kerning.groups_mut().insert(
+        group,
+        KerningGroup {
+            id: group,
+            name: "a".to_owned(),
+            side: KernSide::First,
+            members: vec![gid(1)],
+        },
+    );
+    kerning.set_pair(
+        font.default_master().id,
+        KernRef::Group(group),
+        KernRef::Glyph(gid(2)),
+        Some(value),
+    );
+    kerning
+}
+
+#[test]
+fn kerning_is_journaled_and_older_lines_still_read() {
+    let dir = TempDir::new().unwrap();
+    let base = base_font();
+    let mut record = empty_record(1, "kern");
+    record.kerning = Some(kerning_of(&base, -45.0));
+    let mut cleared = empty_record(3, "no kerning");
+    cleared.kerning = Some(Kerning::default());
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
+    journal.append(&record).unwrap();
+    journal.append(&empty_record(2, "none")).unwrap();
+    journal.append(&cleared).unwrap();
+    drop(journal);
+
+    let text = fs::read_to_string(journal_file(dir.path(), &base)).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(
+        first["kerning"]["pairs"][base.default_master().id.to_string()][0]["value"],
+        -45.0
+    );
+    // A record that does not touch the kerning leaves the field out, as
+    // records written before the field existed do.
+    assert!(!lines[1].contains("kerning"), "{}", lines[1]);
+    assert!(
+        lines[2].contains(r#""kerning":{"groups":[],"pairs":{}}"#),
+        "{}",
+        lines[2]
+    );
+
+    let records = replay(dir.path(), &key(&base)).unwrap();
+    assert_eq!(records[0], record);
+    assert_eq!(records[1].kerning, None);
+    assert_eq!(records[2], cleared);
+
+    // A record with kerning replaces the font's; one without leaves it.
+    let font = apply_records(base.clone(), &records[..2]).unwrap();
+    assert_eq!(font.kerning, kerning_of(&base, -45.0));
+    assert_eq!(font.glyphs, base.glyphs);
+    let font = apply_records(base.clone(), &records).unwrap();
+    assert!(font.kerning.is_empty());
+    assert_eq!(font, base);
+}
+
+#[test]
+fn kerning_records_are_checked() {
+    let dir = TempDir::new().unwrap();
+    let base = base_font();
+    let mut journal = Journal::open(dir.path(), &key(&base)).unwrap();
+    let mut bad = empty_record(1, "nan kerning");
+    bad.kerning = Some(kerning_of(&base, f64::NAN));
+    let err = journal.append(&bad).unwrap_err();
+    assert!(matches!(err, StoreError::Invalid(_)), "{err:?}");
+    assert_eq!(replay(dir.path(), &key(&base)).unwrap().len(), 0);
+
+    // Kerning that breaks a model rule does not apply.
+    let mut zero = empty_record(1, "zero pair");
+    zero.kerning = Some(kerning_of(&base, 0.0));
+    let err = apply_records(base, &[zero]).unwrap_err();
+    assert!(matches!(err, StoreError::Invalid(_)), "{err:?}");
 }
 
 // ---------------------------------------------------------------------------

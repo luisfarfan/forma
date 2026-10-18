@@ -321,6 +321,155 @@ async fn every_output_validates_against_its_output_schema() {
         )
         .await);
 
+    // Components, strokes and overlaps.
+    let composed = c
+        .ok(
+            "glyph_compose",
+            json!({ "doc": doc, "base_rev": r, "name": "AB", "base": "A",
+                    "marks": [{ "glyph": "B", "position": "above" }] }),
+        )
+        .await;
+    assert_eq!(composed["glyph"]["name"], json!("AB"));
+    let r = rev(&composed);
+    let r = rev(&c
+        .planned(
+            "component_set",
+            json!({ "doc": doc, "base_rev": r, "glyph": "AB",
+                    "components": [{ "base": "A" }, { "base": "B" }] }),
+        )
+        .await);
+    let r = rev(&c
+        .ok(
+            "glyph_decompose",
+            json!({ "doc": doc, "base_rev": r, "glyphs": ["AB"] }),
+        )
+        .await);
+    let r = rev(&c
+        .ok(
+            "remove_overlap",
+            json!({ "doc": doc, "base_rev": r, "glyphs": ["AB"] }),
+        )
+        .await);
+    let r = rev(&c
+        .ok(
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": r, "name": "S", "advance_width": 600 }),
+        )
+        .await);
+    let stroke = json!({ "glyph": "S", "width": 60, "cap": { "type": "round" },
+        "skeletons": [{ "nodes": [
+            { "x": 100, "y": 100, "kind": "line" },
+            { "x": 400, "y": 100, "kind": "line" }] }] });
+    let mut args = stroke.clone();
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(r);
+    let r = rev(&c.ok("glyph_stroke", args).await);
+    let mut args = stroke;
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(r);
+    let r = rev(&c.planned("glyph_stroke", args).await);
+
+    // Spacing, kerning and the character set.
+    const H: &str = "M80 0 L160 0 L160 310 L540 310 L540 0 L620 0 L620 700 L540 700 L540 390 \
+                     L160 390 L160 700 L80 700 Z";
+    const V: &str = "M290 0 L390 0 L660 700 L560 700 L340 130 L120 700 L20 700 Z";
+    let mut r = r;
+    for (name, advance, svg) in [("H", 700, H), ("O", 700, H), ("V", 680, V)] {
+        r = rev(&c
+            .ok(
+                "glyph_create",
+                json!({ "doc": doc, "base_rev": r, "name": name, "advance_width": advance,
+                        "svg_path": svg }),
+            )
+            .await);
+    }
+    let spaced = c
+        .ok(
+            "spacing_auto",
+            json!({ "doc": doc, "base_rev": r, "glyphs": ["H", "V"], "tightness": 0.05 }),
+        )
+        .await;
+    assert!(
+        spaced["spaced"].as_u64().is_some_and(|n| n >= 1),
+        "{spaced}"
+    );
+    let r = rev(&spaced);
+    let r = rev(&c
+        .planned(
+            "spacing_auto",
+            json!({ "doc": doc, "base_rev": r, "glyphs": ["H"], "tightness": 1.5 }),
+        )
+        .await);
+    let r = rev(&c
+        .ok(
+            "kerning_set",
+            json!({ "doc": doc, "base_rev": r,
+                    "groups": [{ "name": "V", "side": "first", "members": ["V"] }],
+                    "pairs": [{ "first": { "group": "V" }, "second": { "glyph": "H" },
+                               "value": -20 }] }),
+        )
+        .await);
+    c.ok("kerning_get", json!({ "doc": doc })).await;
+    c.ok("kerning_get", json!({ "doc": doc, "glyphs": ["V"] }))
+        .await;
+    let r = rev(&c
+        .planned(
+            "kerning_set",
+            json!({ "doc": doc, "base_rev": r,
+                    "delete_groups": [{ "name": "V", "side": "first" }] }),
+        )
+        .await);
+    let _r = rev(&c
+        .planned(
+            "kerning_auto",
+            json!({ "doc": doc, "base_rev": r, "glyphs": ["H", "O", "V"] }),
+        )
+        .await);
+    c.ok("kerning_check", json!({ "doc": doc, "min_distance": 20 }))
+        .await;
+    c.ok(
+        "charset_check",
+        json!({ "doc": doc, "profile": "unicase-es" }),
+    )
+    .await;
+    c.ok(
+        "charset_check",
+        json!({ "doc": doc, "codepoints": [65, "U+0048"] }),
+    )
+    .await;
+
+    // Image tools: the specimen is copied under the allowed root. The
+    // inspection and comparison answer with images (no output schema).
+    let image = root.path().join("specimen.png");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/hito2/specimen.png"),
+        &image,
+    )
+    .expect("specimen");
+    let inspected = c.raw("image_inspect", json!({ "path": image })).await;
+    assert_ne!(inspected.is_error, Some(true), "{inspected:?}");
+    let trace = json!({ "path": image, "assignments": [
+        { "candidate": 3, "name": "tracedH", "unicodes": ["U+0048"] }] });
+    let mut args = trace.clone();
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(r);
+    let r = rev(&c.ok("image_trace", args).await);
+    // Tracing over the glyph it just made destroys it: a plan to confirm.
+    let mut args = trace;
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(r);
+    let r = rev(&c.planned("image_trace", args).await);
+    let compared = c
+        .raw(
+            "trace_compare",
+            json!({ "doc": doc, "path": image, "glyph": "tracedH", "candidate": 3 }),
+        )
+        .await;
+    assert_ne!(compared.is_error, Some(true), "{compared:?}");
+    c.ok("glyph_measure", json!({ "doc": doc, "glyph": "tracedH" }))
+        .await;
+
     // Deletion: refused without a plan, discarded, then committed.
     let error = c
         .fails(
@@ -451,7 +600,7 @@ async fn every_output_validates_against_its_output_schema() {
         Vec::<&&String>::new(),
         "tools never validated"
     );
-    assert_eq!(declared.len(), 32, "{declared:?}");
+    assert_eq!(declared.len(), 45, "{declared:?}");
     let total: usize = c.validated.values().sum();
     assert!(total > 80, "{total} results validated");
     c.client.cancel().await.expect("close");

@@ -9,9 +9,13 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use forma_geometry::path_to_svg;
-use forma_model::{Font, Glyph, GlyphId, Layer, MasterId, Node, NodeKind, Path, PathId};
+use forma_model::{
+    Component, Font, Glyph, GlyphId, KernRef, Layer, MasterId, Node, NodeKind, Path, PathId,
+    Transform,
+};
 use forma_render::{
-    DEFAULT_SIZE, PreviewOptions, RenderError, compare_png, glyph_png, glyph_svg, text_png,
+    DEFAULT_SIZE, Mask, PreviewOptions, RenderError, compare_png, coverage_mask, glyph_png,
+    glyph_svg, mask_iou, text_png,
 };
 use vello_cpu::Pixmap;
 
@@ -68,6 +72,7 @@ fn glyph(font: &Font, name: &str, unicodes: &[u32], advance: f64, paths: Vec<Pat
         Layer {
             advance_width: advance,
             paths,
+            components: Vec::new(),
         },
     );
     Glyph {
@@ -306,6 +311,50 @@ fn text_png_missing_char_uses_notdef_or_box() {
         "the solid .notdef has more ink than the hollow box"
     );
     assert_ne!(with_notdef, boxed);
+}
+
+#[test]
+fn text_png_leaves_a_blank_space_without_a_space_glyph() {
+    let mut font = Font::new("Test", 1000);
+    let a = glyph(
+        &font,
+        "a",
+        &[0x61],
+        500.0,
+        vec![rect(0, 50.0, 0.0, 450.0, 500.0, true)],
+    );
+    add(&mut font, a);
+    // A .notdef too, to show that the space does not fall back to it.
+    let notdef = glyph(
+        &font,
+        ".notdef",
+        &[],
+        800.0,
+        vec![rect(0, 100.0, 0.0, 700.0, 700.0, true)],
+    );
+    add(&mut font, notdef);
+    let blank = text_png(&font, " ", 100).expect("renders");
+    // The space the export adds is UPM / 4 wide: 250 -> 25 px, + 20 px.
+    assert_eq!(png_size(&blank), (45, 100));
+    assert_eq!(dark_fraction(&blank), 0.0, "the space must be blank");
+    // The no-break space too, and between letters it is a gap of 25 px.
+    let nbsp = text_png(&font, "\u{a0}", 100).expect("renders");
+    assert_eq!(nbsp, blank);
+    let spaced = text_png(&font, "a a", 100).expect("renders");
+    assert_eq!(png_size(&spaced).0, 10 + 50 + 25 + 50 + 10);
+    // Inside the gap (x 60..85, which the letters' side bearings widen to
+    // 55..90) nothing is drawn.
+    for x in 56..89 {
+        for y in 0..100 {
+            assert_eq!(pixel(&spaced, x, y), (255, 255, 255, 255), "({x}, {y})");
+        }
+    }
+
+    // A real space glyph wins.
+    let space = glyph(&font, "space", &[0x20], 300.0, Vec::new());
+    add(&mut font, space);
+    let real = text_png(&font, " ", 100).expect("renders");
+    assert_eq!(png_size(&real), (50, 100));
 }
 
 #[test]
@@ -769,4 +818,260 @@ fn normal_fonts_still_render() {
         assert_eq!(png_size(&text).1, 64);
         assert!(dark_fraction(&text) > 0.0, "upm {upm}: text is drawn");
     }
+}
+
+// ------------------------------------------------- components, kerning, masks
+
+fn with_components(font: &Font, name: &str, advance: f64, components: Vec<Component>) -> Glyph {
+    let mut g = glyph(font, name, &[], advance, Vec::new());
+    let m = font.masters[0].id;
+    if let Some(layer) = g.layers.get_mut(&m) {
+        layer.components = components;
+    }
+    g
+}
+
+fn shift(dx: f64, dy: f64) -> Transform {
+    Transform {
+        dx,
+        dy,
+        ..Transform::IDENTITY
+    }
+}
+
+#[test]
+fn composite_glyph_renders_like_decomposed() {
+    let mut font = Font::new("Test", 1000);
+    let a = glyph(
+        &font,
+        "A",
+        &[0x41],
+        600.0,
+        vec![rect(0, 50.0, 0.0, 550.0, 600.0, true)],
+    );
+    let a = add(&mut font, a);
+    let acute = glyph(
+        &font,
+        "acute",
+        &[],
+        300.0,
+        vec![rect(0, 0.0, 0.0, 100.0, 150.0, true)],
+    );
+    let acute = add(&mut font, acute);
+    let composite = with_components(
+        &font,
+        "Aacute",
+        600.0,
+        vec![
+            Component {
+                base: a.id,
+                transform: Transform::IDENTITY,
+            },
+            Component {
+                base: acute.id,
+                transform: shift(250.0, 700.0),
+            },
+        ],
+    );
+    let composite = add(&mut font, composite);
+    let decomposed = glyph(
+        &font,
+        "Aacute.flat",
+        &[],
+        600.0,
+        vec![
+            rect(0, 50.0, 0.0, 550.0, 600.0, true),
+            rect(1, 250.0, 700.0, 350.0, 850.0, true),
+        ],
+    );
+    let decomposed = add(&mut font, decomposed);
+
+    let m = master(&font);
+    // Nodes are drawn for a glyph's own contours only, so only the plain
+    // and metrics views are comparable.
+    let options = PreviewOptions {
+        size: 256,
+        show_nodes: false,
+        show_metrics: true,
+    };
+    let png = glyph_png(&font, &composite, m, &options).expect("renders");
+    let flat = glyph_png(&font, &decomposed, m, &options).expect("renders");
+    assert_eq!(pixels(&png), pixels(&flat));
+    let png = glyph_png(&font, &composite, m, &opts(256)).expect("renders");
+    let base_only = glyph_png(&font, &a, m, &opts(256)).expect("renders");
+    assert_ne!(pixels(&png), pixels(&base_only), "the accent must be drawn");
+    let svg = glyph_svg(&font, &composite, m, &opts(256)).expect("svg");
+    assert_eq!(
+        svg.matches('M').count(),
+        2,
+        "both contours in the SVG: {svg}"
+    );
+}
+
+#[test]
+fn text_applies_kerning() {
+    let mut font = Font::new("Test", 1000);
+    let a = glyph(
+        &font,
+        "A",
+        &[0x41],
+        600.0,
+        vec![rect(0, 0.0, 0.0, 500.0, 700.0, true)],
+    );
+    let a = add(&mut font, a);
+    let v = glyph(
+        &font,
+        "V",
+        &[0x56],
+        650.0,
+        vec![rect(0, 0.0, 0.0, 500.0, 700.0, true)],
+    );
+    let v = add(&mut font, v);
+    let m = master(&font);
+    let height = 100u32;
+    let plain = png_size(&text_png(&font, "AV", height).expect("renders")).0;
+
+    font.kerning
+        .set_pair(m, KernRef::Glyph(a.id), KernRef::Glyph(v.id), Some(-100.0));
+    let kerned = png_size(&text_png(&font, "AV", height).expect("renders")).0;
+
+    // Scale: height / (ascender - descender) = 100 / 1000 px per unit.
+    let scale = 0.1;
+    let expected = (600.0 + 650.0 - 100.0) * scale + 2.0 * 10.0;
+    assert!(
+        (f64::from(kerned) - expected).abs() <= 1.0,
+        "{kerned} vs {expected}"
+    );
+    assert!((f64::from(plain) - f64::from(kerned) - 10.0).abs() <= 1.0);
+}
+
+fn identity_scale() -> Transform {
+    // 1 pixel per font unit, y down: y' = -y.
+    Transform {
+        yy: -1.0,
+        ..Transform::IDENTITY
+    }
+}
+
+fn lit(mask: &Mask) -> usize {
+    mask.data.iter().filter(|&&v| v >= 128).count()
+}
+
+#[test]
+fn coverage_mask_of_square() {
+    // A 100 x 100 square placed at y -100..0 so that it lands in 0..100 once y is flipped.
+    let square = rect(0, 0.0, -100.0, 100.0, 0.0, true);
+    let mask = coverage_mask(&[square], &identity_scale(), 150, 150).expect("mask");
+    assert_eq!((mask.width, mask.height), (150, 150));
+    assert_eq!(mask.data.len(), 150 * 150);
+    assert!(lit(&mask).abs_diff(10_000) <= 200, "{}", lit(&mask));
+    // Rows run top to bottom; the square occupies the top-left corner.
+    assert_eq!(mask.data[50 * 150 + 50], 255);
+    assert_eq!(mask.data[120 * 150 + 120], 0);
+    // Same input, same coverage values.
+    let again = coverage_mask(
+        &[rect(0, 0.0, -100.0, 100.0, 0.0, true)],
+        &identity_scale(),
+        150,
+        150,
+    )
+    .expect("mask");
+    assert_eq!(mask, again);
+}
+
+#[test]
+fn coverage_of_a_curve_adds_up_to_its_area() {
+    // A disc of four cubics (radius 20 px, centre off the pixel grid): its
+    // coverage must add up to its area. The rasterizer flattens curves to
+    // within a quarter of a pixel, which left out 14 px² (1.1 %) of this
+    // disc: chords inside the arcs, up to 0.26 of a pixel's coverage along
+    // them.
+    let (cx, cy, r) = (25.3, -25.7, 20.0);
+    let k = 0.552_284_749_830_793_4 * r;
+    let corners = [(r, 0.0), (0.0, r), (-r, 0.0), (0.0, -r)];
+    let mut nodes = Vec::new();
+    let mut cubics = Vec::new();
+    for i in 0..4 {
+        let (ax, ay) = corners[i];
+        let (bx, by) = corners[(i + 1) % 4];
+        // Handles along the tangents: perpendicular to the radius.
+        let p0 = (cx + ax, cy + ay);
+        let p1 = (cx + ax - ay / r * k, cy + ay + ax / r * k);
+        let p2 = (cx + bx + by / r * k, cy + by - bx / r * k);
+        let p3 = (cx + bx, cy + by);
+        if i == 0 {
+            nodes.push(node(p0.0, p0.1, NodeKind::Curve));
+        }
+        nodes.push(node(p1.0, p1.1, NodeKind::OffCurve));
+        nodes.push(node(p2.0, p2.1, NodeKind::OffCurve));
+        if i < 3 {
+            nodes.push(node(p3.0, p3.1, NodeKind::Curve));
+        }
+        cubics.push([p0, p1, p2, p3]);
+    }
+    let disc = Path {
+        id: PathId(0),
+        closed: true,
+        nodes,
+    };
+    // The exact area of the four cubics (shoelace over a fine sampling).
+    let mut points = Vec::new();
+    for [p0, p1, p2, p3] in cubics {
+        for j in 0..2000 {
+            let t = f64::from(j) / 2000.0;
+            let u = 1.0 - t;
+            let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+            points.push((
+                a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0,
+                a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1,
+            ));
+        }
+    }
+    let n = points.len();
+    let area = (0..n)
+        .map(|i| {
+            let ((x0, y0), (x1, y1)) = (points[i], points[(i + 1) % n]);
+            x0 * y1 - x1 * y0
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let mask = coverage_mask(&[disc], &identity_scale(), 52, 52).expect("mask");
+    let covered: f64 = mask.data.iter().map(|&v| f64::from(v) / 255.0).sum();
+    // Within a hundredth of a pixel along the edge (the flattening's chords).
+    let perimeter = std::f64::consts::TAU * r;
+    assert!(
+        (covered - area).abs() <= 0.01 * perimeter,
+        "coverage {covered} vs area {area}"
+    );
+}
+
+#[test]
+fn coverage_mask_limits() {
+    let t = identity_scale();
+    assert!(matches!(
+        coverage_mask(&[], &t, 0, 10),
+        Err(RenderError::InvalidSize(_))
+    ));
+    assert!(matches!(
+        coverage_mask(&[], &t, 10_000, 10_000),
+        Err(RenderError::InvalidSize(_))
+    ));
+    let empty = coverage_mask(&[], &t, 8, 8).expect("mask");
+    assert!(empty.data.iter().all(|&v| v == 0));
+}
+
+#[test]
+fn iou_identical_is_one_and_disjoint_is_zero() {
+    let t = identity_scale();
+    let a = coverage_mask(&[rect(0, 0.0, -50.0, 50.0, 0.0, true)], &t, 200, 200).expect("a");
+    let b = coverage_mask(&[rect(0, 100.0, -150.0, 150.0, -100.0, true)], &t, 200, 200).expect("b");
+    assert_eq!(mask_iou(&a, &a, 128).expect("iou"), 1.0);
+    assert_eq!(mask_iou(&a, &b, 128).expect("iou"), 0.0);
+    let empty = coverage_mask(&[], &t, 200, 200).expect("e");
+    assert_eq!(mask_iou(&empty, &empty, 128).expect("iou"), 1.0);
+    let half = coverage_mask(&[rect(0, 0.0, -50.0, 25.0, 0.0, true)], &t, 200, 200).expect("h");
+    assert!((mask_iou(&a, &half, 128).expect("iou") - 0.5).abs() < 0.01);
+    let small = coverage_mask(&[], &t, 10, 10).expect("s");
+    assert!(mask_iou(&a, &small, 128).is_err());
 }

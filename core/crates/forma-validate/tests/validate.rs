@@ -721,3 +721,110 @@ fn a_notdef_the_model_does_not_export_is_not_compared() {
     assert!(report.compiled);
     assert_eq!(report.errors, 0, "{:#?}", report.findings);
 }
+
+// ---------------------------------------------------------------------------
+// Components and kerning
+// ---------------------------------------------------------------------------
+
+use forma_model::{Component, KernRef, Transform};
+
+/// `clean_font` plus `Aacute` (`H` and a hidden mark) and the pair `H`/`I`.
+fn composite_font() -> Font {
+    let mut font = clean_font();
+    let mark = add_glyph(
+        &mut font,
+        "acutecomb",
+        &[],
+        0.0,
+        vec![clean_rect(0, 0, 0, 100, 100)],
+    );
+    let h = id_of(&font, "H");
+    let i = id_of(&font, "I");
+    let aacute = add_glyph(&mut font, "Aacute", &[0xC1], 600.0, Vec::new());
+    default_layer(&mut font, aacute, |layer| {
+        layer.components = vec![
+            Component {
+                base: h,
+                transform: Transform::default(),
+            },
+            Component {
+                base: mark,
+                transform: Transform {
+                    dx: 200.0,
+                    dy: 750.0,
+                    ..Transform::default()
+                },
+            },
+        ];
+    });
+    let master = font.default_master().id;
+    font.kerning
+        .set_pair(master, KernRef::Glyph(h), KernRef::Glyph(i), Some(-30.0));
+    font
+}
+
+#[test]
+fn validate_accepts_composites_and_kerning() {
+    let report = validate(&composite_font());
+    assert!(report.compiled);
+    assert_eq!(report.errors, 0, "{:#?}", report.findings);
+    assert!(named(&report, "glyph.mixed_contours_components").is_empty());
+    assert!(named(&report, "kerning.unexported_reference").is_empty());
+}
+
+#[test]
+fn validate_warns_on_mixed_glyph() {
+    let mut font = composite_font();
+    let aacute = id_of(&font, "Aacute");
+    default_layer(&mut font, aacute, |layer| {
+        layer.paths = vec![clean_rect(0, 0, 0, 100, 100)];
+    });
+    let report = validate(&font);
+    let found = named(&report, "glyph.mixed_contours_components");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].severity, Severity::Warning);
+    assert_eq!(found[0].glyph.as_deref(), Some("Aacute"));
+}
+
+#[test]
+fn validate_warns_on_kerning_with_unexported_glyph() {
+    let mut font = composite_font();
+    let mark = id_of(&font, "acutecomb");
+    let h = id_of(&font, "H");
+    let master = font.default_master().id;
+    font.kerning
+        .set_pair(master, KernRef::Glyph(mark), KernRef::Glyph(h), Some(-10.0));
+    edit_glyph(&mut font, mark, |glyph| glyph.export = false);
+    let report = validate(&font);
+    let found = named(&report, "kerning.unexported_reference");
+    assert_eq!(found.len(), 1, "{:#?}", report.findings);
+    assert_eq!(found[0].severity, Severity::Warning);
+    assert_eq!(found[0].glyph.as_deref(), Some("acutecomb"));
+    assert_eq!(report.errors, 0, "{:#?}", report.findings);
+}
+
+#[test]
+fn validate_errors_when_gpos_missing() {
+    // A binary compiled from a font without kerning, checked against the
+    // model of a font with it.
+    let with_kerning = composite_font();
+    let mut without = with_kerning.clone();
+    let master = without.default_master().id;
+    without.kerning.pairs_mut().remove(&master);
+
+    let model = model_of(&with_kerning);
+    let findings = check_binary(&model, &binary_of(&without));
+    let gpos: Vec<_> = findings
+        .iter()
+        .filter(|f| f.check == "binary.gpos")
+        .collect();
+    assert_eq!(gpos.len(), 1, "{findings:#?}");
+    assert_eq!(gpos[0].severity, Severity::Error);
+
+    // And nothing to report when the binary has it.
+    let findings = check_binary(&model, &binary_of(&with_kerning));
+    assert!(
+        findings.iter().all(|f| f.check != "binary.gpos"),
+        "{findings:#?}"
+    );
+}

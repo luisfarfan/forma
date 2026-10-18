@@ -52,7 +52,9 @@ pub(crate) const TEXT: CommandSpec = CommandSpec {
                   characters mapped through the glyphs' code points, spaced by their advance \
                   widths) as a PNG image `height` pixels tall (16 to 1024, default 128) and as \
                   wide as the line (at most 2048 pixels; the rest is clipped). A character \
-                  without a glyph is drawn as .notdef, or as an empty box. At most 4096 \
+                  without a glyph is drawn as .notdef, or as an empty box; a space or no-break \
+                  space without one is a blank as wide as the space the export adds (a quarter \
+                  of the em). At most 4096 \
                   characters: longer text fails with LIMIT_EXCEEDED. The image comes with a \
                   summary `{rev, text, width, height}`.",
     toolset: Toolset::Preview,
@@ -227,7 +229,10 @@ pub struct ComparePreviewSummary {
 // ---------------------------------------------------------------- handlers
 
 /// A PNG and its summary as a tool output.
-fn image_output<S: Serialize>(png: Vec<u8>, summary: &S) -> Result<ToolOutput, ToolError> {
+pub(crate) fn image_output<S: Serialize>(
+    png: Vec<u8>,
+    summary: &S,
+) -> Result<ToolOutput, ToolError> {
     let summary = serde_json::to_value(summary).map_err(|error| {
         ToolError::invalid_argument(format!(
             "internal error: cannot encode the summary: {error}"

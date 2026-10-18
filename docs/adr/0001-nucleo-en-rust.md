@@ -6,7 +6,7 @@
 
 ## Contexto
 
-FORMA debe funcionar igual en macOS, Windows y Linux, y todo lo que haga la persona desde la interfaz debe poder hacerlo también un agente (MCP) o un script (CLI), con las mismas garantías. El ecosistema de compilación y lectura de fuentes que se quiere reutilizar (fontc, fontations, norad, kurbo) está escrito en Rust y es de licencia permisiva. El toolkit de UI aún no está decidido (Hito 2), así que el núcleo no puede depender de él.
+FORMA debe funcionar igual en macOS, Windows y Linux, y todo lo que haga la persona desde la interfaz debe poder hacerlo también un agente (MCP) o un script (CLI), con las mismas garantías. El ecosistema de compilación y lectura de fuentes que se quiere reutilizar (fontc, fontations, norad, kurbo) está escrito en Rust y es de licencia permisiva. El toolkit de UI aún no está decidido (spike en el Hito 8 de la revisión 4 del roadmap; entonces era el Hito 2), así que el núcleo no puede depender de él.
 
 ## Decisión
 

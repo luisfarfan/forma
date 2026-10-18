@@ -28,23 +28,24 @@ use crate::tools::mutate::{
 };
 use crate::tools::plans::OrPlan;
 use crate::tools::steps::Steps;
-use crate::tools::{font, geometry, glyphs, metrics, outlines};
+use crate::tools::{components, font, geometry, glyphs, kerning, metrics, outlines, stroke};
 
 /// `edit_batch`.
 pub(crate) const SPEC: CommandSpec = CommandSpec {
     name: "edit_batch",
     title: "Edit in batch",
     description: concat!(
-        "Apply several operations to `doc` atomically, as one undoable transaction with a \
-         single new `rev`: either every operation applies or none does. Each item of `ops` is \
-         {\"tool\", \"args\"}: `tool` is font_set_info, font_set_vertical_metrics, \
+        "Apply several operations to `doc`: all apply or none does, as one undoable \
+         transaction with one new `rev`. Each item of `ops` is {\"tool\", \"args\"}: `tool` is \
+         font_set_info, font_set_vertical_metrics, \
          glyph_create, glyph_update, glyph_delete, glyph_set_outline, contour_edit, \
-         nodes_edit, metrics_set or geometry_fix, and `args` are that tool's arguments without \
-         `doc` and `base_rev`. Operations run in order, each on the result of the previous \
-         ones. A failing operation is named by `details.op_index` (from 0). At most 2000 \
-         operations. A batch that destroys data (as glyph_delete does) or touches more than \
-         20 glyphs may require approval depending on the server policy (APPROVAL_REQUIRED \
-         with a plan to confirm; with `dry_run: true` the call only returns the plan).",
+         nodes_edit, metrics_set, geometry_fix, component_set, glyph_compose, glyph_decompose, \
+         glyph_stroke, remove_overlap or kerning_set, and `args` are that tool's arguments without \
+         `doc` and `base_rev`. Operations run in order, each on the previous result. A \
+         failing one is named by `details.op_index`. At most 2000 operations. \
+         A batch that destroys data (as glyph_delete does) or touches more than 20 entities \
+         (glyphs, kerning pairs or groups) may require approval depending on the server policy \
+         (APPROVAL_REQUIRED with a plan; `dry_run: true` only returns the plan).",
         base_rev_note!()
     ),
     toolset: Toolset::Core,
@@ -111,6 +112,18 @@ pub enum BatchTool {
     MetricsSet,
     /// `geometry_fix`.
     GeometryFix,
+    /// `component_set`.
+    ComponentSet,
+    /// `glyph_compose`.
+    GlyphCompose,
+    /// `glyph_decompose`.
+    GlyphDecompose,
+    /// `glyph_stroke`.
+    GlyphStroke,
+    /// `remove_overlap`.
+    RemoveOverlap,
+    /// `kerning_set`.
+    KerningSet,
 }
 
 /// Parses `args` into a tool's own arguments and translates them.
@@ -140,6 +153,14 @@ fn translate(tool: BatchTool, font: &Font, args: &Value) -> Result<Translation, 
         BatchTool::NodesEdit => translate_with(font, args, outlines::nodes_edit_commands),
         BatchTool::MetricsSet => translate_with(font, args, metrics::metrics_set_commands),
         BatchTool::GeometryFix => translate_with(font, args, geometry::geometry_fix_commands),
+        BatchTool::ComponentSet => translate_with(font, args, components::component_set_commands),
+        BatchTool::GlyphCompose => translate_with(font, args, components::glyph_compose_commands),
+        BatchTool::GlyphDecompose => {
+            translate_with(font, args, components::glyph_decompose_commands)
+        }
+        BatchTool::GlyphStroke => translate_with(font, args, stroke::glyph_stroke_commands),
+        BatchTool::RemoveOverlap => translate_with(font, args, geometry::remove_overlap_commands),
+        BatchTool::KerningSet => translate_with(font, args, kerning::kerning_set_commands),
     }
 }
 
@@ -222,6 +243,8 @@ fn edit_batch(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOut
 
 #[cfg(test)]
 mod tests {
+    use forma_model::EntityKey;
+
     use crate::errors::ErrorCode;
 
     use super::*;
@@ -279,7 +302,10 @@ mod tests {
         )
         .expect("valid batch");
         assert_eq!(steps.effects(), Effects::DESTRUCTIVE);
-        assert_eq!(steps.affected.iter().copied().collect::<Vec<_>>(), [a]);
+        assert_eq!(
+            steps.affected.iter().copied().collect::<Vec<_>>(),
+            [EntityKey::Glyph(a)]
+        );
         assert_eq!(steps.cmds.len(), 4);
 
         // A glyph the batch creates and then redraws destroys nothing.
@@ -309,7 +335,13 @@ mod tests {
             "contour_edit",
             "nodes_edit",
             "metrics_set",
-            "geometry_fix"
+            "geometry_fix",
+            "component_set",
+            "glyph_compose",
+            "glyph_decompose",
+            "glyph_stroke",
+            "remove_overlap",
+            "kerning_set"
         ]))
         .expect("tool names");
         for tool in tools {

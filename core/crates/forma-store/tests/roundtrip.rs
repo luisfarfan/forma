@@ -55,6 +55,7 @@ fn square(advance_width: f64) -> Layer {
                 corner(0.0, 500.0),
             ],
         }],
+        components: Vec::new(),
     }
 }
 
@@ -291,7 +292,7 @@ fn package_layout() {
 
     let manifest = read_json(&path.join("manifest.json"));
     assert_eq!(manifest["format"], "formapackage");
-    assert_eq!(manifest["format_version"], 1);
+    assert_eq!(manifest["format_version"], 2);
     assert_eq!(manifest["font_id"], font.id.to_string());
     assert!(
         manifest["generator"]
@@ -544,12 +545,12 @@ fn unsupported_package_version_is_reported() {
     let path = package_in(&dir);
     save(&sample_font(), &path).unwrap();
     edit_json(&path.join("manifest.json"), |m| {
-        m["format_version"] = json!(2)
+        m["format_version"] = json!(3)
     });
 
     let err = load(&path).unwrap_err();
 
-    assert!(matches!(err, StoreError::UnsupportedVersion(2)), "{err:?}");
+    assert!(matches!(err, StoreError::UnsupportedVersion(3)), "{err:?}");
 }
 
 #[test]
@@ -735,7 +736,7 @@ fn forma_file_header_schema_and_rows() {
         .pragma_query_value(None, "journal_mode", |r| r.get(0))
         .unwrap();
     assert_eq!(application_id, 0x464F_524D);
-    assert_eq!(user_version, 1);
+    assert_eq!(user_version, 2);
     assert_eq!(journal_mode, "delete");
 
     let columns = |table: &str| -> Vec<(String, String, bool, i64)> {
@@ -773,7 +774,7 @@ fn forma_file_header_schema_and_rows() {
         .map(Result::unwrap)
         .collect();
     assert_eq!(manifest["format"], "forma");
-    assert_eq!(manifest["format_version"], "1");
+    assert_eq!(manifest["format_version"], "2");
     assert_eq!(manifest["font_id"], font.id.to_string());
     assert!(manifest["generator"].starts_with("forma "));
     assert_eq!(manifest.len(), 4);
@@ -840,12 +841,12 @@ fn newer_forma_version_is_unsupported() {
     let path = forma_in(&dir);
     save(&sample_font(), &path).unwrap();
     sqlite_rw(&path)
-        .execute_batch("PRAGMA user_version = 2;")
+        .execute_batch("PRAGMA user_version = 3;")
         .unwrap();
 
     let err = load(&path).unwrap_err();
 
-    assert!(matches!(err, StoreError::UnsupportedVersion(2)), "{err:?}");
+    assert!(matches!(err, StoreError::UnsupportedVersion(3)), "{err:?}");
 }
 
 #[test]
@@ -1232,13 +1233,13 @@ fn a_package_of_a_newer_version_is_not_overwritten() {
     let path = package_in(&dir);
     save(&sample_font(), &path).unwrap();
     edit_json(&path.join("manifest.json"), |m| {
-        m["format_version"] = json!(2)
+        m["format_version"] = json!(3)
     });
     let before = fs::read(path.join("font.json")).unwrap();
 
     let err = save(&Font::new("Other", 1000), &path).unwrap_err();
 
-    assert!(matches!(err, StoreError::UnsupportedVersion(2)), "{err:?}");
+    assert!(matches!(err, StoreError::UnsupportedVersion(3)), "{err:?}");
     assert_eq!(fs::read(path.join("font.json")).unwrap(), before);
 }
 

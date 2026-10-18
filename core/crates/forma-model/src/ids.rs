@@ -1,8 +1,9 @@
 //! Stable identifiers and entity keys.
 //!
-//! Every document, master and glyph carries a random UUID that never changes
-//! for the life of the entity, so edits, history and external references stay
-//! valid across renames and reordering. Contours use a small per-layer counter.
+//! Every document, master, glyph and kerning group carries a random UUID that
+//! never changes for the life of the entity, so edits, history and external
+//! references stay valid across renames and reordering. Contours use a small
+//! per-layer counter.
 
 use std::fmt;
 use std::str::FromStr;
@@ -13,6 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 use crate::font::ModelError;
+use crate::kerning::KernRef;
 
 macro_rules! uuid_id {
     ($(#[$meta:meta])* $name:ident) => {
@@ -65,6 +67,12 @@ uuid_id! {
     GlyphId
 }
 
+uuid_id! {
+    /// Stable identifier of a kerning group. Unlike the group name, it never
+    /// changes.
+    KerningGroupId
+}
+
 /// Identifier of a contour, unique within its layer.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
@@ -76,8 +84,13 @@ pub struct PathId(pub u32);
 /// own revision number.
 ///
 /// Its text form is `font_info`, `vertical_metrics:<master uuid>`,
-/// `glyph_order` or `glyph:<glyph uuid>`; this is also its serde
-/// representation, so it can be used as a JSON object key.
+/// `glyph_order`, `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or
+/// `kerning_pair:<master uuid>:<first>:<second>` (each side a [`KernRef`]:
+/// `g.<glyph uuid>` or `k.<group uuid>`); this is also its serde
+/// representation, so it can be used as a JSON object key. UUIDs are always
+/// lowercase and hyphenated.
+///
+/// Keys sort by variant in declaration order, then by their identifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EntityKey {
     /// The font-level naming and version information.
@@ -86,8 +99,12 @@ pub enum EntityKey {
     VerticalMetrics(MasterId),
     /// The ordering of the glyphs.
     GlyphOrder,
-    /// One glyph: its name, encoding and outlines.
+    /// One glyph: its name, encoding, outlines and components.
     Glyph(GlyphId),
+    /// One kerning group: its name, side and members.
+    KerningGroup(KerningGroupId),
+    /// One kerning pair of one master: its value, or its absence.
+    KerningPair(MasterId, KernRef, KernRef),
 }
 
 impl fmt::Display for EntityKey {
@@ -97,13 +114,17 @@ impl fmt::Display for EntityKey {
             Self::VerticalMetrics(master) => write!(f, "vertical_metrics:{master}"),
             Self::GlyphOrder => f.write_str("glyph_order"),
             Self::Glyph(glyph) => write!(f, "glyph:{glyph}"),
+            Self::KerningGroup(group) => write!(f, "kerning_group:{group}"),
+            Self::KerningPair(master, first, second) => {
+                write!(f, "kerning_pair:{master}:{first}:{second}")
+            }
         }
     }
 }
 
 /// Parses a UUID, accepting only the canonical lowercase hyphenated form so
 /// that every key has exactly one textual representation.
-fn parse_canonical_uuid(text: &str) -> Option<Uuid> {
+pub(crate) fn parse_canonical_uuid(text: &str) -> Option<Uuid> {
     let uuid = Uuid::parse_str(text).ok()?;
     (uuid.hyphenated().to_string() == text).then_some(uuid)
 }
@@ -125,10 +146,28 @@ impl FromStr for EntityKey {
             parse_canonical_uuid(rest)
                 .map(|uuid| Self::Glyph(GlyphId(uuid)))
                 .ok_or_else(invalid)
+        } else if let Some(rest) = s.strip_prefix("kerning_group:") {
+            parse_canonical_uuid(rest)
+                .map(|uuid| Self::KerningGroup(KerningGroupId(uuid)))
+                .ok_or_else(invalid)
+        } else if let Some(rest) = s.strip_prefix("kerning_pair:") {
+            parse_kerning_pair(rest).ok_or_else(invalid)
         } else {
             Err(invalid())
         }
     }
+}
+
+/// Parses the `<master uuid>:<first>:<second>` part of a kerning pair key.
+fn parse_kerning_pair(text: &str) -> Option<EntityKey> {
+    let mut parts = text.split(':');
+    let master = parse_canonical_uuid(parts.next()?)?;
+    let first = parts.next()?.parse().ok()?;
+    let second = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(EntityKey::KerningPair(MasterId(master), first, second))
 }
 
 impl Serialize for EntityKey {
@@ -153,9 +192,11 @@ impl JsonSchema for EntityKey {
         json_schema!({
             "type": "string",
             "description": "Identifies a revisioned part of a document: `font_info`, \
-                            `vertical_metrics:<master uuid>`, `glyph_order` or \
-                            `glyph:<glyph uuid>`.",
-            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+                            `vertical_metrics:<master uuid>`, `glyph_order`, \
+                            `glyph:<glyph uuid>`, `kerning_group:<group uuid>` or \
+                            `kerning_pair:<master uuid>:<first>:<second>`, where each side \
+                            of a pair is `g.<glyph uuid>` or `k.<group uuid>`.",
+            "pattern": "^(font_info|glyph_order|(vertical_metrics|glyph|kerning_group):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|kerning_pair:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(:[gk]\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){2})$"
         })
     }
 }

@@ -27,6 +27,7 @@ fn font_with(names: &[&str]) -> Font {
                     Layer {
                         advance_width: 500.0,
                         paths: Vec::new(),
+                        components: Vec::new(),
                     },
                 )
             })

@@ -1,11 +1,13 @@
 //! Creating, renaming and deleting glyphs.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use forma_model::{EntityKey, Font, Glyph, GlyphId, Layer, Path, is_valid_glyph_name};
+use forma_model::{EntityKey, Font, Glyph, GlyphId, KernRef, Layer, Path, is_valid_glyph_name};
 
-use super::{Touched, check_advance_width, checked_paths, glyph_mut, resolve_glyph};
+use super::{
+    Touched, check_advance_width, checked_paths, glyph_mut, resolve_glyph, resolve_targets,
+};
 use crate::{EditError, GlyphRef};
 
 /// Checks that `name` is valid and not used by a glyph other than `owner`.
@@ -80,6 +82,7 @@ pub(super) fn create_glyph(
                 Layer {
                     advance_width,
                     paths: paths.clone(),
+                    components: Vec::new(),
                 },
             )
         })
@@ -134,18 +137,73 @@ pub(super) fn update_glyph(
 }
 
 pub(super) fn delete_glyphs(font: &mut Font, glyphs: &[GlyphRef]) -> Result<Touched, EditError> {
-    if glyphs.is_empty() {
-        return Err(EditError::InvalidArgument(
-            "no glyphs to delete: the list is empty".into(),
-        ));
-    }
-    let ids = glyphs
-        .iter()
-        .map(|glyph| resolve_glyph(font, glyph))
-        .collect::<Result<BTreeSet<GlyphId>, _>>()?;
+    let listed = resolve_targets(font, glyphs, "delete")?;
+    let ids: BTreeSet<GlyphId> = listed.iter().copied().collect();
+    check_not_used(font, &listed, &ids)?;
+
     Arc::make_mut(&mut font.glyphs).retain(|id, _| !ids.contains(id));
     font.glyph_order.retain(|id| !ids.contains(id));
-    let mut touched: Touched = ids.into_iter().map(EntityKey::Glyph).collect();
+    let mut touched: Touched = ids.iter().copied().map(EntityKey::Glyph).collect();
     touched.insert(EntityKey::GlyphOrder);
+    // The deleted glyphs leave their kerning groups, and their pairs go.
+    for &id in &ids {
+        touched.extend(
+            font.kerning
+                .remove_from_groups(id)
+                .into_iter()
+                .map(EntityKey::KerningGroup),
+        );
+        touched.extend(
+            font.kerning
+                .remove_pairs_with(KernRef::Glyph(id))
+                .into_iter()
+                .map(|(master, first, second)| EntityKey::KerningPair(master, first, second)),
+        );
+    }
     Ok(touched)
+}
+
+/// Checks that no glyph that stays uses one of the glyphs `deleted` (listed
+/// in the command as `listed`) as a component, naming the first such glyph
+/// in `listed` order and its users in glyph order.
+fn check_not_used(
+    font: &Font,
+    listed: &[GlyphId],
+    deleted: &BTreeSet<GlyphId>,
+) -> Result<(), EditError> {
+    // One pass over the glyphs that stay: the users of each deleted glyph.
+    let mut users: HashMap<GlyphId, Vec<&str>> = HashMap::new();
+    for id in &font.glyph_order {
+        if deleted.contains(id) {
+            continue;
+        }
+        let Some(glyph) = font.glyphs.get(id) else {
+            continue;
+        };
+        let mut bases: Vec<GlyphId> = glyph
+            .layers
+            .values()
+            .flat_map(|layer| &layer.components)
+            .map(|component| component.base)
+            .filter(|base| deleted.contains(base))
+            .collect();
+        bases.sort_unstable();
+        bases.dedup();
+        for base in bases {
+            users.entry(base).or_default().push(&glyph.name);
+        }
+    }
+    for id in listed {
+        if let Some(names) = users.get(id) {
+            let name = font
+                .glyphs
+                .get(id)
+                .map_or_else(|| id.to_string(), |glyph| glyph.name.clone());
+            return Err(EditError::InvalidArgument(format!(
+                "glyph '{name}' is used as a component by: {}",
+                names.join(", ")
+            )));
+        }
+    }
+    Ok(())
 }

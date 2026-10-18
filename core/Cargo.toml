@@ -18,6 +18,9 @@ fontc = "1.0.0"
 rmcp = { version = "3.5.1", default-features = false }
 norad = "0.19.2"
 kurbo = "0.13.1"
+# Non-zero union of Bezier contours (overlap removal); behind `forma_geometry::PathOps`
+# so Skia PathOps can replace it (ADR 0009). MIT OR Apache-2.0.
+linesweeper = "0.5.0"
 vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "png", "u8_pipeline"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 schemars = { version = "1.2.3", features = ["uuid1"] }
@@ -51,3 +54,9 @@ rstest = "0.27.0"
 # TEST ONLY: validates tool results against their output schemas (MIT; no
 # default features: no HTTP or file resolution of references).
 jsonschema = { version = "0.58.6", default-features = false }
+# Decodes the PNG/JPEG source images of the image-to-font pipeline (ADR 0009). Only
+# the two formats are enabled; MIT OR Apache-2.0.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# Turns the binary mask of each traced glyph into cubic splines (ADR 0009); FORMA
+# does its own color analysis and mask. MIT OR Apache-2.0.
+visioncortex = "0.9.3"

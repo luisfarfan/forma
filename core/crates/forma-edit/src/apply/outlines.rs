@@ -2,14 +2,14 @@
 
 use std::collections::BTreeSet;
 
-use forma_geometry::{IssueKind, bbox, fix_paths, to_bezpath};
-use forma_model::{EntityKey, Font, GlyphId, Layer, MasterId, Node, Path, PathId};
+use forma_geometry::{IssueKind, bbox, fix_paths, flatten_layer, to_bezpath};
+use forma_model::{EntityKey, Font, GlyphId, MasterId, Node, Path, PathId};
 use kurbo::{Affine, Point};
 
 use super::segments::reversed_nodes;
 use super::{
-    Touched, check_advance_width, check_path, checked_paths, glyph_mut, layer_mut, resolve_glyph,
-    resolve_master,
+    Touched, check_advance_width, check_path, checked_paths, glyph_mut, layer_mut, layer_or_new,
+    named_layer, resolve_glyph, resolve_master,
 };
 use crate::{ContourAction, EditError, GlyphRef};
 
@@ -23,25 +23,7 @@ pub(super) fn set_outline(
     let master = resolve_master(font, master)?;
     let paths = checked_paths(paths)?;
     let default = font.default_master().id;
-    let target = glyph_mut(font, id)?;
-    if let Some(layer) = target.layers.get_mut(&master) {
-        layer.paths = paths;
-    } else {
-        // The glyph has not been drawn in this master yet: start from the
-        // advance width of the default master (or of any layer it has).
-        let advance_width = target
-            .layers
-            .get(&default)
-            .or_else(|| target.layers.values().next())
-            .map_or(0.0, |layer| layer.advance_width);
-        target.layers.insert(
-            master,
-            Layer {
-                advance_width,
-                paths,
-            },
-        );
-    }
+    layer_or_new(glyph_mut(font, id)?, master, default).paths = paths;
     Ok(BTreeSet::from([EntityKey::Glyph(id)]))
 }
 
@@ -154,18 +136,34 @@ pub(super) fn set_metrics(
         }
     }
 
+    // The side bearings are measured on the whole outline: the contours and
+    // the components, expanded.
+    let mut outline = if lsb.is_some() || rsb.is_some() {
+        let (name, _) = named_layer(font, id, master)?;
+        flatten_layer(font, id, master).map_err(|error| {
+            EditError::InvalidGeometry(format!("cannot measure glyph '{name}': {error}"))
+        })?
+    } else {
+        Vec::new()
+    };
+
     let layer = layer_mut(font, id, master)?;
     let mut paths = layer.paths.clone();
+    let mut components = layer.components.clone();
     let mut advance = layer.advance_width;
 
     if let Some(lsb) = lsb {
-        let rect = bbox(&paths).ok_or_else(no_contours)?;
+        let rect = bbox(&outline).ok_or_else(no_outline)?;
         let dx = lsb - rect.min_x();
         paths = shifted(&paths, dx);
+        for component in &mut components {
+            component.transform.dx += dx;
+        }
+        outline = shifted(&outline, dx);
         advance += dx;
     }
     if let Some(rsb) = rsb {
-        let rect = bbox(&paths).ok_or_else(no_contours)?;
+        let rect = bbox(&outline).ok_or_else(no_outline)?;
         advance = rect.max_x() + rsb;
     }
     if let Some(advance_width) = advance_width {
@@ -174,18 +172,23 @@ pub(super) fn set_metrics(
     check_advance_width(advance)?;
     if lsb.is_some() {
         // Only the shifted contours are new; others are left as they were.
+        // (A component moved out of range breaks the font invariants, which
+        // `apply` checks.)
         for path in &paths {
             check_path(path)?;
         }
     }
 
     layer.paths = paths;
+    layer.components = components;
     layer.advance_width = advance;
     Ok(BTreeSet::from([EntityKey::Glyph(id)]))
 }
 
-fn no_contours() -> EditError {
-    EditError::InvalidArgument("the side bearings of a glyph without contours are undefined".into())
+fn no_outline() -> EditError {
+    EditError::InvalidArgument(
+        "the side bearings of a glyph without contours or components are undefined".into(),
+    )
 }
 
 fn shifted(paths: &[Path], dx: f64) -> Vec<Path> {

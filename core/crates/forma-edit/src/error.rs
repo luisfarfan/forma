@@ -41,4 +41,15 @@ pub enum EditError {
     /// The actor is not allowed to perform the operation.
     #[error("not allowed: {0}")]
     NotAllowed(String),
+    /// The command is beyond a work budget (overlap removal of very complex
+    /// contours): `actual` against `limit`.
+    #[error("limit exceeded: {message}")]
+    LimitExceeded {
+        /// What was too large, and what to do about it.
+        message: String,
+        /// The budget.
+        limit: u64,
+        /// The amount the command needed.
+        actual: u64,
+    },
 }

@@ -298,8 +298,9 @@ pub(crate) struct Edit<'a> {
 
 /// Applies a mutation and answers the call:
 ///
-/// 1. a call without commands that is not a dry run is answered without
-///    changing anything (`tx: null`);
+/// 1. a call that is not a dry run and has no commands, or whose commands
+///    touch no entity (such as `remove_overlap` on glyphs that do not
+///    overlap), is answered without changing anything (`tx: null`);
 /// 2. the entities the commands touch are checked for revision conflicts
 ///    ([`Document::check_conflicts`](forma_edit::Document::check_conflicts)),
 ///    so that no plan is offered for a call that cannot succeed;
@@ -351,7 +352,7 @@ pub(crate) fn mutate<R: Serialize>(
             edit.base_rev.0, rev.0
         )));
     }
-    if edit.steps.cmds.is_empty() && !edit.dry_run {
+    if (edit.steps.cmds.is_empty() || edit.steps.touched.is_empty()) && !edit.dry_run {
         let mut unchanged = MutationResult::unchanged(rev);
         // Nothing to journal, but say so if this document's changes are not
         // journaled.

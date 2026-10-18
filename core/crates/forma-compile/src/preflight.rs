@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use forma_geometry::to_bezpath;
+use forma_geometry::{flatten_layer, to_bezpath};
 use forma_model::{Font, Glyph, GlyphId, Layer, Master, MasterId, Node, NodeKind, Path, PathId};
 
 use crate::{CompileError, CompileReport};
@@ -68,7 +68,7 @@ pub fn preflight(font: &Font) -> Result<(Font, CompileReport), CompileError> {
     let default_master = font.default_master().id;
     for glyph in font.glyph_order.iter().filter_map(|id| font.glyphs.get(id)) {
         if glyph.export {
-            check_glyph(glyph, default_master)?;
+            check_glyph(font, glyph, default_master)?;
         }
     }
 
@@ -111,7 +111,7 @@ fn check_metrics(master: &Master) -> Result<(), CompileError> {
 }
 
 /// Checks the data of an exported glyph that the compiler relies on.
-fn check_glyph(glyph: &Glyph, default_master: MasterId) -> Result<(), CompileError> {
+fn check_glyph(font: &Font, glyph: &Glyph, default_master: MasterId) -> Result<(), CompileError> {
     let fail =
         |problem: String| CompileError::Preflight(format!("glyph {:?} {problem}", glyph.name));
 
@@ -155,6 +155,32 @@ fn check_glyph(glyph: &Glyph, default_master: MasterId) -> Result<(), CompileErr
                     node.x, node.y, path.id.0
                 )));
             }
+        }
+        if !layer.components.is_empty() {
+            check_flattened(font, glyph, *master).map_err(fail)?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks that the glyph, with its components expanded, still fits the
+/// TrueType coordinate range. The expansion also fails for a component whose
+/// base has no layer in `master`, which the model invariants rule out.
+fn check_flattened(font: &Font, glyph: &Glyph, master: MasterId) -> Result<(), String> {
+    let paths = flatten_layer(font, glyph.id, master).map_err(|error| {
+        format!("has components that cannot be expanded in master {master}: {error}")
+    })?;
+    for path in &paths {
+        if let Some(node) = path
+            .nodes
+            .iter()
+            .find(|n| !(fits_i16(n.x) && fits_i16(n.y)))
+        {
+            return Err(format!(
+                "has the node ({}, {}) once its components are expanded in master {master}, \
+                 outside the TrueType coordinate range -32768..=32767",
+                node.x, node.y
+            ));
         }
     }
     Ok(())
@@ -204,6 +230,7 @@ fn notdef_glyph(font: &Font) -> Glyph {
     let layer = Layer {
         advance_width: advance,
         paths: vec![outer, inner],
+        components: Vec::new(),
     };
     Glyph {
         id: GlyphId::new(),
@@ -254,6 +281,7 @@ fn add_space(font: &mut Font) {
     let layer = Layer {
         advance_width: (f64::from(font.units_per_em) / 4.0).round(),
         paths: Vec::new(),
+        components: Vec::new(),
     };
     let glyph = Glyph {
         id: GlyphId::new(),

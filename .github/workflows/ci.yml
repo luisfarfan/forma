@@ -131,15 +131,34 @@ jobs:
         if: runner.os == 'Linux' && steps.fontspector.outputs.cache-hit != 'true'
         run: cargo install fontspector --version 1.9.0 --locked
 
+      # verify_hito2.py loads the WOFF2 in headless Chrome. ubuntu-24.04 ships
+      # google-chrome; only if a future image drops it is Google's .deb
+      # installed with apt (Ubuntu's chromium package is snap-only).
+      # FORMA_REQUIRE_CHROME=1 below makes a missing browser a failure rather
+      # than a silent SKIPPED.
+      - name: Check that Chrome is available
+        if: runner.os == 'Linux'
+        run: |
+          if ! google-chrome --version; then
+            curl -fsSL -o "$RUNNER_TEMP/chrome.deb" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+            sudo apt-get install -y "$RUNNER_TEMP/chrome.deb"
+            google-chrome --version
+          fi
+
       - name: Acceptance (macOS, Linux)
         if: runner.os != 'Windows'
         env:
           FORMA_REQUIRE_FONTSPECTOR: ${{ runner.os == 'Linux' && '1' || '' }}
+          FORMA_REQUIRE_CHROME: ${{ runner.os == 'Linux' && '1' || '' }}
+          # No display on the macOS runner; criterion 6 runs on Linux.
+          FORMA_SKIP_CHROME: ${{ runner.os == 'macOS' && '1' || '' }}
         run: bash ../scripts/acceptance.sh
 
       - name: Acceptance (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          FORMA_SKIP_CHROME: "1"
         run: pwsh -NoProfile -File ../scripts/acceptance.ps1
 
       - name: Keep the acceptance artefacts
@@ -197,4 +216,4 @@ jobs:
         if: runner.os == 'Linux'
         run: >-
           python -I ../scripts/coverage_gate.py target/llvm-cov-summary.json --min 80
-          forma-model forma-edit forma-engine forma-store
+          forma-model forma-edit forma-engine forma-store forma-trace forma-spacing

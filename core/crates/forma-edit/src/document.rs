@@ -323,7 +323,9 @@ impl Document {
     /// because another actor made it.
     ///
     /// Glyphs the transaction created are removed and glyphs it deleted come
-    /// back. The glyph order is reconciled rather than copied: glyphs that no
+    /// back; the same goes for kerning groups and kerning pairs, each of which
+    /// is an entity of its own. The glyph order is reconciled rather than
+    /// copied: glyphs that no
     /// longer exist are dropped from the current order, and restored glyphs
     /// are inserted at their former position (or at the end, if the order is
     /// now shorter), so glyphs created later by anyone are kept.
@@ -537,6 +539,20 @@ fn reverted(current: &Font, before: &Font, touched: &BTreeSet<EntityKey>) -> Fon
                     }
                 }
             }
+            EntityKey::KerningGroup(id) => match before.kerning.groups.get(id) {
+                Some(group) => {
+                    font.kerning.groups_mut().insert(*id, group.clone());
+                }
+                None => {
+                    if font.kerning.groups.contains_key(id) {
+                        font.kerning.groups_mut().remove(id);
+                    }
+                }
+            },
+            EntityKey::KerningPair(master, first, second) => {
+                let value = before.kerning.pair(*master, *first, *second);
+                font.kerning.set_pair(*master, *first, *second, value);
+            }
         }
     }
     font.glyph_order = reconciled_order(&font, &before.glyph_order, &restored);
@@ -564,4 +580,94 @@ fn reconciled_order(
         }
     }
     order
+}
+
+#[cfg(test)]
+mod tests {
+    use forma_model::{KernRef, KernSide, Kerning, KerningGroup, KerningGroupId, MasterId};
+
+    use super::*;
+
+    /// Sets the pair `key` of `master` to `value`, or removes it for `None`.
+    fn set_pair(
+        kerning: &mut Kerning,
+        master: MasterId,
+        key: (KernRef, KernRef),
+        value: Option<f64>,
+    ) {
+        kerning.set_pair(master, key.0, key.1, value);
+    }
+
+    fn kid(n: u128) -> KerningGroupId {
+        format!("00000000-0000-0000-0000-{n:012x}")
+            .parse()
+            .expect("an id")
+    }
+
+    fn gid(n: u128) -> GlyphId {
+        format!("00000000-0000-0000-0000-{n:012x}")
+            .parse()
+            .expect("an id")
+    }
+
+    fn group(n: u128, members: &[GlyphId]) -> KerningGroup {
+        KerningGroup {
+            id: kid(n),
+            name: format!("g{n}"),
+            side: KernSide::First,
+            members: members.to_vec(),
+        }
+    }
+
+    #[test]
+    fn reverted_sets_kerning_entities_back_one_by_one() {
+        let mut before = Font::new("Kern", 1000);
+        let master = before.masters[0].id;
+        let other = MasterId::new();
+        let (a, b, c) = (
+            KernRef::Glyph(gid(1)),
+            KernRef::Glyph(gid(2)),
+            KernRef::Glyph(gid(3)),
+        );
+        before
+            .kerning
+            .groups_mut()
+            .insert(kid(1), group(1, &[gid(1)]));
+        before.kerning.groups_mut().insert(kid(2), group(2, &[]));
+        set_pair(&mut before.kerning, master, (a, b), Some(-50.0));
+        set_pair(&mut before.kerning, master, (a, c), Some(-20.0));
+        set_pair(&mut before.kerning, master, (b, c), Some(-5.0));
+
+        let mut current = before.clone();
+        // Touched below: a changed group and pair, a removed pair, a removed
+        // group, an added group and an added pair (alone in its master).
+        current
+            .kerning
+            .groups_mut()
+            .insert(kid(1), group(1, &[gid(2)]));
+        current.kerning.groups_mut().remove(&kid(2));
+        current.kerning.groups_mut().insert(kid(3), group(3, &[]));
+        set_pair(&mut current.kerning, master, (a, b), Some(-60.0));
+        set_pair(&mut current.kerning, master, (a, c), None);
+        set_pair(&mut current.kerning, other, (c, a), Some(-7.0));
+        // Not touched: stays as it is now.
+        set_pair(&mut current.kerning, master, (b, c), Some(-9.0));
+
+        let touched = BTreeSet::from([
+            EntityKey::KerningGroup(kid(1)),
+            EntityKey::KerningGroup(kid(2)),
+            EntityKey::KerningGroup(kid(3)),
+            EntityKey::KerningPair(master, a, b),
+            EntityKey::KerningPair(master, a, c),
+            EntityKey::KerningPair(other, c, a),
+        ]);
+        let font = reverted(&current, &before, &touched);
+
+        let mut expected = before.kerning.clone();
+        set_pair(&mut expected, master, (b, c), Some(-9.0));
+        assert_eq!(font.kerning, expected);
+        // The master that only had the added pair is gone.
+        assert!(!font.kerning.pairs.contains_key(&other));
+        assert_eq!(changed_entities(&font, &current), touched);
+    }
 }

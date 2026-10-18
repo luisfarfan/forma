@@ -35,7 +35,7 @@ mod error;
 mod history;
 
 pub use apply::{affected_glyph_count, apply};
-pub use command::{Command, ContourAction, GlyphRef, NodeAction};
+pub use command::{Command, ComponentInput, ContourAction, GlyphRef, KernRefInput, NodeAction};
 pub use diff::{FontDiff, GlyphDiff, diff};
 pub use document::Document;
 pub use error::{ConflictInfo, EditError};

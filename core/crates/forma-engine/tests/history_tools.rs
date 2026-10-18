@@ -263,7 +263,7 @@ fn diff_between_revisions() {
         diff["diff"],
         json!({ "added": ["A"], "added_count": 1, "removed": [], "removed_count": 0,
                 "modified": [], "modified_count": 0, "info_changed": false,
-                "metrics_changed": false, "truncated": false })
+                "metrics_changed": false, "kerning_changed": false, "truncated": false })
     );
 
     let diff = ok(
@@ -275,7 +275,7 @@ fn diff_between_revisions() {
     assert_eq!(
         diff["diff"]["modified"],
         json!([{ "name": "A", "outline_changed": false, "advance_changed": true,
-                 "unicodes_changed": false }])
+                 "unicodes_changed": false, "components_changed": false }])
     );
 
     // `to_rev` defaults to the current revision.

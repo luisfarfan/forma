@@ -63,6 +63,7 @@ fn glyph(font: &Font, n: u128, name: &str, advance_width: f64, paths: Vec<Contou
             Layer {
                 advance_width,
                 paths,
+                components: Vec::new(),
             },
         )]
         .into(),
@@ -525,6 +526,7 @@ fn exports_the_requested_master() {
             Layer {
                 advance_width: 777.0,
                 paths: Vec::new(),
+                components: Vec::new(),
             },
         );
     }
@@ -796,4 +798,131 @@ fn unstaged_write_refuses_anything_at_the_destination() {
         "{error:?}"
     );
     assert_eq!(tree(&ufo), before);
+}
+
+// ---------------------------------------------------------------------------
+// Components and kerning
+// ---------------------------------------------------------------------------
+
+use forma_model::{Component, KernRef, KernSide, KerningGroup, KerningGroupId, Transform};
+
+/// `sample_font` plus `V`, `O` (exported) and a hidden `acute`, with `Aacute`
+/// made of `A` and `acute`, and kerning O/V.
+fn composite_font(acute_exported: bool) -> Font {
+    let mut font = sample_font();
+    let master = font.default_master().id;
+    let v = glyph(&font, 10, "V", 600.0, vec![square(1)]);
+    push(&mut font, v);
+    let o = glyph(&font, 11, "O", 700.0, vec![square(1)]);
+    push(&mut font, o);
+    let mut acute = glyph(&font, 12, "acute", 300.0, vec![square(1)]);
+    acute.export = acute_exported;
+    push(&mut font, acute);
+    let mut aacute = glyph(&font, 13, "Aacute", 612.5, Vec::new());
+    aacute.layers.get_mut(&master).expect("layer").components = vec![
+        Component {
+            base: gid(2),
+            transform: Transform::default(),
+        },
+        Component {
+            base: gid(12),
+            transform: Transform {
+                xx: 1.0,
+                xy: 0.25,
+                yx: 0.5,
+                yy: 2.0,
+                dx: 120.0,
+                dy: 700.0,
+            },
+        },
+    ];
+    push(&mut font, aacute);
+
+    let group = KerningGroup {
+        id: KerningGroupId::new(),
+        name: "O".to_owned(),
+        side: KernSide::First,
+        members: vec![gid(11), gid(2)],
+    };
+    let group_id = group.id;
+    font.kerning.groups_mut().insert(group_id, group);
+    font.kerning.set_pair(
+        master,
+        KernRef::Group(group_id),
+        KernRef::Glyph(gid(10)),
+        Some(-40.0),
+    );
+    // A pair with a glyph that is never exported.
+    font.kerning.set_pair(
+        master,
+        KernRef::Glyph(gid(12)),
+        KernRef::Glyph(gid(10)),
+        Some(-10.0),
+    );
+    font
+}
+
+#[test]
+fn ufo_writes_components_and_kerning() {
+    let font = composite_font(true);
+    let (_tmp, dir) = destination();
+    export(&font, &dir);
+    let ufo = load(&dir);
+
+    let aacute = ufo.default_layer().get_glyph("Aacute").expect("Aacute");
+    assert!(aacute.contours.is_empty());
+    assert_eq!(aacute.components.len(), 2);
+    let moved = &aacute.components[1];
+    assert_eq!(moved.base.as_str(), "acute");
+    assert_eq!(moved.transform.x_scale, 1.0);
+    assert_eq!(moved.transform.xy_scale, 0.25);
+    assert_eq!(moved.transform.yx_scale, 0.5);
+    assert_eq!(moved.transform.y_scale, 2.0);
+    assert_eq!(moved.transform.x_offset, 120.0);
+    assert_eq!(moved.transform.y_offset, 700.0);
+
+    let group = ufo.groups.get("public.kern1.O").expect("kern1 group");
+    let members: Vec<&str> = group.iter().map(|name| name.as_str()).collect();
+    assert_eq!(members, ["O", "A"]);
+    assert_eq!(ufo.kerning["public.kern1.O"]["V"], -40.0);
+    assert_eq!(ufo.kerning["acute"]["V"], -10.0);
+    assert_eq!(ufo.kerning.len(), 2);
+}
+
+#[test]
+fn unexported_base_is_decomposed_in_ufo() {
+    let font = composite_font(false);
+    let (_tmp, dir) = destination();
+    export(&font, &dir);
+    let ufo = load(&dir);
+
+    assert!(ufo.default_layer().get_glyph("acute").is_none());
+    // A pair of the glyph that is not exported is omitted; the group pair stays.
+    assert!(!ufo.kerning.contains_key("acute"));
+    assert_eq!(ufo.kerning.len(), 1);
+    let aacute = ufo.default_layer().get_glyph("Aacute").expect("Aacute");
+    // Only the exported base stays a component; the hidden one is drawn in.
+    assert_eq!(aacute.components.len(), 1);
+    assert_eq!(aacute.components[0].base.as_str(), "A");
+    assert_eq!(aacute.contours.len(), 1);
+    let xs: Vec<f64> = aacute.contours[0].points.iter().map(|p| p.x).collect();
+    let ys: Vec<f64> = aacute.contours[0].points.iter().map(|p| p.y).collect();
+    // The square (0,0)-(500,700) through x' = x + 0.5 y + 120, y' = 0.25 x + 2 y + 700.
+    let mut got: Vec<(f64, f64)> = xs.into_iter().zip(ys).collect();
+    got.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+    let mut want = vec![
+        (120.0, 700.0),
+        (620.0, 825.0),
+        (970.0, 2225.0),
+        (470.0, 2100.0),
+    ];
+    want.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+    // The determinant is positive, so the points keep their order; compare as sets.
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(&want) {
+        assert!(
+            (g.0 - w.0).abs() < 1e-9 && (g.1 - w.1).abs() < 1e-9,
+            "{g:?} vs {w:?}"
+        );
+    }
 }

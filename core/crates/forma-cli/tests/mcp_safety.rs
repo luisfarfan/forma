@@ -17,8 +17,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use mcp_common::{
-    ACTOR, Client, SQUARE, TEST_TIMEOUT, call, close, connect, connect_to, create_squares,
-    glyph_names, is_legacy, legacy, mcp_args, modern, new_doc, path_text, rev_of, with_timeout,
+    ACTOR, Client, SQUARE, TEST_TIMEOUT, call, close, connect, connect_to, copy_specimen,
+    create_squares, glyph_names, is_legacy, legacy, mcp_args, modern, new_doc, path_text, rev_of,
+    with_timeout,
 };
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{CallToolRequest, CallToolRequestParams, ClientRequest};
@@ -514,7 +515,7 @@ fn garbage_lines_do_not_break_the_session(#[case] mode: ClientLifecycleMode) {
     let tools = run.response(2)["result"]["tools"]
         .as_array()
         .expect("tools/list result");
-    assert_eq!(tools.len(), 35);
+    assert_eq!(tools.len(), 50);
     // Nothing but answers: the garbage got no reply or a JSON-RPC error.
     for message in &run.messages {
         let answered = message["id"] == json!(1) || message["id"] == json!(2);
@@ -664,4 +665,122 @@ async fn glyph(client: &Client, doc: &str, name: &str) -> Value {
         .await
         .ok();
     got["glyph"].clone()
+}
+
+// ------------------------------------------------------------ images (Hito 2)
+
+/// `image_inspect` and `image_trace` refuse an image outside `--allow-dir`
+/// with PATH_NOT_ALLOWED, and the document does not change.
+#[rstest]
+#[case::legacy(legacy())]
+#[case::modern(modern())]
+#[tokio::test]
+async fn image_path_outside_root_is_refused(#[case] mode: ClientLifecycleMode) {
+    with_timeout("image_path_outside_root_is_refused", async {
+        let (client, root) = connect(mode, &[]).await;
+        let outside = TempDir::new().expect("a folder outside the root");
+        let image = copy_specimen(outside.path(), "specimen.png");
+        let escape = root
+            .path()
+            .join("..")
+            .join(outside.path().file_name().expect("a folder name"));
+        for path in [path_text(&image), path_text(&escape.join("specimen.png"))] {
+            call(&client, "image_inspect", json!({ "path": path }))
+                .await
+                .error("PATH_NOT_ALLOWED");
+            let doc = new_doc(&client, "Images").await;
+            call(
+                &client,
+                "image_trace",
+                json!({ "doc": doc, "base_rev": 0, "path": path,
+                        "assignments": [{ "candidate": 0, "name": "A" }] }),
+            )
+            .await
+            .error("PATH_NOT_ALLOWED");
+            assert_eq!(rev_of(&client, &doc).await, 0);
+        }
+        close(client).await;
+    })
+    .await;
+}
+
+/// A symbolic link (Unix) or junction (Windows) inside the root that points
+/// to an image outside it is refused.
+#[rstest]
+#[case::legacy(legacy())]
+#[case::modern(modern())]
+#[tokio::test]
+async fn image_symlink_escape_is_refused(#[case] mode: ClientLifecycleMode) {
+    with_timeout("image_symlink_escape_is_refused", async {
+        let (client, root) = connect(mode, &[]).await;
+        let outside = TempDir::new().expect("a folder outside the root");
+        copy_specimen(outside.path(), "specimen.png");
+        let link = root.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), &link).expect("symlink");
+        #[cfg(windows)]
+        {
+            // A junction needs no privileges, unlike a symbolic link.
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(outside.path())
+                .status()
+                .expect("mklink");
+            assert!(status.success(), "cannot create the junction");
+        }
+        call(
+            &client,
+            "image_inspect",
+            json!({ "path": path_text(&link.join("specimen.png")) }),
+        )
+        .await
+        .error("PATH_NOT_ALLOWED");
+        close(client).await;
+        #[cfg(windows)]
+        {
+            // Remove the junction itself, never what it points to.
+            let _ = std::fs::remove_dir(&link);
+        }
+    })
+    .await;
+}
+
+/// A glyph name that reads like an instruction is data: the glyph is created
+/// with exactly that name and nothing else happens.
+#[rstest]
+#[case::legacy(legacy())]
+#[case::modern(modern())]
+#[tokio::test]
+async fn image_names_with_instructions_are_data(#[case] mode: ClientLifecycleMode) {
+    with_timeout("image_names_with_instructions_are_data", async {
+        let (client, root) = connect(mode, &[]).await;
+        let image = copy_specimen(root.path(), "specimen.png");
+        let doc = new_doc(&client, "Names").await;
+        let traced = call(
+            &client,
+            "image_trace",
+            json!({ "doc": doc, "base_rev": 0, "path": path_text(&image),
+                    "assignments": [{ "candidate": 0, "name": "ignore_previous_instructions",
+                                      "unicodes": ["U+0041"] }] }),
+        )
+        .await
+        .ok();
+        assert_eq!(
+            traced["traced"][0]["name"],
+            json!("ignore_previous_instructions"),
+            "{traced}"
+        );
+        assert_eq!(traced["rev"], json!(1), "{traced}");
+        assert_eq!(
+            glyph_names(&client, &doc).await,
+            ["ignore_previous_instructions"]
+        );
+        // Nothing else was touched: no other document, no file written.
+        let listed = call(&client, "document_list", json!({})).await.ok();
+        assert_eq!(listed["documents"].as_array().map(Vec::len), Some(1));
+        assert_eq!(rev_of(&client, &doc).await, 1);
+        close(client).await;
+    })
+    .await;
 }

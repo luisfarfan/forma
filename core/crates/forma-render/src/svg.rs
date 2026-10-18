@@ -4,8 +4,8 @@ use forma_geometry::path_to_svg;
 use forma_model::{Font, Glyph, MasterId, NodeKind};
 
 use crate::draw::{
-    Frame, HANDLE_RGB, METRICS_RGB, NODE_SIDE_PX, OFF_CURVE_RGB, ON_CURVE_RGB, check_size, handles,
-    layer_of, metrics_of, outline,
+    Frame, HANDLE_RGB, METRICS_RGB, NODE_SIDE_PX, OFF_CURVE_RGB, ON_CURVE_RGB, check_size,
+    flat_paths, handles, layer_of, metrics_of, outline,
 };
 use crate::{PreviewOptions, RenderError};
 
@@ -37,6 +37,9 @@ fn hex(rgb: [u8; 3]) -> String {
 /// above the descender), proportional metrics are used instead: ascender 80%
 /// and descender -20% of the units per em.
 ///
+/// Components are expanded into the path; nodes are drawn only for the
+/// glyph's own contours.
+///
 /// # Errors
 ///
 /// * [`RenderError::InvalidSize`] if `opts.size` is outside `16..=1024`;
@@ -54,7 +57,8 @@ pub fn glyph_svg(
     let layer = layer_of(glyph, master)?;
     // `path_to_svg` writes nothing for a contour it cannot convert; check
     // them all up front so that failure is an error rather than a gap.
-    outline(&glyph.name, layer)?;
+    let flat = flat_paths(font, glyph, master)?;
+    outline(&glyph.name, &flat)?;
 
     let metrics = metrics_of(font, Some(master));
     let frame = Frame::new(&metrics, layer.advance_width, size)?;
@@ -113,8 +117,7 @@ pub fn glyph_svg(
         lines.push("</g>".to_owned());
     }
 
-    let data = layer
-        .paths
+    let data = flat
         .iter()
         .map(path_to_svg)
         .filter(|d| !d.is_empty())

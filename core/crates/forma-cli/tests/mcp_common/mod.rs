@@ -112,6 +112,25 @@ pub async fn with_timeout<F: Future>(name: &str, test: F) -> F::Output {
     }
 }
 
+/// Like [`with_timeout`], with a longer `limit` for the heavier scenarios.
+pub async fn with_timeout_for<F: Future>(name: &str, limit: Duration, test: F) -> F::Output {
+    match tokio::time::timeout(limit, test).await {
+        Ok(output) => output,
+        Err(_) => panic!("{name} did not finish within {limit:?}"),
+    }
+}
+
+/// Copies the Milestone 2 specimen image (`tests/fixtures/hito2/specimen.png`
+/// at the root of the repository) into `root` as `name`; returns its path.
+pub fn copy_specimen(root: &Path, name: &str) -> PathBuf {
+    let from =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/hito2/specimen.png");
+    let to = root.join(name);
+    std::fs::copy(&from, &to)
+        .unwrap_or_else(|error| panic!("cannot copy {}: {error}", from.display()));
+    to
+}
+
 /// Spawns `forma mcp` on a fresh temporary root and connects the test client
 /// to it in `mode`. Checks the negotiated revision: 2025-06-18 for the legacy
 /// handshake, 2026-07-28 for discovery.
@@ -366,4 +385,182 @@ pub fn fixture() -> Value {
 /// Where the fixture lives.
 pub fn fixture_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/hito1/glyphs.json")
+}
+
+/// `U+0041` for 0x41.
+pub fn unicode_text(code: u32) -> String {
+    format!("U+{code:04X}")
+}
+
+/// One glyph of the model, as `glyph_list` reports it.
+#[derive(Clone, Debug)]
+pub struct ModelGlyph {
+    pub name: String,
+    pub unicodes: Vec<u32>,
+    pub advance_width: f64,
+}
+
+/// The glyphs of `doc` (up to 500), as `glyph_list` reports them.
+pub async fn model_glyphs(client: &Client, doc: &str) -> Vec<ModelGlyph> {
+    let listed = call(client, "glyph_list", json!({ "doc": doc, "limit": 500 }))
+        .await
+        .ok();
+    listed["glyphs"]
+        .as_array()
+        .expect("glyphs")
+        .iter()
+        .map(|glyph| ModelGlyph {
+            name: glyph["name"].as_str().expect("name").to_owned(),
+            unicodes: glyph["unicodes"]
+                .as_array()
+                .expect("unicodes")
+                .iter()
+                .map(|code| u32::try_from(code.as_u64().expect("code point")).expect("u32"))
+                .collect(),
+            advance_width: glyph["advance_width"].as_f64().expect("advance"),
+        })
+        .collect()
+}
+
+/// The group key of kerning side `side` as `kerning_get` lists pairs: `@name`.
+pub fn group_key(name: &str) -> String {
+    if name.starts_with('@') {
+        name.to_owned()
+    } else {
+        format!("@{name}")
+    }
+}
+
+/// The effective kerning of `left` then `right`: glyph-glyph exception, then
+/// glyph-group, group-glyph and group-group.
+pub fn effective_kern(
+    pairs: &std::collections::BTreeMap<(String, String), f64>,
+    first_group: &std::collections::BTreeMap<String, String>,
+    second_group: &std::collections::BTreeMap<String, String>,
+    left: &str,
+    right: &str,
+) -> f64 {
+    let lg = first_group.get(left);
+    let rg = second_group.get(right);
+    let candidates = [
+        Some((left.to_owned(), right.to_owned())),
+        rg.map(|g| (left.to_owned(), g.clone())),
+        lg.map(|g| (g.clone(), right.to_owned())),
+        lg.zip(rg).map(|(a, b)| (a.clone(), b.clone())),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(|key| pairs.get(&key).copied())
+        .unwrap_or(0.0)
+}
+
+/// An advance width rounded with [`f64::round`], as a JSON integer.
+pub fn rounded(advance: f64) -> i64 {
+    let rounded = advance.round();
+    assert!(rounded.abs() < 1e9, "advance width {advance} out of range");
+    // Exact: a whole number well inside the range of i64.
+    rounded as i64
+}
+
+/// The kerning of `kerning_get`'s result as lookup tables: the pair values by
+/// `(first, second)` and the group of each glyph on the first and second sides.
+pub fn kerning_maps(kerning: &Value) -> KerningMaps {
+    let mut first_group = std::collections::BTreeMap::new();
+    let mut second_group = std::collections::BTreeMap::new();
+    for group in kerning["groups"].as_array().expect("groups") {
+        let key = group_key(group["name"].as_str().expect("group name"));
+        let target = match group["side"].as_str() {
+            Some("first") => &mut first_group,
+            Some("second") => &mut second_group,
+            other => panic!("unknown side {other:?}"),
+        };
+        for member in group["members"].as_array().expect("members") {
+            target.insert(member.as_str().expect("member").to_owned(), key.clone());
+        }
+    }
+    let pairs = kerning["pairs"]
+        .as_array()
+        .expect("pairs")
+        .iter()
+        .map(|pair| {
+            (
+                (
+                    pair["first"].as_str().expect("first").to_owned(),
+                    pair["second"].as_str().expect("second").to_owned(),
+                ),
+                pair["value"].as_f64().expect("value"),
+            )
+        })
+        .collect();
+    KerningMaps {
+        pairs,
+        first_group,
+        second_group,
+    }
+}
+
+/// The lookup tables of [`kerning_maps`].
+pub struct KerningMaps {
+    pub pairs: std::collections::BTreeMap<(String, String), f64>,
+    pub first_group: std::collections::BTreeMap<String, String>,
+    pub second_group: std::collections::BTreeMap<String, String>,
+}
+
+impl KerningMaps {
+    /// The effective kerning of `left` then `right`.
+    pub fn effective(&self, left: &str, right: &str) -> f64 {
+        effective_kern(
+            &self.pairs,
+            &self.first_group,
+            &self.second_group,
+            left,
+            right,
+        )
+    }
+}
+
+/// The horizontal centre of the contours of `glyph`, from `glyph_get`'s
+/// bounding box.
+fn contour_centre(glyph: &Value) -> f64 {
+    let bbox = &glyph["bbox"];
+    let x = |key: &str| {
+        bbox[key]
+            .as_f64()
+            .unwrap_or_else(|| panic!("no bbox: {glyph}"))
+    };
+    (x("x_min") + x("x_max")) / 2.0
+}
+
+/// Checks that each composite `(name, base, mark)` of `doc` has the advance
+/// width of its base and its mark centred on the base (±2 units), as
+/// `glyph_compose` placed it before `spacing_auto` respaced the base.
+pub async fn assert_composites_follow_bases(
+    client: &Client,
+    doc: &str,
+    composites: &[(&str, &str, &str)],
+) {
+    let get = |name: String| {
+        let args = json!({ "doc": doc, "glyph": name });
+        async move { call(client, "glyph_get", args).await.ok()["glyph"].clone() }
+    };
+    for &(name, base, mark) in composites {
+        let composite = get(name.to_owned()).await;
+        let base_glyph = get(base.to_owned()).await;
+        let mark_glyph = get(mark.to_owned()).await;
+        assert_eq!(
+            composite["advance_width"], base_glyph["advance_width"],
+            "{name}: advance differs from {base}'s"
+        );
+        let components = composite["components"].as_array().expect("components");
+        assert_eq!(components[0]["base"], json!(base), "{composite}");
+        assert_eq!(components[1]["base"], json!(mark), "{composite}");
+        let dx = |index: usize| components[index]["transform"]["dx"].as_f64().expect("dx");
+        let base_centre = contour_centre(&base_glyph) + dx(0);
+        let mark_centre = contour_centre(&mark_glyph) + dx(1);
+        assert!(
+            (mark_centre - base_centre).abs() <= 2.0,
+            "{name}: {mark} centred at {mark_centre}, {base} at {base_centre}"
+        );
+    }
 }

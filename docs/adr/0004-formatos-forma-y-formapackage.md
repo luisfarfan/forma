@@ -31,6 +31,6 @@ Una fuente es el trabajo de meses: perderla o corromperla es lo peor que puede h
 ## Consecuencias
 
 - El formato es parte del contrato: cambiarlo exige subir `format_version`/`user_version` y escribir una migración pura y probada.
-- Un `.forma` se reescribe entero en cada guardado (aceptable con miles de glifos; un perfil de rendimiento llegará en el Hito 2).
+- Un `.forma` se reescribe entero en cada guardado (aceptable con miles de glifos; un perfil de rendimiento llegará con el spike del Hito 8; entonces era el Hito 2).
 - La caja de rutas (`--allow-dir`) y el rechazo de enlaces simbólicos se complementan: la primera acota dónde se puede abrir, el segundo qué hay dentro de un paquete.
 - En FAT/exFAT o redes sin `rename` atómico las garantías son las del sistema de archivos; no se prometen más.

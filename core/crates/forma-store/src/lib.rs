@@ -48,6 +48,7 @@ pub use filenames::glyph_file_name;
 pub use journal::{
     Journal, JournalKey, JournalRecord, apply_records, remove as remove_journal, replay,
 };
+pub use parts::{FORMAT_VERSION, READABLE_VERSIONS, migrate_font_document, migrate_glyph_document};
 
 /// Everything that can go wrong while saving or loading a document.
 #[derive(Debug, Error)]
@@ -65,7 +66,7 @@ pub enum StoreError {
     #[error("{}: not a FORMA package", .0.display())]
     NotAFormaPackage(PathBuf),
     /// The document was written by a newer version of FORMA.
-    #[error("unsupported format version {0}; this FORMA reads version 1")]
+    #[error("unsupported format version {0}; this FORMA reads versions 1 and 2")]
     UnsupportedVersion(u32),
     /// The document is damaged, or breaks a data model rule.
     #[error("invalid document: {0}")]

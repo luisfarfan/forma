@@ -4,16 +4,20 @@
 //! is the source of a single master: the font compiler accepts it directly,
 //! and other font editors can open it.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use forma_model::{Font, Glyph, Layer, Master, MasterId, Node, NodeKind, Path as Contour};
+use forma_geometry::{flatten_layer, transform_paths};
+use forma_model::{
+    Font, Glyph, GlyphId, KernRef, KernSide, Layer, Master, MasterId, Node, NodeKind,
+    Path as Contour, Transform,
+};
 use norad::fontinfo::NonNegativeIntegerOrFloat;
-use norad::{Codepoints, ContourPoint, Name, PointType};
+use norad::{AffineTransform, Codepoints, Component, ContourPoint, Name, PointType};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -131,7 +135,7 @@ fn build_ufo(font: &Font, master_id: MasterId) -> Result<norad::Font, InteropErr
                 master: master_id,
             })?;
         ufo.default_layer_mut()
-            .insert_glyph(ufo_glyph(glyph, layer)?);
+            .insert_glyph(ufo_glyph(font, glyph, layer, master_id)?);
         glyph_order.push(glyph.name.clone());
     }
 
@@ -141,6 +145,7 @@ fn build_ufo(font: &Font, master_id: MasterId) -> Result<norad::Font, InteropErr
     let glyph_order: Vec<_> = glyph_order.into_iter().map(Into::into).collect();
     ufo.lib
         .insert(GLYPH_ORDER_KEY.to_owned(), glyph_order.into());
+    write_kerning(font, master_id, &mut ufo)?;
     Ok(ufo)
 }
 
@@ -191,7 +196,12 @@ fn font_info(font: &Font, master: &Master) -> norad::FontInfo {
     }
 }
 
-fn ufo_glyph(glyph: &Glyph, layer: &Layer) -> Result<norad::Glyph, InteropError> {
+fn ufo_glyph(
+    font: &Font,
+    glyph: &Glyph,
+    layer: &Layer,
+    master: MasterId,
+) -> Result<norad::Glyph, InteropError> {
     // `norad::Glyph::new` panics on a name that is empty or has control
     // characters, so check it with the fallible constructor first.
     Name::new(&glyph.name).map_err(|error| InteropError::Norad(error.to_string()))?;
@@ -217,7 +227,102 @@ fn ufo_glyph(glyph: &Glyph, layer: &Layer) -> Result<norad::Glyph, InteropError>
         .iter()
         .map(|path| ufo_contour(&glyph.name, path))
         .collect::<Result<_, _>>()?;
+
+    // A component of an exported base is written as a component. A base that
+    // is not exported is not in the UFO, so it is drawn into the glyph.
+    for component in &layer.components {
+        let base = font
+            .glyphs
+            .get(&component.base)
+            .ok_or_else(|| InteropError::Norad(unknown_base(glyph, component.base)))?;
+        if base.export {
+            let name =
+                Name::new(&base.name).map_err(|error| InteropError::Norad(error.to_string()))?;
+            out.components
+                .push(Component::new(name, affine(&component.transform), None));
+        } else {
+            let flat = flatten_layer(font, component.base, master)
+                .map_err(|error| InteropError::Norad(format!("glyph {:?}: {error}", glyph.name)))?;
+            for path in transform_paths(&flat, &component.transform) {
+                out.contours.push(ufo_contour(&glyph.name, &path)?);
+            }
+        }
+    }
     Ok(out)
+}
+
+fn unknown_base(glyph: &Glyph, base: GlyphId) -> String {
+    format!(
+        "glyph {:?} has a component of the unknown glyph {base}",
+        glyph.name
+    )
+}
+
+/// The UFO form of a component transform: the six numbers keep their names
+/// (`x_scale` is `xx`, `xy_scale` is `xy`, `yx_scale` is `yx`, `y_scale` is
+/// `yy`, and the offsets are `dx` and `dy`).
+fn affine(t: &Transform) -> AffineTransform {
+    AffineTransform {
+        x_scale: t.xx,
+        xy_scale: t.xy,
+        yx_scale: t.yx,
+        y_scale: t.yy,
+        x_offset: t.dx,
+        y_offset: t.dy,
+    }
+}
+
+/// Writes the kerning groups and the pairs of `master`.
+///
+/// Groups become `public.kern1.<name>` / `public.kern2.<name>` and list only
+/// exported glyphs; a group left without members is not written. A pair that
+/// refers to a glyph that is not exported, or to a group that is not written,
+/// is omitted.
+fn write_kerning(font: &Font, master: MasterId, ufo: &mut norad::Font) -> Result<(), InteropError> {
+    let exported_name = |id: GlyphId| {
+        font.glyphs
+            .get(&id)
+            .filter(|glyph| glyph.export)
+            .map(|glyph| glyph.name.as_str())
+    };
+    let to_name =
+        |text: &str| Name::new(text).map_err(|error| InteropError::Norad(error.to_string()));
+
+    let mut group_names = BTreeMap::new();
+    for group in font.kerning.groups.values() {
+        let prefix = match group.side {
+            KernSide::First => norad::groups::FIRST_KERNING_GROUP_PREFIX,
+            _ => norad::groups::SECOND_KERNING_GROUP_PREFIX,
+        };
+        let members = group
+            .members
+            .iter()
+            .filter_map(|&id| exported_name(id))
+            .map(&to_name)
+            .collect::<Result<Vec<_>, _>>()?;
+        if members.is_empty() {
+            continue;
+        }
+        let name = to_name(&format!("{prefix}{}", group.name))?;
+        group_names.insert(group.id, name.clone());
+        ufo.groups.insert(name, members);
+    }
+
+    let Some(pairs) = font.kerning.pairs.get(&master) else {
+        return Ok(());
+    };
+    let side = |reference: KernRef| -> Result<Option<Name>, InteropError> {
+        match reference {
+            KernRef::Glyph(id) => exported_name(id).map(to_name).transpose(),
+            KernRef::Group(id) => Ok(group_names.get(&id).cloned()),
+        }
+    };
+    for (&(first, second), &value) in pairs.iter() {
+        if let (Some(first), Some(second)) = (side(first)?, side(second)?) {
+            ufo.kerning.entry(first).or_default().insert(second, value);
+        }
+    }
+    Ok(())
 }
 
 /// Converts a contour. The model already uses the UFO convention (off-curve

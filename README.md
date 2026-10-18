@@ -16,7 +16,7 @@
   <a href="https://github.com/luisfarfan/forma/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/luisfarfan/forma/actions/workflows/ci.yml/badge.svg"></a>
   <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-1f6feb?style=flat-square"></a>
   <img alt="Rust 1.99" src="https://img.shields.io/badge/rust-1.99-b7410e?style=flat-square&logo=rust">
-  <img alt="MCP server" src="https://img.shields.io/badge/MCP-35%20tools-FF5A1F?style=flat-square">
+  <img alt="MCP server" src="https://img.shields.io/badge/MCP-50%20tools-FF5A1F?style=flat-square">
   <img alt="Platforms" src="https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-555?style=flat-square">
   <img alt="Status: pre-alpha" src="https://img.shields.io/badge/status-pre--alpha-c0392b?style=flat-square">
 </p>
@@ -42,7 +42,7 @@ FORMA is a font editor in the tradition of Glyphs, FontLab and RoboFont: draw gl
 FORMA is free and open source under `MIT OR Apache-2.0`, and it is not a commercial product.
 
 > [!NOTE]
-> **FORMA is in early development.** Milestone 1, a headless core with the CLI and the MCP server, is complete. **There is no graphical editor yet.** Today you can build, edit, validate and export fonts from the terminal or through an AI agent. See the [roadmap](#roadmap).
+> **FORMA is in early development.** Milestone 1, a headless core with the CLI and the MCP server, is complete, and Milestone 2 (from an image of an alphabet to a complete font) is implemented on the `hito2` branch, pending CI on the three OSes and the demos with real agents. **There is no graphical editor yet.** Today you can build, edit, validate and export fonts from the terminal or through an AI agent, including tracing a font from a picture of its letters. See the [roadmap](#roadmap).
 
 ## See it work
 
@@ -90,7 +90,7 @@ forma export demo.forma --format ttf --out demo.ttf
 forma call preview_text --doc-path demo.forma --args '{"text": "HHH"}' --out preview.png
 ```
 
-`forma call <tool>` runs any of the 35 tools of the [registry](docs/api/tools.md), which are the same tools an agent sees. The CLI also has `info`, `export --format woff2|ufo`, and `pack`/`unpack` to convert between the two document formats.
+`forma call <tool>` runs any of the 50 tools of the [registry](docs/api/tools.md), which are the same tools an agent sees. The CLI also has `info`, `export --format woff2|ufo`, and `pack`/`unpack` to convert between the two document formats.
 
 ### Let an agent do it
 
@@ -129,7 +129,7 @@ flowchart TB
   ANY["any MCP client"] -->|stdio| MCP
   MCP["forma-mcp<br/>protocol facade"] --> ENG
   CLI["forma CLI"] --> ENG
-  APP["desktop app<br/>(Milestone 3)"] -.-> ENG
+  APP["desktop app<br/>(Milestone 8)"] -.-> ENG
   ENG["forma-engine<br/>command registry · policies · approvals · sandbox"] --> EDIT["forma-edit<br/>transactions · revisions · history"]
   EDIT --> MODEL["forma-model"]
   ENG --> STORE["forma-store<br/>.forma · .formapackage"]
@@ -137,6 +137,8 @@ flowchart TB
   ENG --> COMP["forma-compile<br/>fontc → TTF · WOFF2"]
   ENG --> VAL["forma-validate"]
   ENG --> REND["forma-render<br/>vello_cpu previews"]
+  ENG --> SPC["forma-spacing<br/>spacing · kerning · collisions"]
+  ENG --> TRC["forma-trace<br/>image → outlines"]
 ```
 
 ### Built for humans and agents editing together
@@ -174,16 +176,18 @@ sequenceDiagram
 | **Validation** | Built-in checks on the model and on the compiled binary, cross-checked in CI by external oracles. |
 | **Previews** | PNG/SVG glyph views with nodes and metrics, lines of text, and before/after comparisons between revisions. |
 | **History** | Undo/redo per actor, revert, restore to any revision, and diffs between revisions. |
-| **MCP** | 35 tools in 8 toolsets, from protocol version 2024-11-05 to 2026-07-28. Images go out as plain image content so every client can show them. |
+| **Image → font** | Trace the letters of a picture of an alphabet into glyphs (`image_inspect`, `image_trace`, `trace_compare`), measure and extend their stroke style (`glyph_measure`, `glyph_stroke`), build accented letters as components, and space and kern the font automatically (`spacing_auto`, `kerning_auto`, `kerning_check`). `charset_check` verifies coverage of the 119-character `unicase-es` profile. Only use images you have the rights to. |
+| **Components & kerning** | Composite glyphs (compiled to compound `glyf` glyphs), kerning groups and pairs per master with exceptions (compiled to `GPOS kern`), `remove_overlap`, and format v2 (v1 documents still open). |
+| **MCP** | 50 tools in 11 toolsets, from protocol version 2024-11-05 to 2026-07-28. Images go out as plain image content so every client can show them. |
 
 ## Quality bar
 
 FORMA treats correctness as a feature:
 
-- **800+ tests**: unit, property-based (1,000 cases per property), MCP end-to-end over stdio in both protocol lifecycles, and a snapshot contract for `tools/list`.
+- **1,100+ tests**: unit, property-based (1,000 cases per property), MCP end-to-end over stdio in both protocol lifecycles, and a snapshot contract for `tools/list`.
 - **External oracles in CI**: OTS, HarfBuzz shaping, fontTools, fontmake parity (12/12 glyphs) and fontspector, all run on the fonts FORMA exports.
-- **Line coverage of 95–100 %** across the core crates (model, edit, engine, store).
-- **Nightly fuzzing** of both document loaders, plus `clippy -D warnings`, `rustfmt` and license checks with `cargo-deny`.
+- **Line coverage of 95–100 %** across the core crates (model, edit, engine, store, trace, spacing).
+- **Nightly fuzzing** of both document loaders and of the image decoder, plus `clippy -D warnings`, `rustfmt` and license checks with `cargo-deny`.
 - **CI on macOS (arm64, plus an Intel build check), Windows and Ubuntu 24.04** for every change.
 
 Run the acceptance suite locally with `scripts/acceptance.sh`, or `scripts/acceptance.ps1` on Windows. It needs the Python oracles in `tools/oracle/`.
@@ -194,14 +198,14 @@ Run the acceptance suite locally with `scripts/acceptance.sh`, or `scripts/accep
 |---|---|---|
 | Phase 0 | Research, architecture, legal and IP policy | ✅ Done |
 | **Milestone 1** | Headless core + CLI + MCP server on 3 OSes | ✅ Done · CI green on macOS, Windows and Linux |
-| Milestone 2 | UI toolkit spike: Qt 6 vs Slint, decided by measurements | Next |
-| Milestone 3 | Minimal editor on 3 OSes; live co-editing between you and an agent | |
-| Milestone 4 | Signed installers, crash recovery → **v0.1 MVP** | |
-| Phase 2 | Components, kerning, UFO import, built-in AI assistant with your choice of provider, local models included → v0.2 | |
-| Phase 3 | Multi-master and variable fonts → v0.3 | |
-| Phase 4 | OpenType features, CFF, booleans, hinting → v0.4 | |
-| Phase 5 | `.glyphs` interoperability, Python scripting, plugins → v0.5 | |
-| Phases 6–7 | Advanced parity, color fonts, CJK performance → **v1.0** | |
+| **Milestone 2** | From an image of an alphabet to a complete font: tracing, components, spacing, kerning, `remove_overlap` | In progress · implemented on branch `hito2`; CI on 3 OSes and real-agent demos pending |
+| Milestone 3 | An original "liquid" font and a public-domain specimen: anchors, mark/mkmk, alternates, ligatures, OpenType features | |
+| Milestone 4 | Rebuild premium OFL fonts: UFO, designspace and `.glyphs` import | |
+| Milestone 5 | Multi-master and variable fonts | |
+| Milestone 6 | CFF/OTF and hinting | |
+| Milestone 7 | Python scripting and plugins | |
+| Milestone 8 | **The UI comes last:** toolkit spike (Qt 6 vs Slint, decided by measurements), cross-platform editor, built-in AI assistant | |
+| Milestone 9 | Signed installers, crash recovery → **v1.0** | |
 
 Details and acceptance criteria: [`docs/04-roadmap.md`](docs/04-roadmap.md).
 
@@ -211,7 +215,7 @@ Details and acceptance criteria: [`docs/04-roadmap.md`](docs/04-roadmap.md).
 core/                 Rust workspace (edition 2024)
   crates/
     forma-model       data model: font, glyphs, masters, layers, paths, nodes
-    forma-geometry    outline math, SVG import, checks and fixes
+    forma-geometry    outline math, SVG import, checks and fixes, cubic fitting, stroking, overlap removal
     forma-edit        commands, transactions, revisions, history, diffs
     forma-engine      command registry, policies, approvals, sandbox, audit
     forma-store       .forma (SQLite) and .formapackage (JSON) persistence
@@ -219,6 +223,8 @@ core/                 Rust workspace (edition 2024)
     forma-compile     fontc → TTF / WOFF2
     forma-validate    model and binary checks
     forma-render      PNG / SVG previews (vello_cpu)
+    forma-trace       image → outlines: palette, candidates, vectorizing, fidelity
+    forma-spacing     automatic spacing, kerning and collision checks
     forma-mcp         MCP server facade (rmcp)
     forma-cli         the `forma` binary
   fuzz/               cargo-fuzz targets (nightly CI)

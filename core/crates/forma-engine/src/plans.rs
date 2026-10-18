@@ -101,7 +101,7 @@ pub struct Plan {
     pub summary: String,
     /// The names of the glyphs the call touches (at most 100).
     pub affected: Vec<String>,
-    /// How many glyphs the call touches.
+    /// How many glyphs, kerning pairs and kerning groups the call touches.
     pub affected_count: usize,
     /// How the font changes; empty for calls that write a file or discard
     /// unsaved changes.
@@ -132,6 +132,8 @@ pub struct BoundedDiff {
     pub info_changed: bool,
     /// Whether the vertical metrics of any master changed.
     pub metrics_changed: bool,
+    /// Whether any kerning group or kerning pair changed.
+    pub kerning_changed: bool,
     /// Whether any list was cut to its first 100 entries.
     pub truncated: bool,
 }
@@ -146,6 +148,7 @@ impl BoundedDiff {
             modified: Vec::new(),
             info_changed: false,
             metrics_changed: false,
+            kerning_changed: false,
         })
     }
 }
@@ -158,6 +161,7 @@ impl From<FontDiff> for BoundedDiff {
             mut modified,
             info_changed,
             metrics_changed,
+            kerning_changed,
         } = diff;
         let (added_count, removed_count, modified_count) =
             (added.len(), removed.len(), modified.len());
@@ -176,6 +180,7 @@ impl From<FontDiff> for BoundedDiff {
             modified_count,
             info_changed,
             metrics_changed,
+            kerning_changed,
             truncated,
         }
     }
@@ -820,6 +825,7 @@ mod tests {
                     outline_changed: true,
                     advance_changed: false,
                     unicodes_changed: false,
+                    components_changed: true,
                 })
                 .collect()
         };
@@ -829,6 +835,7 @@ mod tests {
             modified: modified(101),
             info_changed: true,
             metrics_changed: false,
+            kerning_changed: true,
         });
         assert_eq!(
             (diff.added.len(), diff.added_count),
@@ -838,6 +845,7 @@ mod tests {
         assert_eq!((diff.removed.len(), diff.removed_count), (100, 100));
         assert_eq!((diff.modified.len(), diff.modified_count), (100, 101));
         assert!(diff.truncated && diff.info_changed && !diff.metrics_changed);
+        assert!(diff.kerning_changed && diff.modified[0].components_changed);
 
         let small = BoundedDiff::from(FontDiff {
             added: names("a", 100),
@@ -845,6 +853,7 @@ mod tests {
             modified: modified(3),
             info_changed: false,
             metrics_changed: true,
+            kerning_changed: false,
         });
         assert!(!small.truncated);
         assert_eq!(small.modified_count, 3);
@@ -853,7 +862,8 @@ mod tests {
             (empty.added_count, empty.removed_count, empty.modified_count),
             (0, 0, 0)
         );
-        assert!(!empty.truncated && !empty.info_changed);
+        assert!(!empty.truncated && !empty.info_changed && !empty.kerning_changed);
+        assert!(!small.kerning_changed);
     }
 
     #[test]

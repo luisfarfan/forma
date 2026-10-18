@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+use crate::component::check_components;
 use crate::glyph::{Glyph, is_valid_glyph_name};
-use crate::ids::{FontId, GlyphId, MasterId};
+use crate::ids::{FontId, GlyphId, KerningGroupId, MasterId};
+use crate::kerning::{KernSide, Kerning};
 
 /// The smallest `units_per_em` allowed by OpenType.
 pub const MIN_UNITS_PER_EM: u16 = 16;
@@ -17,7 +19,10 @@ pub const MIN_UNITS_PER_EM: u16 = 16;
 pub const MAX_UNITS_PER_EM: u16 = 16384;
 
 /// A violation of a data model rule, or text that is not a valid model value.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+///
+/// Not `Eq`: [`ModelError::InvalidKerningValue`] carries the offending
+/// number, which may be NaN.
+#[derive(Debug, Clone, PartialEq, Error)]
 #[non_exhaustive]
 pub enum ModelError {
     /// `units_per_em` is outside the OpenType range.
@@ -90,6 +95,148 @@ pub enum ModelError {
     /// Text is not a valid entity key.
     #[error("invalid entity key {0:?}")]
     InvalidEntityKey(String),
+    /// Text is not a valid kerning reference.
+    #[error("invalid kerning reference {0:?}: expected \"g.<glyph uuid>\" or \"k.<group uuid>\"")]
+    InvalidKernRef(String),
+    /// A component refers to a glyph that does not exist.
+    #[error("glyph {glyph:?} has a component of the unknown glyph {base}")]
+    UnknownComponentBase {
+        /// The name of the glyph with the component.
+        glyph: String,
+        /// The missing base glyph.
+        base: GlyphId,
+    },
+    /// A component refers to a glyph that has no layer in the component's
+    /// master.
+    #[error(
+        "glyph {glyph:?} has a component of {base:?} in master {master}, where {base:?} has no layer"
+    )]
+    ComponentMissingLayer {
+        /// The name of the glyph with the component.
+        glyph: String,
+        /// The name of the base glyph.
+        base: String,
+        /// The master of the component.
+        master: MasterId,
+    },
+    /// Following components from a glyph leads back to it.
+    #[error("the components of glyph {glyph:?} lead back to it (a component cycle)")]
+    ComponentCycle {
+        /// The name of a glyph on the cycle.
+        glyph: String,
+    },
+    /// A component transform is not finite or is singular.
+    #[error(
+        "glyph {glyph:?} has a component transform that is not finite or is singular \
+         (|determinant| < 1e-6)"
+    )]
+    InvalidTransform {
+        /// The name of the glyph with the component.
+        glyph: String,
+    },
+    /// Kerning pairs are stored for a master the font does not have.
+    #[error("kerning pairs are stored for the unknown master {0}")]
+    KerningUnknownMaster(MasterId),
+    /// A master is stored with an empty map of kerning pairs: a master
+    /// without pairs has no entry, so that kerning has a single form.
+    #[error(
+        "master {0} is stored with an empty list of kerning pairs; a master without pairs has \
+         no entry"
+    )]
+    EmptyKerningMaster(MasterId),
+    /// A kerning group lists a glyph that does not exist.
+    #[error("the {side}-side kerning group {group:?} lists the unknown glyph {glyph}")]
+    KerningGroupUnknownGlyph {
+        /// The group name.
+        group: String,
+        /// The side of the group.
+        side: KernSide,
+        /// The missing glyph.
+        glyph: GlyphId,
+    },
+    /// A kerning pair refers to a glyph that does not exist.
+    #[error("kerning pair {pair} of master {master} refers to the unknown glyph {glyph}")]
+    KerningUnknownGlyph {
+        /// The master of the pair.
+        master: MasterId,
+        /// The pair, as `<first>/<second>`: each side the name of its glyph,
+        /// `@` and the name of its group, or its reference text when it does
+        /// not resolve.
+        pair: String,
+        /// The missing glyph.
+        glyph: GlyphId,
+    },
+    /// A kerning pair refers to a group that does not exist.
+    #[error("kerning pair {pair} of master {master} refers to the unknown kerning group {group}")]
+    KerningUnknownGroup {
+        /// The master of the pair.
+        master: MasterId,
+        /// The pair, named as in [`ModelError::KerningUnknownGlyph`].
+        pair: String,
+        /// The missing group.
+        group: KerningGroupId,
+    },
+    /// A kerning group is used on the other side of a pair than its own.
+    #[error(
+        "kerning pair {pair} of master {master} uses kerning group {group:?} on the wrong side"
+    )]
+    KerningGroupWrongSide {
+        /// The master of the pair.
+        master: MasterId,
+        /// The pair, named as in [`ModelError::KerningUnknownGlyph`].
+        pair: String,
+        /// The group name.
+        group: String,
+    },
+    /// A glyph is listed more than once in the groups of one side.
+    #[error(
+        "glyph {glyph:?} is listed in the {side}-side kerning group {group:?} and again in \
+         {again_in:?}; a glyph belongs to at most one group per side"
+    )]
+    GlyphInTwoGroups {
+        /// The glyph name.
+        glyph: String,
+        /// The side of the groups.
+        side: KernSide,
+        /// The group that lists the glyph first (in group id order).
+        group: String,
+        /// The group that lists it again (the same group if it lists the
+        /// glyph twice).
+        again_in: String,
+    },
+    /// A kerning group name breaks the naming rules (those of glyph names).
+    #[error("invalid kerning group name {0:?}: group names follow the glyph name rules")]
+    InvalidGroupName(String),
+    /// Two kerning groups of one side share a name.
+    #[error("two {side}-side kerning groups are named {name:?}")]
+    DuplicateGroupName {
+        /// The side of the groups.
+        side: KernSide,
+        /// The shared name.
+        name: String,
+    },
+    /// A kerning value is not finite, is 0 or exceeds twice the units per
+    /// em in absolute value.
+    #[error(
+        "invalid value {value} of kerning pair {pair} in master {master}: it must be finite, \
+         not 0, and at most twice the units per em in absolute value"
+    )]
+    InvalidKerningValue {
+        /// The master of the pair.
+        master: MasterId,
+        /// The pair, named as in [`ModelError::KerningUnknownGlyph`].
+        pair: String,
+        /// The offending value.
+        value: f64,
+    },
+    /// A kerning group is stored under a key that is not its own identifier.
+    #[error("the kerning group with id {id} is stored under key {key}")]
+    GroupKeyMismatch {
+        /// The key in the group map.
+        key: KerningGroupId,
+        /// The identifier inside the group.
+        id: KerningGroupId,
+    },
 }
 
 /// Font-level naming and version information.
@@ -152,12 +299,15 @@ pub struct Font {
     pub glyphs: Arc<BTreeMap<GlyphId, Arc<Glyph>>>,
     /// The glyph order: every glyph exactly once.
     pub glyph_order: Vec<GlyphId>,
+    /// The kerning groups and pairs; omitted when there are none.
+    #[serde(default, skip_serializing_if = "Kerning::is_empty")]
+    pub kerning: Kerning,
     /// Free-form data that the model does not interpret but must preserve.
     pub lib: Map<String, Value>,
 }
 
 impl Font {
-    /// Creates a font with one `Regular` master and no glyphs.
+    /// Creates a font with one `Regular` master, no glyphs and no kerning.
     ///
     /// The vertical metrics are proportional to `units_per_em`: ascender 80%,
     /// descender -20%, x-height 50% and cap height 70% of it (800, -200, 500
@@ -192,6 +342,7 @@ impl Font {
             }],
             glyphs: Arc::new(BTreeMap::new()),
             glyph_order: Vec::new(),
+            kerning: Kerning::default(),
             lib: Map::new(),
         }
     }
@@ -200,6 +351,25 @@ impl Font {
     #[must_use]
     pub fn glyph_by_name(&self, name: &str) -> Option<&Arc<Glyph>> {
         self.glyphs.values().find(|glyph| glyph.name == name)
+    }
+
+    /// The glyphs that use `base` as a component in some master, each once,
+    /// in glyph order (then, in an invalid font, any glyph the order does
+    /// not list, by id).
+    #[must_use]
+    pub fn components_using(&self, base: GlyphId) -> Vec<GlyphId> {
+        let mut seen = HashSet::new();
+        self.glyph_order
+            .iter()
+            .chain(self.glyphs.keys())
+            .filter(|id| seen.insert(**id))
+            .filter(|id| {
+                self.glyphs
+                    .get(id)
+                    .is_some_and(|glyph| glyph.uses_component(base))
+            })
+            .copied()
+            .collect()
     }
 
     /// The default master, which is the first one.
@@ -221,7 +391,20 @@ impl Font {
     /// - each glyph is stored under its own id, has a valid, unique name and
     ///   only layers for existing masters;
     /// - no code point is assigned more than once;
-    /// - the glyph order lists exactly the glyphs of the font, each once.
+    /// - the glyph order lists exactly the glyphs of the font, each once;
+    /// - every component refers to an existing glyph that has a layer in the
+    ///   component's master, through a finite transform with
+    ///   `|determinant| ≥ 1e-6`, and following components never leads back to
+    ///   the same glyph (in any master);
+    /// - every kerning group is stored under its own id, has a name that
+    ///   follows the glyph name rules and is unique on its side, and lists
+    ///   existing glyphs; no glyph is listed twice in the groups of one side;
+    /// - kerning pairs are stored for existing masters (a master without
+    ///   pairs has no entry, not an empty one), refer to existing
+    ///   glyphs and to groups of the right side (first-side groups as
+    ///   `first`, second-side groups as `second`), and have a finite, non-zero
+    ///   value of at most twice the units per em in absolute value (a value of
+    ///   0 is no pair: it is not stored).
     ///
     /// # Errors
     ///
@@ -294,6 +477,7 @@ impl Font {
             }
         }
 
-        Ok(())
+        check_components(self)?;
+        self.kerning.check(self)
     }
 }

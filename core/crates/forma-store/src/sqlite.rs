@@ -31,7 +31,8 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, params};
 use crate::StoreError;
 use crate::atomic::{remove_quietly, write_atomic_at};
 use crate::parts::{
-    self, Encoded, FORMAT_VERSION, GENERATOR, assemble, decode_font_document, decode_glyph_document,
+    self, Encoded, FORMAT_VERSION, GENERATOR, READABLE_VERSIONS, assemble, decode_font_document,
+    decode_glyph_document,
 };
 
 /// `application_id` of every `.forma` file: the ASCII bytes `FORM`.
@@ -153,21 +154,26 @@ pub(crate) fn load(path: &Path) -> Result<Font, StoreError> {
         return Err(StoreError::NotAFormaFile(path.to_path_buf()));
     }
     let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    match u32::try_from(user_version) {
-        Ok(FORMAT_VERSION) => {}
+    let version = match u32::try_from(user_version) {
+        Ok(version) if READABLE_VERSIONS.contains(&version) => version,
         Ok(0) | Err(_) => {
             return Err(StoreError::Invalid(format!(
                 "user_version {user_version} is not a format version"
             )));
         }
-        Ok(newer) => return Err(StoreError::UnsupportedVersion(newer)),
-    }
+        Ok(newer) if newer > FORMAT_VERSION => return Err(StoreError::UnsupportedVersion(newer)),
+        Ok(other) => {
+            return Err(StoreError::Invalid(format!(
+                "user_version {other} is not a format version"
+            )));
+        }
+    };
 
-    let manifest = read_manifest(&conn)?;
+    let manifest = read_manifest(&conn, version)?;
     let (font_row, glyph_rows) = read_entities(&conn)?;
 
     let (font_row_id, font_json) = font_row;
-    let font = decode_font_document(font_json.as_bytes(), "entities[font]")?;
+    let font = decode_font_document(font_json.as_bytes(), "entities[font]", version)?;
     if font_row_id != font.id.to_string() {
         return Err(StoreError::Invalid(format!(
             "the font row is stored under id {font_row_id} but holds font {}",
@@ -184,7 +190,7 @@ pub(crate) fn load(path: &Path) -> Result<Font, StoreError> {
     let mut glyphs = Vec::with_capacity(glyph_rows.len());
     for (row_id, json) in glyph_rows {
         let context = format!("entities[glyph {row_id}]");
-        let glyph = decode_glyph_document(json.as_bytes(), &context)?;
+        let glyph = decode_glyph_document(json.as_bytes(), &context, version)?;
         if row_id != glyph.id.to_string() {
             return Err(StoreError::Invalid(format!(
                 "a glyph row is stored under id {row_id} but holds glyph {}",
@@ -202,7 +208,7 @@ struct Manifest {
     font_id: FontId,
 }
 
-fn read_manifest(conn: &Connection) -> Result<Manifest, StoreError> {
+fn read_manifest(conn: &Connection, expected_version: u32) -> Result<Manifest, StoreError> {
     let mut statement = conn.prepare("SELECT key, value FROM manifest")?;
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -225,7 +231,7 @@ fn read_manifest(conn: &Connection) -> Result<Manifest, StoreError> {
     let version: u64 = get("format_version")?.parse().map_err(|_| {
         StoreError::Invalid("the manifest format_version is not a number".to_owned())
     })?;
-    if version != u64::from(FORMAT_VERSION) {
+    if version != u64::from(expected_version) {
         return match u32::try_from(version) {
             Ok(newer) if newer > FORMAT_VERSION => Err(StoreError::UnsupportedVersion(newer)),
             Err(_) => Err(StoreError::UnsupportedVersion(u32::MAX)),

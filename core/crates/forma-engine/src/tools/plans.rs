@@ -5,13 +5,17 @@
 //! # The gate
 //!
 //! A call **needs approval** when it is destructive or massive (it touches
-//! more than [`MASS_THRESHOLD`] distinct glyphs). Destructive are: deleting
-//! glyphs; replacing a drawn layer of a glyph that existed before the call;
-//! removing the last contour of a layer that was drawn when the call started;
-//! a singular contour transform; a revert that deletes a glyph or replaces or
-//! empties a drawn layer; restoring an earlier revision; overwriting an
-//! existing file other than the document's own; closing a document with
-//! unsaved changes, discarding them. Then, by [`Policy`]:
+//! more than [`MASS_THRESHOLD`] distinct glyphs, kerning pairs and kerning
+//! groups, counted together; see `is_affected`). Destructive are: deleting
+//! glyphs; replacing a drawn layer, or a non-empty component list, of a
+//! glyph that existed before the call; removing the last contour of a layer
+//! that was drawn when the call started; a singular contour transform;
+//! removing a kerning pair that existed before the call; deleting a kerning
+//! group; a revert that deletes a glyph, replaces or empties a drawn layer,
+//! replaces components or removes a kerning pair or group; restoring an
+//! earlier revision; overwriting an existing file other than the document's
+//! own; closing a document with unsaved changes, discarding them. Then, by
+//! [`Policy`]:
 //!
 //! * `prompted` (the default): `APPROVAL_REQUIRED`, with a plan in
 //!   `details.plan`;
@@ -54,7 +58,7 @@ use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
 use forma_edit::Command;
-use forma_model::{Actor, Font, GlyphId, Rev};
+use forma_model::{Actor, EntityKey, Font, Rev};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -238,7 +242,7 @@ pub(crate) struct Proposal<'a> {
     /// Whether the call destroys data (see the module documentation).
     pub destructive: bool,
     /// For a [`Change::Font`], the history label of the change (the summary
-    /// adds the number of glyphs affected); for a [`Change::Snapshot`], the whole
+    /// adds the number of entities affected); for a [`Change::Snapshot`], the whole
     /// summary, such as `"overwrites <path>"`.
     pub label: String,
     /// What changes.
@@ -255,8 +259,10 @@ pub(crate) enum Change<'a> {
         before: &'a Font,
         /// The state after the call.
         after: &'a Font,
-        /// The distinct glyphs the call touches.
-        affected: &'a BTreeSet<GlyphId>,
+        /// The distinct entities the call touches that count toward the
+        /// mass threshold: glyphs, kerning pairs and kerning groups (see
+        /// [`is_affected`]).
+        affected: &'a BTreeSet<EntityKey>,
         /// The commands the call runs, when it runs commands (a committed
         /// plan must run exactly these); `None` for undo-like changes whose
         /// effect a revision or transaction id fixes.
@@ -266,6 +272,23 @@ pub(crate) enum Change<'a> {
     /// the call writes it to a file (save, export) or discards its unsaved
     /// changes (close). The plan pins the current revision.
     Snapshot,
+}
+
+/// Whether a touched entity is one a call *affects*: a glyph, a kerning
+/// pair or a kerning group. Plans count them, and a call that affects more
+/// than [`MASS_THRESHOLD`] is massive; the font info, the vertical metrics
+/// and the glyph order do not count.
+pub(crate) fn is_affected(key: &EntityKey) -> bool {
+    // Exhaustive, so that a new kind of entity needs a decision here.
+    match key {
+        EntityKey::Glyph(_) | EntityKey::KerningPair(..) | EntityKey::KerningGroup(_) => true,
+        EntityKey::FontInfo | EntityKey::VerticalMetrics(_) | EntityKey::GlyphOrder => false,
+    }
+}
+
+/// `count` followed by the singular or plural noun.
+fn counted(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
 }
 
 impl Proposal<'_> {
@@ -280,17 +303,40 @@ impl Proposal<'_> {
         self.affected_count() > MASS_THRESHOLD
     }
 
+    /// The label plus what is affected: `"<label> (3 glyphs affected)"`, or
+    /// `"<label> (1 glyph, 21 kerning pairs, 1 kerning group affected)"` when
+    /// kerning is affected too (glyphs are left out when there are none
+    /// then), with `", destructive"` before the closing parenthesis for a
+    /// destructive call.
     fn summary(&self) -> String {
         match self.change {
             Change::Font { affected, .. } => {
-                let count = affected.len();
-                let glyphs = if count == 1 { "glyph" } else { "glyphs" };
+                let count = |wanted: fn(&EntityKey) -> bool| {
+                    affected.iter().filter(|key| wanted(key)).count()
+                };
+                let glyphs = count(|key| matches!(key, EntityKey::Glyph(_)));
+                let pairs = count(|key| matches!(key, EntityKey::KerningPair(..)));
+                let groups = count(|key| matches!(key, EntityKey::KerningGroup(_)));
+                let mut parts = Vec::new();
+                if glyphs > 0 || pairs + groups == 0 {
+                    parts.push(counted(glyphs, "glyph", "glyphs"));
+                }
+                if pairs > 0 {
+                    parts.push(counted(pairs, "kerning pair", "kerning pairs"));
+                }
+                if groups > 0 {
+                    parts.push(counted(groups, "kerning group", "kerning groups"));
+                }
                 let destructive = if self.destructive {
                     ", destructive"
                 } else {
                     ""
                 };
-                format!("{} ({count} {glyphs} affected{destructive})", self.label)
+                format!(
+                    "{} ({} affected{destructive})",
+                    self.label,
+                    parts.join(", ")
+                )
             }
             Change::Snapshot => self.label.clone(),
         }
@@ -415,7 +461,7 @@ pub(crate) fn approval_gate(
             actor = %proposal.actor,
             tool = proposal.tool,
             doc = %proposal.doc,
-            affected_glyphs = proposal.affected_count(),
+            affected = proposal.affected_count(),
             destructive,
             policy = policy.as_str(),
             "approval gate: no approval needed"
@@ -477,11 +523,12 @@ fn make_plan(engine: &mut Engine, proposal: &Proposal<'_>) -> Result<Plan, ToolE
     })
 }
 
-/// The names of the glyphs `ids`, at most [`MAX_AFFECTED_NAMES`]: in the
-/// glyph order of `after` (with their new names), then the deleted ones in
-/// the order of `before`. A glyph that exists in neither (created and
-/// deleted by the same call) has no name to list.
-fn affected_names(before: &Font, after: &Font, ids: &BTreeSet<GlyphId>) -> Vec<String> {
+/// The names of the glyphs among `affected`, at most
+/// [`MAX_AFFECTED_NAMES`]: in the glyph order of `after` (with their new
+/// names), then the deleted ones in the order of `before`. A glyph that
+/// exists in neither (created and deleted by the same call) has no name to
+/// list.
+fn affected_names(before: &Font, after: &Font, affected: &BTreeSet<EntityKey>) -> Vec<String> {
     let mut named = BTreeSet::new();
     let mut names = Vec::new();
     for font in [after, before] {
@@ -489,7 +536,7 @@ fn affected_names(before: &Font, after: &Font, ids: &BTreeSet<GlyphId>) -> Vec<S
             if names.len() == MAX_AFFECTED_NAMES {
                 return names;
             }
-            if ids.contains(id)
+            if affected.contains(&EntityKey::Glyph(*id))
                 && let Some(glyph) = font.glyphs.get(id)
                 && named.insert(*id)
             {
@@ -678,6 +725,74 @@ mod tests {
     }
 
     #[test]
+    fn glyphs_kerning_pairs_and_groups_count_as_affected() {
+        use forma_model::{GlyphId, KernRef, KerningGroupId};
+
+        let font = Font::new("Test", 1000);
+        let master = font.masters[0].id;
+        let (actor, args, doc) = (Actor::User, json!({}), DocHandle::from("doc_1"));
+        let group = KerningGroupId::new();
+        let pair = |_| {
+            EntityKey::KerningPair(
+                master,
+                KernRef::Glyph(GlyphId::new()),
+                KernRef::Group(group),
+            )
+        };
+        let proposal = |affected| Proposal {
+            actor: &actor,
+            tool: "edit_batch",
+            args: &args,
+            doc: &doc,
+            base_rev: Rev(0),
+            dry_run: false,
+            destructive: false,
+            label: "Kern".into(),
+            change: Change::Font {
+                before: &font,
+                after: &font,
+                affected,
+                commands: None,
+            },
+        };
+
+        assert!(is_affected(&EntityKey::Glyph(GlyphId::new())));
+        assert!(is_affected(&EntityKey::KerningGroup(group)));
+        assert!(is_affected(&pair(0)));
+        for key in [
+            EntityKey::FontInfo,
+            EntityKey::GlyphOrder,
+            EntityKey::VerticalMetrics(master),
+        ] {
+            assert!(!is_affected(&key), "{key}");
+        }
+
+        // 20 pairs are not massive; 20 pairs and a group are.
+        let pairs: BTreeSet<EntityKey> = (0..20).map(pair).collect();
+        let twenty = proposal(&pairs);
+        assert!(!twenty.mass());
+        assert_eq!(twenty.summary(), "Kern (20 kerning pairs affected)");
+        let mut more = pairs.clone();
+        more.insert(EntityKey::KerningGroup(group));
+        let massive = proposal(&more);
+        assert!(massive.mass());
+        assert_eq!(massive.affected_count(), 21);
+        assert_eq!(
+            massive.summary(),
+            "Kern (20 kerning pairs, 1 kerning group affected)"
+        );
+        let mut all = more.clone();
+        all.insert(EntityKey::Glyph(GlyphId::new()));
+        assert_eq!(
+            proposal(&all).summary(),
+            "Kern (1 glyph, 20 kerning pairs, 1 kerning group affected)"
+        );
+        // Without kerning, the summary reads as before.
+        let none = BTreeSet::new();
+        assert_eq!(proposal(&none).summary(), "Kern (0 glyphs affected)");
+    }
+
+    #[test]
     fn affected_glyphs_are_named_in_glyph_order_then_deleted_ones() {
         let create = |name: &str| Command::CreateGlyph {
             name: name.into(),
@@ -697,9 +812,12 @@ mod tests {
         let (after, _) = apply(&before, &delete_b).expect("delete");
         let (after, _) = apply(&after, &create("d")).expect("create");
         let d = id(&after, "d");
-        let ids = BTreeSet::from([a, b, c, d]);
+        let ids: BTreeSet<EntityKey> = [a, b, c, d].into_iter().map(EntityKey::Glyph).collect();
         assert_eq!(affected_names(&before, &after, &ids), ["a", "c", "d", "b"]);
-        assert_eq!(affected_names(&before, &after, &BTreeSet::from([c])), ["c"]);
+        assert_eq!(
+            affected_names(&before, &after, &BTreeSet::from([EntityKey::Glyph(c)])),
+            ["c"]
+        );
 
         // At most 100 names, however many glyphs are affected.
         let mut many = Font::new("Test", 1000);
@@ -708,7 +826,7 @@ mod tests {
                 .expect("create")
                 .0;
         }
-        let all: BTreeSet<GlyphId> = many.glyphs.keys().copied().collect();
+        let all: BTreeSet<EntityKey> = many.glyphs.keys().copied().map(EntityKey::Glyph).collect();
         let names = affected_names(&many, &many, &all);
         assert_eq!(names.len(), MAX_AFFECTED_NAMES);
         assert_eq!(names.first().map(String::as_str), Some("g000"));

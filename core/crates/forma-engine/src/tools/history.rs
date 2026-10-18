@@ -4,8 +4,9 @@
 //! Undo and redo only take back the caller's own last change (the
 //! [`forma_edit::Document`] rules); any other transaction is taken
 //! back with `history_revert`. A revert is destructive when it deletes a
-//! glyph or replaces or empties a drawn layer of a glyph that exists now, and
-//! a restore always is; both pass the approval gate (which also applies the
+//! glyph, replaces or empties a drawn layer or replaces the components of a
+//! glyph that exists now, or removes a kerning group or kerning pair, and a
+//! restore always is; both pass the approval gate (which also applies the
 //! mass rule), measured by running the change on a copy of the document
 //! first, which also reports a conflict or a missing revision before any plan
 //! is made.
@@ -28,7 +29,7 @@ use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, sch
 use crate::tools::json_output;
 use crate::tools::limits::{parse_checked, parse_checked_ref};
 use crate::tools::mutate::{BoundedTouched, MutationResult};
-use crate::tools::plans::{Change, Gate, OrPlan, Proposal, approval_gate};
+use crate::tools::plans::{Change, Gate, OrPlan, Proposal, approval_gate, is_affected};
 
 /// The largest page of `history_list`.
 const MAX_HISTORY_LIMIT: usize = 200;
@@ -92,8 +93,9 @@ pub(crate) const REVERT: CommandSpec = CommandSpec {
         "Take back the transaction `tx` of `doc` (see history_list), even one of another \
          actor, as a new undoable transaction: the entities it touched go back to their values \
          before it. It fails with REVISION_CONFLICT if any of them changed since. A revert \
-         that deletes a glyph, replaces or empties a drawn layer, or touches more than 20 \
-         glyphs may require approval depending on the server policy (APPROVAL_REQUIRED with a \
+         that deletes a glyph, replaces or empties a drawn layer, replaces components, removes \
+         a kerning pair or group, or touches more than 20 entities (glyphs, kerning pairs or \
+         groups) may require approval depending on the server policy (APPROVAL_REQUIRED with a \
          plan to confirm); with `dry_run: true` the call only returns the plan.",
         base_rev_note!()
     ),
@@ -357,9 +359,9 @@ fn history_redo(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
 enum Destroys {
     /// Always (restore).
     Always,
-    /// When its measured effect deletes a glyph, or replaces or empties a
-    /// drawn layer of a glyph that exists now (revert).
-    IfItErasesDrawings,
+    /// When its measured effect erases data that exists now (revert); see
+    /// [`erases_data`].
+    IfItErasesData,
 }
 
 /// A state change of the history (revert or restore) that passes the
@@ -373,23 +375,39 @@ struct HistoryChange<'a> {
     destroys: Destroys,
 }
 
-/// Whether going from `before` to `after` deletes one of the glyphs `ids`,
-/// or replaces or empties one of their drawn layers.
-fn erases_drawings(before: &Font, after: &Font, ids: &BTreeSet<GlyphId>) -> bool {
-    ids.iter().any(|id| {
-        let Some(now) = before.glyphs.get(id) else {
-            return false; // a glyph the change brings back
-        };
-        let Some(then) = after.glyphs.get(id) else {
-            return true; // deleted
-        };
-        now.layers.iter().any(|(master, layer)| {
-            !layer.paths.is_empty()
-                && then
-                    .layers
-                    .get(master)
-                    .is_none_or(|other| other.paths != layer.paths)
-        })
+/// Whether going from `before` to `after`, touching `touched`, erases data
+/// that exists in `before`: it deletes a glyph, replaces or empties one of
+/// its drawn layers or replaces one of its non-empty component lists, or
+/// removes a kerning group or a kerning pair (the same changes that make a
+/// command destructive).
+fn erases_data(before: &Font, after: &Font, touched: &BTreeSet<EntityKey>) -> bool {
+    touched.iter().any(|key| match key {
+        EntityKey::Glyph(id) => erases_glyph(before, after, *id),
+        EntityKey::KerningGroup(id) => {
+            before.kerning.groups.contains_key(id) && !after.kerning.groups.contains_key(id)
+        }
+        EntityKey::KerningPair(master, first, second) => {
+            before.kerning.pair(*master, *first, *second).is_some()
+                && after.kerning.pair(*master, *first, *second).is_none()
+        }
+        EntityKey::FontInfo | EntityKey::VerticalMetrics(_) | EntityKey::GlyphOrder => false,
+    })
+}
+
+/// Whether going from `before` to `after` deletes the glyph `id`, or
+/// replaces or empties one of its drawn layers or non-empty component lists.
+fn erases_glyph(before: &Font, after: &Font, id: GlyphId) -> bool {
+    let Some(now) = before.glyphs.get(&id) else {
+        return false; // a glyph the change brings back
+    };
+    let Some(then) = after.glyphs.get(&id) else {
+        return true; // deleted
+    };
+    now.layers.iter().any(|(master, layer)| {
+        let other = then.layers.get(master);
+        (!layer.paths.is_empty() && other.is_none_or(|other| other.paths != layer.paths))
+            || (!layer.components.is_empty()
+                && other.is_none_or(|other| other.components != layer.components))
     })
 }
 
@@ -414,20 +432,18 @@ fn gated_change(
     let before = Arc::clone(open.font());
     let mut scratch = open.document.clone();
     let measured = change(&mut scratch).map_err(|error| from_edit_error_in(error, &scratch))?;
-    let affected: BTreeSet<GlyphId> = measured
+    let affected: BTreeSet<EntityKey> = measured
         .touched
         .iter()
-        .filter_map(|key| match key {
-            EntityKey::Glyph(id) => Some(*id),
-            _ => None,
-        })
+        .copied()
+        .filter(is_affected)
         .collect();
     let label = scratch
         .last_entry()
         .map_or_else(String::new, |entry| entry.label.clone());
     let destructive = match call.destroys {
         Destroys::Always => true,
-        Destroys::IfItErasesDrawings => erases_drawings(&before, scratch.font(), &affected),
+        Destroys::IfItErasesData => erases_data(&before, scratch.font(), &measured.touched),
     };
     let proposal = Proposal {
         actor,
@@ -465,7 +481,7 @@ fn history_revert(
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
         dry_run: call.dry_run,
-        destroys: Destroys::IfItErasesDrawings,
+        destroys: Destroys::IfItErasesData,
     };
     gated_change(engine, actor, &change, |document| {
         document.revert(actor, tx)
@@ -511,4 +527,94 @@ fn document_diff(
         rev: rev.0,
         diff: BoundedDiff::from(forma_edit::diff(&from, &to)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use forma_edit::{Command, ComponentInput, GlyphRef, KernRefInput, apply};
+    use forma_model::{KernSide, Transform};
+
+    use super::*;
+
+    fn run(font: &Font, cmd: &Command) -> Font {
+        apply(font, cmd).expect("the command applies").0
+    }
+
+    fn name(name: &str) -> GlyphRef {
+        GlyphRef::Name(name.into())
+    }
+
+    fn components(glyph: &str, bases: &[&str]) -> Command {
+        Command::SetComponents {
+            glyph: name(glyph),
+            master: None,
+            components: bases
+                .iter()
+                .map(|base| ComponentInput {
+                    base: name(base),
+                    transform: Transform::IDENTITY,
+                })
+                .collect(),
+        }
+    }
+
+    fn kern(value: f64) -> Command {
+        Command::SetKerningPair {
+            master: None,
+            first: KernRefInput::Glyph(name("a")),
+            second: KernRefInput::Glyph(name("b")),
+            value,
+        }
+    }
+
+    fn group(members: &[&str]) -> Command {
+        Command::SetKerningGroup {
+            name: "O".into(),
+            side: KernSide::First,
+            members: members.iter().map(|member| name(member)).collect(),
+        }
+    }
+
+    /// Whether applying `cmd` to `before` erases data, as a revert with the
+    /// same effect would be judged.
+    fn erases(before: &Font, cmd: &Command) -> bool {
+        let (after, touched) = apply(before, cmd).expect("the command applies");
+        erases_data(before, &after, &touched)
+    }
+
+    #[test]
+    fn erased_data_covers_kerning_and_components() {
+        let mut font = Font::new("Test", 1000);
+        for glyph in ["a", "b", "c"] {
+            font = run(
+                &font,
+                &Command::CreateGlyph {
+                    name: glyph.into(),
+                    unicodes: Vec::new(),
+                    advance_width: 100.0,
+                    paths: Vec::new(),
+                },
+            );
+        }
+        let before = [components("c", &["a"]), kern(-50.0), group(&["a"])]
+            .iter()
+            .fold(font, |font, cmd| run(&font, cmd));
+        let delete_group = Command::DeleteKerningGroup {
+            name: "O".into(),
+            side: KernSide::First,
+        };
+
+        // Removing a pair or a group, or replacing components, erases.
+        assert!(erases(&before, &kern(0.0)));
+        assert!(erases(&before, &delete_group));
+        assert!(erases(&before, &components("c", &["b"])));
+        assert!(erases(&before, &components("c", &[])));
+        // Changing a value or the members, or adding, does not.
+        assert!(!erases(&before, &kern(-60.0)));
+        assert!(!erases(&before, &group(&["b"])));
+        assert!(!erases(&before, &components("b", &["a"])));
+        let without = run(&before, &delete_group);
+        assert!(!erases(&without, &group(&["a"])));
+        assert!(!erases(&run(&without, &kern(0.0)), &kern(-10.0)));
+    }
 }

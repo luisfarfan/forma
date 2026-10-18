@@ -1,0 +1,30 @@
+{
+  "glyph_order": [
+    "00000000-0000-0000-0000-000000000100",
+    "00000000-0000-0000-0000-000000000101",
+    "00000000-0000-0000-0000-000000000102"
+  ],
+  "id": "00000000-0000-0000-0000-000000000001",
+  "info": {
+    "copyright": null,
+    "designer": null,
+    "family_name": "Fixture",
+    "style_name": "Regular",
+    "version_major": 1,
+    "version_minor": 0
+  },
+  "lib": {},
+  "masters": [
+    {
+      "id": "00000000-0000-0000-0000-000000000010",
+      "metrics": {
+        "ascender": 800.0,
+        "cap_height": 700.0,
+        "descender": -200.0,
+        "x_height": 500.0
+      },
+      "name": "Regular"
+    }
+  ],
+  "units_per_em": 1000
+}

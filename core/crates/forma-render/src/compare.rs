@@ -3,7 +3,7 @@
 use forma_model::{Font, MasterId};
 
 use crate::draw::{
-    Canvas, Color, Frame, check_size, draw_metrics, draw_nodes, metrics_of, outline,
+    Canvas, Color, Frame, check_size, draw_metrics, draw_nodes, flat_paths, metrics_of, outline,
 };
 use crate::{PreviewOptions, RenderError};
 
@@ -60,8 +60,12 @@ pub fn compare_png(
             });
         }
     };
-    let before_path = before_layer.map(|l| outline(glyph, l)).transpose()?;
-    let after_path = after_layer.map(|l| outline(glyph, l)).transpose()?;
+    let flat = |font: &Font, g: Option<&forma_model::Glyph>, layer: Option<&_>| match (g, layer) {
+        (Some(g), Some(_)) => outline(glyph, &flat_paths(font, g, master)?).map(Some),
+        _ => Ok(None),
+    };
+    let before_path = flat(before, before_glyph.map(|g| &**g), before_layer)?;
+    let after_path = flat(after, after_glyph.map(|g| &**g), after_layer)?;
 
     let metrics = metrics_of(frame_font, Some(master));
     let frame = Frame::new(&metrics, frame_layer.advance_width, size)?;

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use forma_engine::{
-    Clock, Engine, EngineConfig, ErrorCode, Policy, ToolError, ToolOutput, registry,
+    Clock, DocHandle, Engine, EngineConfig, ErrorCode, Policy, ToolError, ToolOutput, registry,
 };
 use forma_model::{Actor, Font};
 use serde_json::{Value, json};
@@ -187,7 +187,7 @@ fn advance_all(doc: &str, base_rev: u64, count: usize, width: u64) -> Value {
 fn empty_diff() -> Value {
     json!({ "added": [], "added_count": 0, "removed": [], "removed_count": 0,
             "modified": [], "modified_count": 0, "info_changed": false,
-            "metrics_changed": false, "truncated": false })
+            "metrics_changed": false, "kerning_changed": false, "truncated": false })
 }
 
 /// Commits the plan of a call that needs approval, as an agent does once the
@@ -1387,6 +1387,80 @@ fn emptying_a_drawn_layer_or_collapsing_a_contour_requires_plan() {
                 "action": { "type": "delete", "path_id": 0 } }),
     );
     assert_eq!(applied["rev"], json!(rev + 3));
+}
+
+/// Runs `cmds` on the document `doc` directly, as `actor` (no tool sets
+/// kerning yet), and returns the transaction id.
+fn execute_directly(
+    engine: &mut Engine,
+    doc: &str,
+    actor: &Actor,
+    cmds: &[forma_edit::Command],
+) -> u64 {
+    let open = engine
+        .doc_mut(&DocHandle::from(doc))
+        .expect("an open document");
+    let rev = open.rev();
+    open.change(|document| document.execute(actor, rev, "direct", cmds))
+        .expect("the commands apply")
+        .tx
+        .0
+}
+
+fn kern(first: &str, second: &str, value: f64) -> forma_edit::Command {
+    use forma_edit::{GlyphRef, KernRefInput};
+    forma_edit::Command::SetKerningPair {
+        master: None,
+        first: KernRefInput::Glyph(GlyphRef::Name(first.into())),
+        second: KernRefInput::Glyph(GlyphRef::Name(second.into())),
+        value,
+    }
+}
+
+#[test]
+fn reverting_an_added_pair_is_destructive() {
+    let destructive = |plan: &Value| {
+        plan["summary"]
+            .as_str()
+            .expect("summary")
+            .ends_with("destructive)")
+    };
+    let mut engine = engine();
+    let (doc, _) = doc_with_glyphs(&mut engine, 3);
+
+    // Taking back the transaction that added a pair removes the pair.
+    let added = execute_directly(&mut engine, &doc, &agent(), &[kern("g00", "g01", -50.0)]);
+    let rev = rev_of(&mut engine, &doc);
+    let revert = json!({ "doc": doc, "base_rev": rev, "tx": added });
+    let plan = plan_of(&err(&mut engine, "history_revert", revert.clone()));
+    assert!(destructive(&plan), "{plan}");
+    assert_eq!(plan["affected_count"], json!(1), "{plan}");
+    assert_eq!(rev_of(&mut engine, &doc), rev);
+
+    // Taking back a change of value keeps the pair: not destructive.
+    let changed = execute_directly(&mut engine, &doc, &agent(), &[kern("g00", "g01", -70.0)]);
+    let rev = rev_of(&mut engine, &doc);
+    let applied = ok(
+        &mut engine,
+        "history_revert",
+        json!({ "doc": doc, "base_rev": rev, "tx": changed }),
+    );
+    assert_eq!(applied["rev"], json!(rev + 1));
+
+    // A transaction that changed one pair and added another: destructive.
+    let mixed = execute_directly(
+        &mut engine,
+        &doc,
+        &agent(),
+        &[kern("g00", "g01", -60.0), kern("g02", "g00", -10.0)],
+    );
+    let rev = rev_of(&mut engine, &doc);
+    let revert = json!({ "doc": doc, "base_rev": rev, "tx": mixed });
+    let plan = plan_of(&err(&mut engine, "history_revert", revert.clone()));
+    assert!(destructive(&plan), "{plan}");
+    assert_eq!(plan["affected_count"], json!(2), "{plan}");
+    let reverted = confirmed(&mut engine, "history_revert", revert);
+    assert_eq!(reverted["rev"], json!(rev + 1));
 }
 
 #[test]

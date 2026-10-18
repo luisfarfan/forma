@@ -134,25 +134,25 @@ Afirmaciones de "auto-kerning con ML" o "trazador IA" en Glyphs/FontLab aparecen
 
 ## 8. Anexo — matriz de funcionalidades (resumen)
 
-| Funcionalidad | Glyphs 4 | FontLab 8 | RoboFont 4.6 | Fontra | FORMA (fase objetivo) |
+| Funcionalidad | Glyphs 4 | FontLab 8 | RoboFont 4.6 | Fontra | FORMA (hito objetivo, numeración de la revisión 4 de `04-roadmap.md`) |
 |---|---|---|---|---|---|
-| Editor Bézier cúbico | Sí [V] | Sí [V] | Sí [V] | Sí [V] | MVP |
-| Edición cuadrática nativa | Sí [V] | Sí [H] | Sí [H] | [H] | Fase 4 |
-| Edición en contexto de texto | Sí [V] | Sí [H] | Parcial (extensiones) [H] | Sí [H] | MVP |
+| Editor Bézier cúbico | Sí [V] | Sí [V] | Sí [V] | Sí [V] | Hito 8 |
+| Edición cuadrática nativa | Sí [V] | Sí [H] | Sí [H] | [H] | Hito 6 |
+| Edición en contexto de texto | Sí [V] | Sí [H] | Parcial (extensiones) [H] | Sí [H] | Hito 8 |
 | Plataformas | macOS [V] | macOS, Windows [V] | macOS [V] | Navegador / Mac / Win / Linux [V] | **macOS, Windows, Linux** |
 | Servidor MCP oficial | No [V búsqueda] | No (solo comunitario) [A] | No [H] | No [H] | **Hito 1** |
-| Componentes + anclas | Sí [V] | Sí [V] | Sí [V] | Sí [H] | Fase 2 |
-| Smart components / variables locales | Sí [V] | Variable components [H] | Extensiones [H] | Sí (variable components) [H] | Fase 6 |
-| Kerning de clases + excepciones | Sí [V] | Sí [V] | Sí [V] | Sí [H] | Fase 2–3 |
-| Multi-master / VF TT | Sí [V] | Sí [V] | Vía Batch [V] | Sí [V] | Fase 3 |
-| CFF / CFF2 | Sí [V] | Sí [V] | CFF sí; VF vía Batch [V] | Vía fontmake [V] | Fase 4 / 6 |
-| avar2 | Sí [V] | [H] | [H] | [H] | Fase 6 |
-| Features FEA + automáticas | Sí [V] | Sí [V] | Sí [H] | [H] | Fase 4 |
-| Color COLRv1 | Sí [V/A] | Sí [V] | [H] | Parcial [H] | Fase 7 |
-| Hinting auto TT | ttfautohint [V] | ttfautohint [V] | ttfautohint (externo) [V] | — | Fase 6 |
-| Scripting Python | Sí (Python instalado por usuario) [V] | Sí (embebido) [V] | Sí (nativo) [V] | Plugins backend [V] | Fase 5 |
+| Componentes + anclas | Sí [V] | Sí [V] | Sí [V] | Sí [H] | Hito 2 (componentes) · Hito 3 (anclas) |
+| Smart components / variables locales | Sí [V] | Variable components [H] | Extensiones [H] | Sí (variable components) [H] | Después de v1.0 |
+| Kerning de clases + excepciones | Sí [V] | Sí [V] | Sí [V] | Sí [H] | Hito 2 |
+| Multi-master / VF TT | Sí [V] | Sí [V] | Vía Batch [V] | Sí [V] | Hito 5 |
+| CFF / CFF2 | Sí [V] | Sí [V] | CFF sí; VF vía Batch [V] | Vía fontmake [V] | Hito 6 (CFF) · después de v1.0 (CFF2) |
+| avar2 | Sí [V] | [H] | [H] | [H] | Después de v1.0 |
+| Features FEA + automáticas | Sí [V] | Sí [V] | Sí [H] | [H] | Hito 3 |
+| Color COLRv1 | Sí [V/A] | Sí [V] | [H] | Parcial [H] | Hito 9 |
+| Hinting auto TT | ttfautohint [V] | ttfautohint [V] | ttfautohint (externo) [V] | — | Hito 6 |
+| Scripting Python | Sí (Python instalado por usuario) [V] | Sí (embebido) [V] | Sí (nativo) [V] | Plugins backend [V] | Hito 7 |
 | Validación integrada (Font Bakery/fontspector) | No encontrada [H] | Parcial (avisos) [V] | Extensiones [H] | — | Hito 1 (diferenciador) |
-| IA | No anunciada [V] | No anunciada [V] | No [H] | No [H] | Hito 1 (vía MCP) · Fase 2 (agente integrado) |
+| IA | No anunciada [V] | No anunciada [V] | No [H] | No [H] | Hito 1 (vía MCP) · Hito 8 (agente integrado) |
 
 ## 9. Fuentes
 

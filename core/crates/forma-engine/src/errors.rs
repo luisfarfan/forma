@@ -5,10 +5,13 @@ use std::fmt;
 
 use forma_compile::CompileError;
 use forma_edit::{ConflictInfo, Document, EditError};
+use forma_geometry::GeometryError;
 use forma_interop::InteropError;
-use forma_model::{EntityKey, Rev};
+use forma_model::{EntityKey, Font, GlyphId, KernRef, KerningGroupId, Rev};
 use forma_render::RenderError;
+use forma_spacing::SpacingError;
 use forma_store::StoreError;
+use forma_trace::TraceError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -169,6 +172,12 @@ pub fn from_edit_error(error: EditError) -> ToolError {
             ToolError::invalid_argument(message)
         }
         EditError::InvalidGeometry(message) => ToolError::new(ErrorCode::InvalidGeometry, message),
+        EditError::LimitExceeded {
+            message,
+            limit,
+            actual,
+        } => ToolError::new(ErrorCode::LimitExceeded, message)
+            .with_details(json!({ "limit": limit, "actual": actual })),
         EditError::Conflict(ref info) => {
             let details = conflict_details(info);
             ToolError::new(ErrorCode::RevisionConflict, error.to_string()).with_details(details)
@@ -176,9 +185,108 @@ pub fn from_edit_error(error: EditError) -> ToolError {
     }
 }
 
+/// Maps a [`GeometryError`] of `stroke` onto a [`ToolError`]: a skeleton or
+/// style that cannot be stroked (`InvalidPath`) is `INVALID_ARGUMENT`; strokes
+/// beyond the work budget of overlap removal (`TooComplex`) are
+/// `LIMIT_EXCEEDED` with `details = { limit, actual }`; strokes that cannot be
+/// united (`Degenerate`, or anything else) are `INVALID_GEOMETRY`.
+#[must_use]
+pub fn from_stroke_error(error: GeometryError) -> ToolError {
+    match error {
+        GeometryError::InvalidPath(_) => ToolError::invalid_argument(error.to_string()),
+        GeometryError::TooComplex { limit, actual, .. } => {
+            ToolError::new(ErrorCode::LimitExceeded, error.to_string())
+                .with_details(json!({ "limit": limit, "actual": actual }))
+        }
+        _ => ToolError::new(ErrorCode::InvalidGeometry, error.to_string()),
+    }
+}
+
+/// Maps a [`TraceError`] of the image tools onto a [`ToolError`]:
+///
+/// | `TraceError`                                      | code               |
+/// |---------------------------------------------------|--------------------|
+/// | `TooLarge`, `TooManyCandidates`, `TooManySpecks`  | `LIMIT_EXCEEDED`   |
+/// | `Decode`, `CandidateOutOfRange`, `Vectorize`,     | `INVALID_ARGUMENT` |
+/// | `InvalidArgument`                                 |                    |
+/// | `Render`, `Geometry`                              | `INVALID_GEOMETRY` |
+#[must_use]
+pub fn from_trace_error(error: TraceError) -> ToolError {
+    match error {
+        TraceError::TooLarge { bytes, pixels } => {
+            // The limit that was passed: the size of the file, else the
+            // pixel count.
+            let (limit, actual) = if bytes > forma_trace::MAX_IMAGE_BYTES {
+                (forma_trace::MAX_IMAGE_BYTES, bytes)
+            } else {
+                (forma_trace::MAX_IMAGE_PIXELS, pixels)
+            };
+            ToolError::new(
+                ErrorCode::LimitExceeded,
+                format!(
+                    "the image is too large ({bytes} bytes, {pixels} pixels); the limits are {} \
+                     bytes and {} pixels: scale it down",
+                    forma_trace::MAX_IMAGE_BYTES,
+                    forma_trace::MAX_IMAGE_PIXELS
+                ),
+            )
+            .with_details(json!({ "limit": limit, "actual": actual }))
+        }
+        TraceError::TooManySpecks { limit } => limit_error(
+            format!(
+                "the image has too many ink specks before noise filtering (limit {limit}): use \
+                 a cleaner image or a stricter `tolerance`"
+            ),
+            limit,
+            limit.saturating_add(1),
+        ),
+        TraceError::TooManyCandidates(count) => limit_error(
+            format!(
+                "the image has {count} candidates; the limit is {}: use a cleaner image or \
+                 a stricter `tolerance`",
+                forma_trace::MAX_CANDIDATES
+            ),
+            forma_trace::MAX_CANDIDATES,
+            count,
+        ),
+        TraceError::Render(_) | TraceError::Geometry(_) => {
+            ToolError::new(ErrorCode::InvalidGeometry, error.to_string())
+        }
+        _ => ToolError::invalid_argument(error.to_string()),
+    }
+}
+
+fn limit_error(message: String, limit: usize, actual: usize) -> ToolError {
+    ToolError::new(ErrorCode::LimitExceeded, message)
+        .with_details(json!({ "limit": limit, "actual": actual }))
+}
+
+/// Maps a [`SpacingError`] of the spacing and kerning functions onto a
+/// [`ToolError`]:
+///
+/// | `SpacingError`     | code               | why                                         |
+/// |--------------------|--------------------|---------------------------------------------|
+/// | `InvalidParameter` | `INVALID_ARGUMENT` | an argument is out of range                 |
+/// | `MissingReference` | `INVALID_ARGUMENT` | `H`/`O` is missing or has no ink: the call  |
+/// |                    |                    | is valid, the font cannot be measured as is |
+/// | `MissingLayer`     | `INVALID_ARGUMENT` | a listed glyph has no layer in the master   |
+/// | `Geometry`         | `INVALID_GEOMETRY` | an outline cannot be expanded               |
+///
+/// The glyphs and masters of a call are resolved before the functions run,
+/// so none of these is a missing handle (`NOT_FOUND`): they are preconditions
+/// on the font, which the caller fixes by drawing the reference glyph or
+/// choosing other glyphs.
+#[must_use]
+pub fn from_spacing_error(error: SpacingError) -> ToolError {
+    match error {
+        SpacingError::Geometry(_) => ToolError::new(ErrorCode::InvalidGeometry, error.to_string()),
+        _ => ToolError::invalid_argument(error.to_string()),
+    }
+}
+
 /// [`from_edit_error`] for the error of a change of `document` (which a
 /// failed change leaves as it was): the details of a conflict also name each
-/// glyph, see [`conflict_details_in`].
+/// glyph, kerning group and kerning pair, see [`conflict_details_in`].
 #[must_use]
 pub fn from_edit_error_in(error: EditError, document: &Document) -> ToolError {
     match error {
@@ -190,9 +298,17 @@ pub fn from_edit_error_in(error: EditError, document: &Document) -> ToolError {
     }
 }
 
-/// [`conflict_details`] plus, for each conflicting glyph, its `name`: the
-/// name it has in `document` now or, for a glyph the conflicting change
-/// deleted, the name it had just before that change.
+/// [`conflict_details`] plus, for each conflicting glyph, kerning group and
+/// kerning pair, its `name`:
+///
+/// * a glyph: its name, such as `"a"`;
+/// * a kerning group: `@` and its name, such as `"@O"`;
+/// * a kerning pair: `"<first>/<second>"`, each side the name of its glyph
+///   or `@` and the name of its group, such as `"A/V"` or `"@O/V"`.
+///
+/// Each glyph or group is named as it is in `document` now or, when the
+/// conflicting change deleted it, as it was just before that change. An
+/// entity with a side that cannot be named that way gets no `name`.
 /// `{ "current_rev": n, "conflicts": [{ "entity": "glyph:<uuid>", "rev": n,
 /// "actor": "user", "name": "a" }] }`.
 #[must_use]
@@ -200,25 +316,57 @@ pub fn conflict_details_in(info: &ConflictInfo, document: &Document) -> Value {
     let mut details = conflict_details(info);
     if let Some(Value::Array(conflicts)) = details.get_mut("conflicts") {
         for (conflict, (entity, rev, _)) in conflicts.iter_mut().zip(&info.conflicts) {
-            let EntityKey::Glyph(id) = entity else {
-                continue;
+            let name = match entity {
+                EntityKey::Glyph(id) => name_in(document, *rev, |font| glyph_name(font, *id)),
+                EntityKey::KerningGroup(id) => {
+                    name_in(document, *rev, |font| group_name(font, *id))
+                }
+                EntityKey::KerningPair(_, first, second) => {
+                    name_in(document, *rev, |font| kern_ref_name(font, *first)).and_then(|first| {
+                        name_in(document, *rev, |font| kern_ref_name(font, *second))
+                            .map(|second| format!("{first}/{second}"))
+                    })
+                }
+                EntityKey::FontInfo | EntityKey::VerticalMetrics(_) | EntityKey::GlyphOrder => None,
             };
-            let name = document
-                .font()
-                .glyphs
-                .get(id)
-                .map(|glyph| glyph.name.clone())
-                .or_else(|| {
-                    let before = rev.0.checked_sub(1).map(Rev)?;
-                    let font = document.snapshot_at(before)?;
-                    font.glyphs.get(id).map(|glyph| glyph.name.clone())
-                });
             if let (Some(name), Some(conflict)) = (name, conflict.as_object_mut()) {
                 conflict.insert("name".into(), Value::String(name));
             }
         }
     }
     details
+}
+
+/// What `name_of` finds in the current font of `document` or, failing that,
+/// in its font just before revision `rev` (the conflicting change).
+fn name_in(
+    document: &Document,
+    rev: Rev,
+    name_of: impl Fn(&Font) -> Option<String>,
+) -> Option<String> {
+    name_of(document.font()).or_else(|| {
+        let before = rev.0.checked_sub(1).map(Rev)?;
+        let font = document.snapshot_at(before)?;
+        name_of(&font)
+    })
+}
+
+fn glyph_name(font: &Font, id: GlyphId) -> Option<String> {
+    font.glyphs.get(&id).map(|glyph| glyph.name.clone())
+}
+
+fn group_name(font: &Font, id: KerningGroupId) -> Option<String> {
+    font.kerning
+        .groups
+        .get(&id)
+        .map(|group| format!("@{}", group.name))
+}
+
+fn kern_ref_name(font: &Font, reference: KernRef) -> Option<String> {
+    match reference {
+        KernRef::Glyph(id) => glyph_name(font, id),
+        KernRef::Group(id) => group_name(font, id),
+    }
 }
 
 /// The `details` of a `REVISION_CONFLICT`:
@@ -386,6 +534,31 @@ mod tests {
     }
 
     #[test]
+    fn trace_limits_carry_limit_and_actual() {
+        let bytes = forma_trace::MAX_IMAGE_BYTES + 5;
+        let error = from_trace_error(TraceError::TooLarge { bytes, pixels: 0 });
+        assert_eq!(error.code, ErrorCode::LimitExceeded);
+        assert_eq!(
+            error.details,
+            json!({ "limit": forma_trace::MAX_IMAGE_BYTES, "actual": bytes })
+        );
+        let pixels = forma_trace::MAX_IMAGE_PIXELS + 1;
+        let error = from_trace_error(TraceError::TooLarge { bytes: 10, pixels });
+        assert_eq!(
+            error.details,
+            json!({ "limit": forma_trace::MAX_IMAGE_PIXELS, "actual": pixels })
+        );
+        let error = from_trace_error(TraceError::TooManySpecks { limit: 1000 });
+        assert_eq!(error.code, ErrorCode::LimitExceeded);
+        assert!(
+            error.message.contains("ink specks before noise filtering"),
+            "{error:?}"
+        );
+        assert!(!error.message.contains("candidates"), "{error:?}");
+        assert_eq!(error.details, json!({ "limit": 1000, "actual": 1001 }));
+    }
+
+    #[test]
     fn error_serializes_with_null_details_by_default() {
         let error = ToolError::not_found("unknown document handle");
         assert_eq!(
@@ -395,6 +568,27 @@ mod tests {
                 "message": "unknown document handle",
                 "details": null
             }))
+        );
+    }
+
+    #[test]
+    fn spacing_errors_map_to_codes() {
+        let code = |error| from_spacing_error(error).code;
+        assert_eq!(
+            code(SpacingError::InvalidParameter("x".into())),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            code(SpacingError::MissingReference("x".into())),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            code(SpacingError::MissingLayer("x".into())),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            code(SpacingError::Geometry("x".into())),
+            ErrorCode::InvalidGeometry
         );
     }
 

@@ -20,6 +20,9 @@
 //! | `binary.cmap` | error | the `cmap` differs from the code points of the model |
 //! | `binary.hmtx` | error | an advance width differs from the model's |
 //! | `binary.notdef` | error | glyph 0 is not `.notdef` |
+//! | `binary.gpos` | error | the model has kerning that reaches the binary but the binary has no `GPOS` |
+//! | `glyph.mixed_contours_components` | warning | an exported glyph layer has both contours and components |
+//! | `kerning.unexported_reference` | warning | a kerning pair or group uses a glyph that is not exported |
 //!
 //! The geometry kinds that are errors are `open_contour`, `wrong_direction`
 //! and `invalid_contour`; the others (`duplicate_points`, `tiny_segment`,
@@ -28,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 mod binary_checks;
+pub mod charset;
 mod model_checks;
 
 use forma_compile::{OutputFormat, compile, preflight};
