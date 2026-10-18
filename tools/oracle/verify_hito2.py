@@ -16,7 +16,8 @@ Checks:
 2. HarfBuzz (uharfbuzz): shaping `shaping.text` gives the expected glyph
    names, and for every expected kerning pair the x advance of the first
    glyph equals its hmtx advance plus the expected value, exactly; and up to 50
-   pairs without expected kerning (sorted order) get no kerning at all.
+   pairs without expected kerning (a strided pick over all of them, in sorted
+   order) get no kerning at all.
 3. fontTools: family, units per em and cmap equal the expected ones; the
    glyphs that are components (`composites`) are exactly the expected ones;
    `GPOS` has a `kern` feature with at least one lookup.
@@ -132,18 +133,21 @@ def check_shaping(check: Check, ttf: Path, font: TTFont, expected: dict) -> None
     check.notes.append(f"{checked} kerning pairs")
 
     # Pairs with no expected kerning must not be kerned by accident: a
-    # deterministic sample (sorted order, at most ZERO_SAMPLE) must advance by
-    # exactly the hmtx advance.
+    # deterministic sample (at most ZERO_SAMPLE, picked at an even stride over
+    # all of them in sorted order, so it spans every left glyph rather than
+    # the first few) must advance by exactly the hmtx advance.
     # `kerning_domain` (optional) names the glyphs whose every kerned pair is
     # listed; without it, every encoded glyph is in the domain.
     domain = sorted(g for g in expected.get("kerning_domain", first_char) if g in first_char)
     listed = {(pair["left"], pair["right"]) for pair in pairs}
-    candidates = sorted(
+    unkerned = sorted(
         (left, right)
         for left in domain
         for right in domain
         if (left, right) not in listed
-    )[:ZERO_SAMPLE]
+    )
+    stride = max(1, -(-len(unkerned) // ZERO_SAMPLE))  # ceil: at most ZERO_SAMPLE picks
+    candidates = unkerned[::stride]
     zero_checked = 0
     for left, right in candidates:
         names, advances = shape(first_char[left] + first_char[right])

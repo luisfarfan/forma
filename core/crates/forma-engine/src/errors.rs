@@ -206,21 +206,39 @@ pub fn from_stroke_error(error: GeometryError) -> ToolError {
 ///
 /// | `TraceError`                                      | code               |
 /// |---------------------------------------------------|--------------------|
-/// | `TooLarge`, `TooManyCandidates`                   | `LIMIT_EXCEEDED`   |
+/// | `TooLarge`, `TooManyCandidates`, `TooManySpecks`  | `LIMIT_EXCEEDED`   |
 /// | `Decode`, `CandidateOutOfRange`, `Vectorize`,     | `INVALID_ARGUMENT` |
 /// | `InvalidArgument`                                 |                    |
 /// | `Render`, `Geometry`                              | `INVALID_GEOMETRY` |
 #[must_use]
 pub fn from_trace_error(error: TraceError) -> ToolError {
     match error {
-        TraceError::TooLarge { bytes, pixels } => ToolError::new(
-            ErrorCode::LimitExceeded,
+        TraceError::TooLarge { bytes, pixels } => {
+            // The limit that was passed: the size of the file, else the
+            // pixel count.
+            let (limit, actual) = if bytes > forma_trace::MAX_IMAGE_BYTES {
+                (forma_trace::MAX_IMAGE_BYTES, bytes)
+            } else {
+                (forma_trace::MAX_IMAGE_PIXELS, pixels)
+            };
+            ToolError::new(
+                ErrorCode::LimitExceeded,
+                format!(
+                    "the image is too large ({bytes} bytes, {pixels} pixels); the limits are {} \
+                     bytes and {} pixels: scale it down",
+                    forma_trace::MAX_IMAGE_BYTES,
+                    forma_trace::MAX_IMAGE_PIXELS
+                ),
+            )
+            .with_details(json!({ "limit": limit, "actual": actual }))
+        }
+        TraceError::TooManySpecks { limit } => limit_error(
             format!(
-                "the image is too large ({bytes} bytes, {pixels} pixels); the limits are {} \
-                 bytes and {} pixels: scale it down",
-                forma_trace::MAX_IMAGE_BYTES,
-                forma_trace::MAX_IMAGE_PIXELS
+                "the image has too many ink specks before noise filtering (limit {limit}): use \
+                 a cleaner image or a stricter `tolerance`"
             ),
+            limit,
+            limit.saturating_add(1),
         ),
         TraceError::TooManyCandidates(count) => limit_error(
             format!(
@@ -513,6 +531,31 @@ mod tests {
             assert_eq!(code.as_str(), text);
             assert_eq!(code.to_string(), text);
         }
+    }
+
+    #[test]
+    fn trace_limits_carry_limit_and_actual() {
+        let bytes = forma_trace::MAX_IMAGE_BYTES + 5;
+        let error = from_trace_error(TraceError::TooLarge { bytes, pixels: 0 });
+        assert_eq!(error.code, ErrorCode::LimitExceeded);
+        assert_eq!(
+            error.details,
+            json!({ "limit": forma_trace::MAX_IMAGE_BYTES, "actual": bytes })
+        );
+        let pixels = forma_trace::MAX_IMAGE_PIXELS + 1;
+        let error = from_trace_error(TraceError::TooLarge { bytes: 10, pixels });
+        assert_eq!(
+            error.details,
+            json!({ "limit": forma_trace::MAX_IMAGE_PIXELS, "actual": pixels })
+        );
+        let error = from_trace_error(TraceError::TooManySpecks { limit: 1000 });
+        assert_eq!(error.code, ErrorCode::LimitExceeded);
+        assert!(
+            error.message.contains("ink specks before noise filtering"),
+            "{error:?}"
+        );
+        assert!(!error.message.contains("candidates"), "{error:?}");
+        assert_eq!(error.details, json!({ "limit": 1000, "actual": 1001 }));
     }
 
     #[test]

@@ -314,6 +314,50 @@ fn text_png_missing_char_uses_notdef_or_box() {
 }
 
 #[test]
+fn text_png_leaves_a_blank_space_without_a_space_glyph() {
+    let mut font = Font::new("Test", 1000);
+    let a = glyph(
+        &font,
+        "a",
+        &[0x61],
+        500.0,
+        vec![rect(0, 50.0, 0.0, 450.0, 500.0, true)],
+    );
+    add(&mut font, a);
+    // A .notdef too, to show that the space does not fall back to it.
+    let notdef = glyph(
+        &font,
+        ".notdef",
+        &[],
+        800.0,
+        vec![rect(0, 100.0, 0.0, 700.0, 700.0, true)],
+    );
+    add(&mut font, notdef);
+    let blank = text_png(&font, " ", 100).expect("renders");
+    // The space the export adds is UPM / 4 wide: 250 -> 25 px, + 20 px.
+    assert_eq!(png_size(&blank), (45, 100));
+    assert_eq!(dark_fraction(&blank), 0.0, "the space must be blank");
+    // The no-break space too, and between letters it is a gap of 25 px.
+    let nbsp = text_png(&font, "\u{a0}", 100).expect("renders");
+    assert_eq!(nbsp, blank);
+    let spaced = text_png(&font, "a a", 100).expect("renders");
+    assert_eq!(png_size(&spaced).0, 10 + 50 + 25 + 50 + 10);
+    // Inside the gap (x 60..85, which the letters' side bearings widen to
+    // 55..90) nothing is drawn.
+    for x in 56..89 {
+        for y in 0..100 {
+            assert_eq!(pixel(&spaced, x, y), (255, 255, 255, 255), "({x}, {y})");
+        }
+    }
+
+    // A real space glyph wins.
+    let space = glyph(&font, "space", &[0x20], 300.0, Vec::new());
+    add(&mut font, space);
+    let real = text_png(&font, " ", 100).expect("renders");
+    assert_eq!(png_size(&real), (50, 100));
+}
+
+#[test]
 fn empty_text_is_error() {
     let (font, _) = square_font();
     assert_eq!(text_png(&font, "", 128), Err(RenderError::InvalidText));

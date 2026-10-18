@@ -31,6 +31,16 @@
 ## Herramientas
 21. **Tarea 17: `glyph_get` expone los componentes de cada capa** (nombre de la base, id y transformación), porque un agente necesita inspeccionar los compuestos. Es un cambio aditivo del schema de salida. Costo si es incorrecta: ninguno.
 
+## Ola final (revisión de toda la rama)
+La revisión final (55c98dd..48c489c) dejó una sola ola de correcciones. Las reglas que la orden no fijaba y que decidió el implementador:
+
+22. **Qué es un compuesto que sigue a su base.** Una capa sin contornos propios, con componentes, todos solo trasladados (`xx = yy = 1`, `xy = yx = 0`); su base es el glifo del primer componente. Si la base se reespació, el avance cambia lo mismo y cada otro componente se mueve `δlsb(base) − δlsb(su glifo)`. Los desplazamientos se miden en la fuente ya espaciada (antes y después de los mismos comandos), así que también valen para bases mixtas. Un compuesto realineado se desplaza como su base, de modo que los compuestos de compuestos lo siguen (hasta 64 niveles). Los compuestos cuya base no cambió no se tocan, aunque otro de sus componentes sí se haya reespaciado. El avance no baja de 0. `spacing_auto` informa de ellos en `realigned`, aparte de `spaced`. Costo si es incorrecta: un compuesto escalado o girado se queda como estaba y hay que realinearlo a mano.
+23. **Las marcas de avance 0 nunca se espacian**, ni siquiera si se nombran en `glyphs`: un avance 0 no tiene márgenes que fijar. En cambio, `kerning_auto` y `kerning_check` las excluyen solo de su conjunto por defecto; con `glyphs` se pueden incluir. Costo si es incorrecta: quien quiera dar márgenes a una marca de avance 0 debe darle antes un avance.
+24. **`SetComponents` es destructivo solo si cambia la lista de bases** (otro glifo, uno más o uno menos, en orden); mover las mismas no lo es, y la misma lista no toca el glifo (`tx: null`). Así la realineación no pide aprobación. Costo si es incorrecta: mover un componente ya no pide plan.
+25. **Presupuesto de la unión: 50 000 segmentos y 100 000 pares de segmentos con cajas solapadas**, contados de forma exacta en `O(n log n)` antes del barrido. Mediciones en release: 1 000 trazos que se cruzan todos, 9,7 s y 4,4 GB sin presupuesto, 0,2 s y 13 MB con él; el peor caso medido por debajo del presupuesto (zigzag de 2 200 nodos, ~97 000 pares) tarda 0,56 s y usa 160 MB; una onda de 10 000 nodos sigue pasando. Por eso `MAX_SKELETON_NODES` se queda en 10 000: el presupuesto ya corta los esqueletos que costarían demasiado. Costo si es incorrecta: un glifo legítimo muy complejo da `LIMIT_EXCEEDED` y hay que dividirlo.
+26. **`preview_text` deja en blanco U+0020 y U+00A0 sin glifo**, con `round(UPM / 4)`, el ancho del `space` que añade la exportación (que solo añade U+0020). Costo si es incorrecta: el preview de U+00A0 no coincide con la fuente exportada, que no lo tiene.
+27. **Errores de límite del trazado:** el tope de piezas de tinta en bruto es la variante nueva `TraceError::TooManySpecks` ("too many ink specks before noise filtering"), y `TooLarge` lleva `{limit, actual}` del límite superado (bytes si el archivo es demasiado grande; si no, píxeles). Costo si es incorrecta: ninguno.
+
 ## Cambios aditivos del contrato `tools/list`
 
 El snapshot de `tools/list` cambió varias veces durante el hito, siempre de forma **aditiva** (ninguna de las 35 herramientas del Hito 1 perdió un campo ni cambió de tipo):
@@ -40,6 +50,7 @@ El snapshot de `tools/list` cambió varias veces durante el hito, siempre de for
 - `glyph_get`: la lista de componentes de cada capa (decisión 21).
 - 15 herramientas nuevas (35 → 50) y tres conjuntos nuevos (`components`, `kerning`, `trace`); `forma_capabilities` gana los límites `max_image_bytes`, `max_image_pixels`, `max_candidates`, `max_assignments` y `max_kerning_check_pairs`.
 - Redacción de las descripciones de `edit_batch` (ahora habla de entidades, no de "más de 20 glifos"), `history_revert` y `kerning_auto`. Son cambios de texto, no de schema; el contenido se acortó para respetar el límite de 1000 caracteres, conservando "all apply or none does" y "each on the previous result" en `edit_batch`.
+- Ola final: `spacing_auto` gana el campo de salida `realigned`; cambian las descripciones de `spacing_auto`, `kerning_auto`, `kerning_check`, `component_set`, `glyph_stroke`, `remove_overlap` y `preview_text`. Cambian, de forma compatible, tres comportamientos: los compuestos siguen a su base al espaciar, las marcas de avance 0 salen del espaciado y del conjunto por defecto del kerning, y mover componentes deja de ser destructivo.
 - Observación sobre el comportamiento: un comando que no toca ninguna entidad (nada cambió de verdad) devuelve `tx: null` y no avanza la `rev`, para todas las herramientas mutantes (Tarea 14).
 
 ## Diferido
@@ -83,7 +94,7 @@ Lista de los menores que siguen abiertos al cerrar el hito (los corregidos en ta
 
 **Pruebas de aceptación y CI**
 - `scripts/acceptance.ps1`, la ruta de Chrome en Linux y la rama de junction de Windows no se ejecutaron en local (la CI lo dirá). Chrome: `--no-sandbox` incondicional, sin sonda en Windows y respaldo de `.deb` sin fijar ni probar.
-- La muestra de pares con kern 0 son los primeros 50 pares ordenados (una selección repartida sería mejor). Un glifo sin codificar en el kerning da un `KeyError` en vez de un mensaje claro. No se captura el número de WARN de fontspector (WARN conocidos: sin STAT, `fsSelection` WWS y `xAvgCharWidth` del espécimen 574 frente a 561).
+- La muestra de pares con kern 0 es ahora una selección repartida (paso fijo) de como máximo 50 pares ordenados (ola final). Un glifo sin codificar en el kerning da un `KeyError` en vez de un mensaje claro. No se captura el número de WARN de fontspector (WARN conocidos: sin STAT, `fsSelection` WWS y `xAvgCharWidth` del espécimen 574 frente a 561).
 - Los valores de kern de `expected.json` no están redondeados; el entrecomillado de `mklink` tiene un cabo suelto.
 - El fuzzing del decodificador puede entrar en una ruta lenta con PNG de 50 MP muy comprimibles (el límite de 10 s la expone).
 - El selector de cobertura de la puerta tiene un recorte inofensivo.

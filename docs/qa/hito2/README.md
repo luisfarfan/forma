@@ -38,17 +38,17 @@ La instrucción fue:
 
 ![HOMBRO FÁRMACO 0 compuesto con la fuente de la demo](claude/preview.png)
 
-Este preview se generó con `forma call preview_text` sobre el `.forma` guardado. Las cajas son espacios: el documento de trabajo no tiene glifo `space`, que se añade al exportar (ver Hallazgos 3).
+Este preview se generó con `forma call preview_text` sobre el `.forma` guardado. Las cajas son espacios: el documento de trabajo no tiene glifo `space`, que se añade al exportar (ver Hallazgos 3). Es el registro de la demo tal como ocurrió, antes de la ola final; hoy el mismo comando deja ahí huecos en blanco.
 
 ## Hallazgos
 
 1. **La regla de aprobación funcionó como se diseñó.** El agente intentó borrar sus Á/Ó con `glyph_delete`, y el servidor respondió con un plan (`APPROVAL_REQUIRED`). Claude Code bloqueó después el `plan_commit` ("MCPTool requires permission"), aun con `--allowedTools mcp__forma`. El motivo es que esa herramienta declara que necesita interacción humana (`anthropic/requiresUserInteraction`). Así, un agente no puede aprobar solo sus propias operaciones destructivas, aunque el prompt diga "apruebo todo".
    - El agente no insistió: renombró las versiones malas, las marcó como no exportables y compuso otras nuevas.
 2. **Defecto encontrado: los compuestos no se realinean al reespaciar la base.** El agente compuso Á y Ó antes de espaciar. Al cambiar los márgenes de la A y la O, las compuestas conservaron el avance viejo y la tilde quedó descentrada.
-   - El flujo recomendado de §8 (espaciar → kerning → componer) lo evita, pero `spacing_auto` debería realinear los compuestos cuya base cambia.
-   - Se corrige en la ola final de este hito.
-3. **Mejora: `preview_text` muestra una caja para el espacio cuando el documento no tiene glifo `space`.** La exportación ya lo añade solo. El preview debería dejar ese hueco en blanco. Se corrige en la ola final.
-4. **`kerning_check` sobre todos los glifos reporta una colisión entre dos `acutecomb`.** Es lo esperado: una marca combinante de avance 0 se monta sobre la letra anterior. El conjunto por defecto podría excluir las marcas de avance 0 (diferido).
+   - La revisión final lo confirmó en la fuente `unicase-es` de aceptación: todas las acentuadas con avance viejo (Aacute 740 frente a A 674) y la marca descentrada entre −60 y −150 unidades; además, `spacing_auto` espaciaba las marcas de avance 0.
+   - **Corregido en la ola final:** `spacing_auto` realinea en la misma transacción cada compuesto cuya base reespacia (mismo cambio de avance; las marcas se mueven con la base; campo `realigned`) y no toca las marcas de avance 0. El flujo de las instrucciones ahora compone antes de espaciar. Medido con fontTools en las dos fuentes de aceptación regeneradas: las 9 acentuadas tienen el avance de su base y la marca centrada (desvío 0,0). Véase `decisiones.md`, decisiones 22–24.
+3. **Mejora: `preview_text` muestra una caja para el espacio cuando el documento no tiene glifo `space`.** La exportación ya lo añade solo. **Corregido en la ola final:** sin glifo para U+0020 o U+00A0, el preview deja un hueco en blanco de `round(UPM / 4)`, el ancho del `space` que añade la exportación (decisión 26).
+4. **`kerning_check` sobre todos los glifos reporta una colisión entre dos `acutecomb`.** Es lo esperado: una marca combinante de avance 0 se monta sobre la letra anterior. **Corregido en la ola final:** el conjunto por defecto de `kerning_auto` y `kerning_check` excluye las marcas de avance 0 (se pueden incluir con `glyphs`; decisión 23).
 5. Codex no se ejecutó en esta ronda. La compatibilidad de la era del protocolo que usa Codex se cubre con el escenario MCP automatizado en modo `initialize` (`mcp_scenario_hito2.rs`).
 
 ## Cómo repetirla

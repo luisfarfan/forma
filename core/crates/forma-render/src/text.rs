@@ -13,6 +13,16 @@ use crate::{MAX_TEXT_WIDTH, RenderError};
 /// The blank space at each end of the line, as a fraction of its height.
 const SIDE_MARGIN: f64 = 0.1;
 
+/// The advance of a space the font has no glyph for, as a fraction of the
+/// units per em (rounded): the width of the `space` glyph the export
+/// preflight adds (`forma-compile`), so the preview shows the gap the font
+/// will have.
+const BLANK_SPACE_RATIO: f64 = 0.25;
+
+/// The characters drawn as a blank advance when the font has no glyph for
+/// them: the space and the no-break space.
+const BLANK_CHARS: [char; 2] = [' ', '\u{a0}'];
+
 /// The most characters laid out. Glyphs without advance (or none at all, for
 /// empty glyphs) never fill the 2048 px width, so this bounds the work done
 /// for very long text.
@@ -31,8 +41,11 @@ struct Placed {
 /// `height` is the image height in pixels, which the vertical extent from the
 /// default master's descender to its ascender fills exactly. Characters are
 /// mapped to glyphs through the glyphs' Unicode values (the model's cmap) and
-/// spaced by the advances of the default master. A character without a glyph
-/// (or whose glyph has no outline in the default master) is drawn as the
+/// spaced by the advances of the default master. A space (U+0020) or a
+/// no-break space (U+00A0) without a glyph (or whose glyph has no layer in
+/// the default master) is a blank `round(units_per_em / 4)` wide, the width
+/// of the `space` glyph that the export adds. Any other character without a
+/// glyph (or whose glyph has no layer in the default master) is drawn as the
 /// `.notdef` glyph when the font has one, and otherwise as a hollow box
 /// `units_per_em / 2` wide. The width is the sum of the advances plus a
 /// margin of 10% of the height at each end, capped at 2048 px: whatever does
@@ -44,7 +57,7 @@ struct Placed {
 ///
 /// Components are expanded. Consecutive glyphs are spaced by the font's
 /// kerning in the default master (`Kerning::effective`), scaled like the
-/// advances; the missing-character box takes no kerning.
+/// advances; the missing-character box and the blank space take no kerning.
 ///
 /// # Errors
 ///
@@ -88,8 +101,14 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
     }
     .unwrap_or_else(|| missing_box(font, metrics.cap_height));
 
-    // `placed[0]` is the fallback; every distinct character is resolved once.
-    let mut placed = vec![fallback];
+    // `placed[0]` is the fallback and `placed[1]` the blank space; every
+    // distinct character is resolved once.
+    let blank = Placed {
+        id: None,
+        path: BezPath::new(),
+        advance: (f64::from(font.units_per_em) * BLANK_SPACE_RATIO).round(),
+    };
+    let mut placed = vec![fallback, blank];
     let mut index_of: HashMap<char, usize> = HashMap::new();
     let mut items: Vec<(usize, f64)> = Vec::new();
     let mut pen = margin;
@@ -105,7 +124,8 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
                     Some(glyph) => place(font, glyph, master)?,
                     None => None,
                 };
-                let index = found.map_or(0, |p| {
+                let missing = usize::from(BLANK_CHARS.contains(&ch));
+                let index = found.map_or(missing, |p| {
                     placed.push(p);
                     placed.len() - 1
                 });

@@ -169,7 +169,9 @@ fn components(mask: &forma_render::Mask, u: u32) -> Result<Vec<Piece>, TraceErro
         }
         let u = u as usize;
         if out.len() >= MAX_RAW_COMPONENTS {
-            return Err(TraceError::TooManyCandidates(out.len() + 1));
+            return Err(TraceError::TooManySpecks {
+                limit: MAX_RAW_COMPONENTS,
+            });
         }
         out.push(Piece {
             x0: (minx / u) as u32,
@@ -277,7 +279,9 @@ fn group_rows(pieces: &[Piece]) -> Vec<(u32, u32, Vec<Piece>)> {
 ///
 /// # Errors
 ///
-/// [`TraceError::TooLarge`] if the image exceeds the pixel limit and
+/// [`TraceError::TooLarge`] if the image exceeds the pixel limit,
+/// [`TraceError::TooManySpecks`] if it has more separate pieces of ink than
+/// the memory-safety cap (1 000 000) before the noise filter, and
 /// [`TraceError::TooManyCandidates`] above [`MAX_CANDIDATES`].
 pub fn analyze(image: &RgbImage, opts: &TraceOptions) -> Result<Analysis, TraceError> {
     let (width, height) = image.dimensions();

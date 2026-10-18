@@ -346,7 +346,9 @@ fn trace_options(color: Option<&str>, tolerance: Option<f64>) -> Result<TraceOpt
 }
 
 /// Reads and decodes the image at `path`: inside the allowed roots, no
-/// larger than the limit (checked on the metadata, before reading).
+/// larger than the limit (checked on the metadata before reading, and again
+/// on what is read, at most one byte past the limit, so that a file that
+/// grows in between cannot be read whole).
 fn read_image(engine: &Engine, path: &str) -> Result<RgbImage, ToolError> {
     let resolved = engine.check_allowed(FsPath::new(path), true)?;
     let metadata = std::fs::metadata(&resolved)
@@ -356,21 +358,40 @@ fn read_image(engine: &Engine, path: &str) -> Result<RgbImage, ToolError> {
             "'{path}' is not a file"
         )));
     }
-    if metadata.len() > forma_trace::MAX_IMAGE_BYTES {
+    let too_large = |actual: u64| {
         let limit = usize::try_from(forma_trace::MAX_IMAGE_BYTES).unwrap_or(usize::MAX);
-        let actual = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
-        return Err(limit_exceeded(
+        let actual = usize::try_from(actual).unwrap_or(usize::MAX);
+        limit_exceeded(
             format!(
                 "the image has {actual} bytes; the limit is {limit}: scale it down or save it \
                  with more compression"
             ),
             limit,
             actual,
-        ));
+        )
+    };
+    if metadata.len() > forma_trace::MAX_IMAGE_BYTES {
+        return Err(too_large(metadata.len()));
     }
-    let bytes = std::fs::read(&resolved)
+    let bytes = read_at_most(&resolved, forma_trace::MAX_IMAGE_BYTES)
         .map_err(|error| ToolError::io(format!("cannot read '{path}': {error}")))?;
+    let read = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if read > forma_trace::MAX_IMAGE_BYTES {
+        // The file grew after the metadata check.
+        return Err(too_large(read));
+    }
     forma_trace::decode(&bytes).map_err(from_trace_error)
+}
+
+/// Reads the file at `path`, but no more than `limit + 1` bytes: one more
+/// than `limit` tells that the file is larger.
+fn read_at_most(path: &FsPath, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// The cap height of `master`.
@@ -716,6 +737,16 @@ mod tests {
         .expect_err("too large");
         assert_eq!(error.code, crate::errors::ErrorCode::LimitExceeded);
         assert!(error.details.get("candidate").is_none());
+    }
+
+    #[test]
+    fn reading_stops_one_byte_past_the_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("grown.png");
+        std::fs::write(&path, vec![7u8; 100]).expect("write");
+        assert_eq!(read_at_most(&path, 10).expect("read").len(), 11);
+        assert_eq!(read_at_most(&path, 100).expect("read").len(), 100);
+        assert_eq!(read_at_most(&path, 1000).expect("read").len(), 100);
     }
 
     #[test]

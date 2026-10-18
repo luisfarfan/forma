@@ -18,6 +18,13 @@ pub enum TraceError {
     /// More candidates than [`crate::MAX_CANDIDATES`].
     #[error("too many candidates: {0}")]
     TooManyCandidates(usize),
+    /// More separate pieces of ink than the memory-safety cap allows, before
+    /// the noise filter drops the specks (the image is noise, not letters).
+    #[error("too many ink specks before noise filtering (limit {limit})")]
+    TooManySpecks {
+        /// The cap on raw pieces of ink.
+        limit: usize,
+    },
     /// A candidate index is outside the analysis.
     #[error("candidate {index} out of range (count {count})")]
     CandidateOutOfRange {
