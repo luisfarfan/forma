@@ -24,7 +24,7 @@ Detalle del criterio 6:
 - **Herramientas nuevas:** `preview_sheet`, `glyph_review`, `font_from_image`, `style_extract` y `glyph_synthesize` son comandos del registro con tests y escenario MCP en las dos eras del protocolo (`mcp_scenario_hito2_5.rs`).
 - **Snapshot:** aditivo (`decisiones.md`, contrato del bloque E).
 - **Migración v2 → v3:** testeada (`forma-store/tests/migration.rs`), con respaldo.
-- **Cobertura:** (se anota al cerrar).
+- **Cobertura de líneas** (`cargo llvm-cov --release`, 2026-10-18): `forma-engine` 93,5 %, `forma-synth` 91,6 %, `forma-trace` 91,0 %.
 - **CI en los 3 SO:** pendiente del push, que decide el responsable.
 - **Puerta de calidad:** `ci.yml` (`cargo test --workspace`) y `nightly.yml` (`bench-m`).
 - **Umbrales:** `calibracion.md`.
