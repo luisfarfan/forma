@@ -16,7 +16,7 @@
   <a href="https://github.com/luisfarfan/forma/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/luisfarfan/forma/actions/workflows/ci.yml/badge.svg"></a>
   <a href="#licencia"><img alt="Licencia: MIT OR Apache-2.0" src="https://img.shields.io/badge/licencia-MIT%20OR%20Apache--2.0-1f6feb?style=flat-square"></a>
   <img alt="Rust 1.99" src="https://img.shields.io/badge/rust-1.99-b7410e?style=flat-square&logo=rust">
-  <img alt="Servidor MCP" src="https://img.shields.io/badge/MCP-35%20herramientas-FF5A1F?style=flat-square">
+  <img alt="Servidor MCP" src="https://img.shields.io/badge/MCP-50%20herramientas-FF5A1F?style=flat-square">
   <img alt="Plataformas" src="https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-555?style=flat-square">
   <img alt="Estado: pre-alfa" src="https://img.shields.io/badge/estado-pre--alfa-c0392b?style=flat-square">
 </p>
@@ -42,7 +42,7 @@ FORMA es un editor de fuentes en la línea de Glyphs, FontLab y RoboFont: dibuja
 FORMA es libre y open source bajo `MIT OR Apache-2.0`, y no es un producto comercial.
 
 > [!NOTE]
-> **FORMA está en desarrollo temprano.** El Hito 1, un núcleo sin interfaz con la CLI y el servidor MCP, está completo. **Todavía no hay editor gráfico.** Hoy puedes crear, editar, validar y exportar fuentes desde la terminal o a través de un agente de IA. Mira la [hoja de ruta](#hoja-de-ruta).
+> **FORMA está en desarrollo temprano.** El Hito 1, un núcleo sin interfaz con la CLI y el servidor MCP, está completo, y el Hito 2 (de una imagen de un alfabeto a una fuente completa) está implementado en la rama `hito2`, pendiente de la CI en los tres SO y de las demos con agentes reales. **Todavía no hay editor gráfico.** Hoy puedes crear, editar, validar y exportar fuentes desde la terminal o a través de un agente de IA, incluido trazar una fuente a partir de una imagen de sus letras. Mira la [hoja de ruta](#hoja-de-ruta).
 
 ## Míralo funcionar
 
@@ -90,7 +90,7 @@ forma export demo.forma --format ttf --out demo.ttf
 forma call preview_text --doc-path demo.forma --args '{"text": "HHH"}' --out preview.png
 ```
 
-`forma call <herramienta>` ejecuta cualquiera de las 35 herramientas del [registro](docs/api/tools.md), que son las mismas que ve un agente. La CLI también tiene `info`, `export --format woff2|ufo`, y `pack`/`unpack` para convertir entre los dos formatos de documento.
+`forma call <herramienta>` ejecuta cualquiera de las 50 herramientas del [registro](docs/api/tools.md), que son las mismas que ve un agente. La CLI también tiene `info`, `export --format woff2|ufo`, y `pack`/`unpack` para convertir entre los dos formatos de documento.
 
 ### Que lo haga un agente
 
@@ -129,7 +129,7 @@ flowchart TB
   ANY["cualquier cliente MCP"] -->|stdio| MCP
   MCP["forma-mcp<br/>fachada del protocolo"] --> ENG
   CLI["CLI forma"] --> ENG
-  APP["app de escritorio<br/>(Hito 3)"] -.-> ENG
+  APP["app de escritorio<br/>(Hito 8)"] -.-> ENG
   ENG["forma-engine<br/>registro de comandos · políticas · aprobaciones · sandbox"] --> EDIT["forma-edit<br/>transacciones · revisiones · historial"]
   EDIT --> MODEL["forma-model"]
   ENG --> STORE["forma-store<br/>.forma · .formapackage"]
@@ -137,6 +137,8 @@ flowchart TB
   ENG --> COMP["forma-compile<br/>fontc → TTF · WOFF2"]
   ENG --> VAL["forma-validate"]
   ENG --> REND["forma-render<br/>previews con vello_cpu"]
+  ENG --> SPC["forma-spacing<br/>espaciado · kerning · colisiones"]
+  ENG --> TRC["forma-trace<br/>imagen → contornos"]
 ```
 
 ### Pensado para que personas y agentes editen juntos
@@ -174,16 +176,18 @@ sequenceDiagram
 | **Validación** | Chequeos propios sobre el modelo y sobre el binario compilado, contrastados en CI con oráculos externos. |
 | **Previews** | Vistas PNG/SVG de glifos con nodos y métricas, líneas de texto, y comparaciones antes/después entre revisiones. |
 | **Historial** | Deshacer/rehacer por actor, revertir, restaurar cualquier revisión, y diffs entre revisiones. |
-| **MCP** | 35 herramientas en 8 conjuntos, desde la versión de protocolo 2024-11-05 hasta la 2026-07-28. Las imágenes salen como contenido de imagen simple para que todos los clientes las muestren. |
+| **Imagen → fuente** | Traza las letras de una imagen de un alfabeto a glifos (`image_inspect`, `image_trace`, `trace_compare`), mide y extiende su estilo de trazo (`glyph_measure`, `glyph_stroke`), construye las letras acentuadas como componentes y espacia y kernea la fuente automáticamente (`spacing_auto`, `kerning_auto`, `kerning_check`). `charset_check` verifica la cobertura del perfil `unicase-es` de 119 caracteres. Usa solo imágenes sobre las que tengas derechos. |
+| **Componentes y kerning** | Glifos compuestos (compilados como glifos compuestos de `glyf`), grupos y pares de kerning por master con excepciones (compilados a `GPOS kern`), `remove_overlap` y el formato v2 (los documentos v1 se siguen abriendo). |
+| **MCP** | 50 herramientas en 11 conjuntos, desde la versión de protocolo 2024-11-05 hasta la 2026-07-28. Las imágenes salen como contenido de imagen simple para que todos los clientes las muestren. |
 
 ## El listón de calidad
 
 FORMA trata la corrección como una funcionalidad:
 
-- **Más de 800 tests**: unitarios, de propiedades (1 000 casos por propiedad), MCP de punta a punta por stdio en los dos ciclos de vida del protocolo, y un contrato por snapshot de `tools/list`.
+- **Más de 1 100 tests**: unitarios, de propiedades (1 000 casos por propiedad), MCP de punta a punta por stdio en los dos ciclos de vida del protocolo, y un contrato por snapshot de `tools/list`.
 - **Oráculos externos en CI**: OTS, shaping con HarfBuzz, fontTools, paridad con fontmake (12/12 glifos) y fontspector, todos sobre las fuentes que exporta FORMA.
-- **Cobertura de líneas del 95–100 %** en los crates del núcleo (model, edit, engine, store).
-- **Fuzzing nocturno** de los dos cargadores de documentos, además de `clippy -D warnings`, `rustfmt` y control de licencias con `cargo-deny`.
+- **Cobertura de líneas del 95–100 %** en los crates del núcleo (model, edit, engine, store, trace, spacing).
+- **Fuzzing nocturno** de los dos cargadores de documentos y del decodificador de imágenes, además de `clippy -D warnings`, `rustfmt` y control de licencias con `cargo-deny`.
 - **CI en macOS (arm64, más una comprobación de compilación para Intel), Windows y Ubuntu 24.04** en cada cambio.
 
 Para correr la suite de aceptación en local: `scripts/acceptance.sh`, o `scripts/acceptance.ps1` en Windows. Necesita los oráculos Python de `tools/oracle/`.
@@ -194,14 +198,14 @@ Para correr la suite de aceptación en local: `scripts/acceptance.sh`, o `script
 |---|---|---|
 | Fase 0 | Investigación, arquitectura, política legal y de propiedad intelectual | ✅ Hecho |
 | **Hito 1** | Núcleo sin interfaz + CLI + servidor MCP en 3 SO | ✅ Hecho · CI en verde en macOS, Windows y Linux |
-| Hito 2 | Spike del toolkit de UI: Qt 6 vs Slint, decidido con medidas | Siguiente |
-| Hito 3 | Editor mínimo en 3 SO; edición simultánea en vivo entre tú y un agente | |
-| Hito 4 | Instaladores firmados, recuperación tras caídas → **v0.1 MVP** | |
-| Fase 2 | Componentes, kerning, importación UFO, asistente de IA integrado con el proveedor que elijas, modelos locales incluidos → v0.2 | |
-| Fase 3 | Multi-master y fuentes variables → v0.3 | |
-| Fase 4 | Features OpenType, CFF, booleanas, hinting → v0.4 | |
-| Fase 5 | Interoperabilidad con `.glyphs`, scripting en Python, plugins → v0.5 | |
-| Fases 6–7 | Paridad avanzada, fuentes a color, rendimiento CJK → **v1.0** | |
+| **Hito 2** | De una imagen de un alfabeto a una fuente completa: trazado, componentes, espaciado, kerning, `remove_overlap` | En curso · implementado en la rama `hito2`; faltan la CI en 3 SO y las demos con agentes reales |
+| Hito 3 | Fuente original "líquida" y muestra de dominio público: anchors, mark/mkmk, alternativas, ligaduras, features OpenType | |
+| Hito 4 | Reconstruir fuentes OFL premium: importación de UFO, designspace y `.glyphs` | |
+| Hito 5 | Multi-master y fuentes variables | |
+| Hito 6 | CFF/OTF y hinting | |
+| Hito 7 | Scripting en Python y plugins | |
+| Hito 8 | **La interfaz va al final:** spike del toolkit (Qt 6 vs Slint, decidido con medidas), editor multiplataforma, asistente de IA integrado | |
+| Hito 9 | Instaladores firmados, recuperación tras caídas → **v1.0** | |
 
 Detalle y criterios de aceptación: [`docs/04-roadmap.md`](docs/04-roadmap.md).
 
@@ -211,7 +215,7 @@ Detalle y criterios de aceptación: [`docs/04-roadmap.md`](docs/04-roadmap.md).
 core/                 workspace Rust (edición 2024)
   crates/
     forma-model       modelo de datos: fuente, glifos, masters, capas, paths, nodos
-    forma-geometry    matemática de contornos, importación SVG, chequeos y correcciones
+    forma-geometry    matemática de contornos, importación SVG, chequeos y correcciones, ajuste de cúbicas, trazo, unión de contornos
     forma-edit        comandos, transacciones, revisiones, historial, diffs
     forma-engine      registro de comandos, políticas, aprobaciones, sandbox, auditoría
     forma-store       persistencia .forma (SQLite) y .formapackage (JSON)
@@ -219,6 +223,8 @@ core/                 workspace Rust (edición 2024)
     forma-compile     fontc → TTF / WOFF2
     forma-validate    chequeos del modelo y del binario
     forma-render      previews PNG / SVG (vello_cpu)
+    forma-trace       imagen → contornos: paleta, candidatos, vectorización, fidelidad
+    forma-spacing     espaciado, kerning y chequeo de colisiones automáticos
     forma-mcp         fachada del servidor MCP (rmcp)
     forma-cli         el binario `forma`
   fuzz/               objetivos de cargo-fuzz (CI nocturna)

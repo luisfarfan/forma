@@ -38,7 +38,8 @@ flowchart TB
     model[forma-model]
     geom[forma-geometry]
     edit[forma-edit<br/>comandos · transacciones · historial · revisiones]
-    metrics[forma-metrics]
+    spacing[forma-spacing<br/>espaciado · kerning · colisiones]
+    trace[forma-trace<br/>imagen → contornos]
     interp[forma-interp]
   end
   subgraph Servicios
@@ -63,13 +64,14 @@ flowchart TB
   end
   edit --> model & geom
   interp --> model & geom
-  metrics --> model
+  spacing --> model & geom
+  trace --> model & geom & render
   store & interop --> model
   compile --> interop & interp
   validate --> compile
   render --> geom
   layout --> compile
-  engine --> edit & store & compile & validate & render & interop & metrics & interp & layout
+  engine --> edit & store & compile & validate & render & interop & spacing & trace & interp & layout
   canvas --> engine & render
   cli & mcp & agentc & ipc & py --> engine
   ui --> canvas & engine & ipc
@@ -78,13 +80,13 @@ flowchart TB
 | Crate | Responsabilidad | Externos clave | Desde |
 |---|---|---|---|
 | `forma-model` | Tipos del dominio, IDs estables, revisión por entidad, invariantes | serde | Hito 1 |
-| `forma-geometry` | Segmentos, bbox, transformaciones, extremos, dirección, hit-testing geométrico; trait `PathOps` (booleanas) | kurbo; linesweeper (Hito 2, ADR 0009), con Skia PathOps como plan B | Hito 1 |
+| `forma-geometry` | Segmentos, bbox, transformaciones, extremos, dirección, hit-testing geométrico; trait `PathOps` (booleanas); desde el Hito 2: `fit` (ajuste de cúbicas), `stroke` (trazo de esqueleto), `boolean` (`remove_overlap`) y `decompose` | kurbo; linesweeper (Hito 2, ADR 0009), con Skia PathOps como plan B | Hito 1 |
 | `forma-edit` | Comandos puros `apply(&Font, Cmd) -> (Font, ChangeSet)`, transacciones, gestos, historial, actores, control de concurrencia | — | Hito 1 |
 | `forma-store` | `.forma` (SQLite), `.formapackage` (carpeta), escritura atómica, journal de recuperación, migraciones | rusqlite (SQLite embebido) | Hito 1 |
-| `forma-interop` | Exportación UFO/designspace (Hito 1); importación UFO y `.glyphs` v3/v4 (Hito 4) | norad | Hito 1 |
+| `forma-interop` | Exportación UFO/designspace (Hito 1; componentes y kerning desde el Hito 2); importación UFO y `.glyphs` v3/v4 (Hito 4) | norad | Hito 1 |
 | `forma-compile` | Preflight, generación de designspace+UFO intermedios, fontc, perfiles de exportación, WOFF2 | fontc, write-fonts | Hito 1 |
 | `forma-validate` | Chequeos de modelo y geometría; binario (OTS, fontspector, read-fonts) | read-fonts, fontspector | Hito 1 |
-| `forma-render` | Display list independiente del backend; rasterizado CPU determinista (PNG/SVG) para previews, MCP y tests | vello_cpu | Hito 1 |
+| `forma-render` | Display list independiente del backend; rasterizado CPU determinista (PNG/SVG) para previews, MCP y tests; desde el Hito 2 resuelve componentes y kerning, y ofrece máscaras de cobertura e IoU | vello_cpu | Hito 1 |
 | `forma-layout` | Shaping de texto de prueba | harfrust, skrifa | Hito 1 (básico) / Hito 3 |
 | `forma-engine` | `DocumentHost` (documentos abiertos, handles, bloqueo), **registro de comandos**, planes y aprobaciones, políticas, auditoría | schemars | Hito 1 |
 | `forma-mcp` | Fachada MCP generada desde el registro: tools, resources, ambas eras del protocolo | rmcp | Hito 1 |
@@ -94,7 +96,9 @@ flowchart TB
 | `forma-agent` | Bucle de agente integrado; trait `LlmProvider` | genai | Hito 8 |
 | `forma-platform` | Rutas de datos, llavero, bloqueo de archivos y detalles de SO | keyring [H] | Hito 1 (mínimo) |
 | `forma-interp` | Ejes, avar, `VariationModel` verificado contra fontTools, compatibilidad, instancias | — | Hito 5 |
-| `forma-metrics` | Espaciado, metrics keys, kerning y grupos | — | Hito 1 (básico) / Hito 2 (como `forma-spacing`) |
+| `forma-spacing` | Perfiles de glifo, espaciado automático, kerning automático con grupos y guardia de colisión, chequeo de colisiones (algoritmos propios, sin código GPL) | — | Hito 2 |
+| `forma-trace` | Imagen a contornos: decodificación con límites, paleta, máscara suave, candidatos, vectorización, limpieza y fidelidad (IoU) | image, visioncortex (ADR 0009) | Hito 2 |
+| `forma-metrics` | Metrics keys y métricas avanzadas (paridad avanzada, después de v1.0). El espaciado y el kerning viven en `forma-spacing` | — | Después de v1.0 |
 | shell UI | Ventanas, paneles, presentación del canvas, menús y diálogos | Qt 6.12 + cxx-qt (pendiente spike) | Hito 8 |
 
 ## 4. Registro de comandos (centro de la arquitectura)
@@ -194,6 +198,7 @@ classDiagram
 
 - **[D] Modelo centrado en el glifo, con varios masters dentro de cada glifo.** Las capas por master (`LayerKey::Master`), las intermedias (`Intermediate(location)`), las alternativas (`Alternate(rules)`) y el fondo viven en el glifo. Así, compatibilidad, edición "todos los masters" y aislamiento de conflictos son locales.
   - **[ALT]** UFO+designspace como modelo nativo. Más interoperable, pero dispersa cada glifo en N archivos.
+- **Formato v2 (Hito 2).** `Layer.components` (cada `Component` con base, `Transform` y reglas: sin ciclos, base existente) y `Font.kerning` (grupos por lado, `First`/`Second`, y pares por master entre glifos o grupos, nunca con valor 0) son campos con `#[serde(default)]`. El kerning vive en el documento de la fuente y los componentes, en las capas de cada glifo. Se leen v1 y v2 (migración v1 → v2 pura y testeada) y se escribe siempre v2 (`FORMAT_VERSION = 2`); una versión mayor da `UnsupportedVersion`. Las entidades nuevas del control de concurrencia son `KerningGroup` y `KerningPair` (por master).
 - **[D] IDs estables** para fuente, glifos, masters, ejes, paths, componentes y anclas.
   - Renombrar no rompe referencias.
   - Diffs, conflictos y propuestas de agentes se expresan sobre IDs.
@@ -295,7 +300,7 @@ MiFuente.formapackage/    # carpeta para git (mismo esquema de entidades)
 - **Métricas:**
   - El advance se guarda por capa; LSB y RSB se derivan del bbox.
   - Metrics keys (paridad avanzada, después de v1.0): expresiones con detección de ciclos.
-- **Kerning (Hito 2):** por master; pares entre glifos o grupos; reglas de resolución de UFO3; excepciones.
+- **Kerning (Hito 2):** por master; pares entre glifos o grupos; reglas de resolución de UFO3; excepciones (el par glifo-glifo gana sobre el de clase). El kerning y el espaciado automáticos viven en `forma-spacing`; el kerning se compila a `GPOS kern` (solo el master por defecto) y los componentes a glifos compuestos de `glyf`.
 - **Interpolación (Hito 5):** modelo de variaciones OpenType equivalente a `fontTools.varLib.models.VariationModel`, verificado contra fontTools con pruebas diferenciales. Compatibilidad estricta. Las instancias estáticas las genera FORMA, porque fontc 1.0 no lo hace.
 
 ## 10. Compilación y exportación

@@ -47,7 +47,41 @@ Show me a preview of "o".
 
 El agente empieza con `forma_capabilities`; después `document_create` (con `path`), un `edit_batch` de `glyph_create`, `metrics_set`, `validate`, `export_font` y `preview_glyph`. Cada cambio queda en el historial con su actor (`agent:<nombre del cliente>`), y `document_save` lo guarda en el `.forma`.
 
-## 6. Cómo trabaja un agente con FORMA
+## 6. De una imagen a una fuente
+
+Con las herramientas del Hito 2, un agente convierte la imagen de un alfabeto en una fuente completa (juego de caracteres `unicase-es`: 89 glifos, 119 códigos). Un prompt de ejemplo:
+
+```text
+Using only the forma MCP tools: turn the alphabet in ~/fonts/alphabet.png into a complete
+font called "My Alphabet", saved at ~/fonts/my-alphabet.forma. Inspect the image, look at the
+numbered candidates and assign each one to its letter (A-Z), trace them, check each trace
+against the image, space and kern the font, draw the digits, punctuation and symbols that the
+image does not have in the same stroke style, build the accented letters as components, check
+the character set unicase-es until it is 100 % covered, validate until there are zero errors,
+and export a TTF and a WOFF2 to ~/fonts. Finish with the validation counts and the kerning
+collisions found.
+```
+
+Los pasos que el agente suele seguir:
+
+1. `image_inspect`: devuelve la imagen con cada candidato numerado. El agente la mira y decide qué letra es cada número (el texto lista como máximo 200 candidatos; la imagen anotada los muestra todos).
+2. `image_trace`: crea los glifos y devuelve el IoU de cada uno. `trace_compare` superpone un glifo y su candidato para revisar; `nodes_edit` corrige a mano.
+3. `glyph_measure` (grosor y tapas del trazo), `glyph_create` y `glyph_stroke` para los glifos que la imagen no tiene; `glyph_compose` para las acentuadas.
+4. `spacing_auto`, `kerning_auto` y `kerning_check`.
+5. `charset_check` con `profile: "unicase-es"`, `validate`, `export_font`.
+
+Notas que conviene saber:
+- `image_inspect` e `image_trace` leen la imagen desde las carpetas permitidas (`--allow-dir`), con un máximo de 64 MiB y 50 megapíxeles.
+- **Derechos de las imágenes:** usa solo imágenes sobre las que tienes derechos (dibujos tuyos, de dominio público o con licencia que lo permita). Un agente no debe subir imágenes de terceros a un repositorio; las de FORMA se quedan en local.
+- `glyph_compose` usa solo el master por defecto y exige al menos una marca; `gap` se ignora con `center`.
+- `glyph_stroke` con `mode: "append"` es una escritura; con `replace` sobre una capa ya dibujada es destructivo y puede pedir plan.
+- Si `geometry_fix` debe corregir la dirección de contornos que se cruzan, ejecuta antes `remove_overlap`: sin contornos unidos la dirección no está definida.
+- `kerning_check` verifica `kerning_auto` si usa el mismo `glyphs` y el mismo `min_distance` (por defecto, `kerning_auto` mantiene 2 % del em entre los pares; `kerning_check` usa 0).
+- `kerning_auto` con `replace` y un subconjunto `glyphs` solo borra los pares que involucran esos glifos.
+- `history_revert` de una transacción que creó un glifo que después recibió kerning o componentes falla sin tocar nada (no hay cascada); revierte primero lo posterior.
+- `image_trace`, `spacing_auto` y `kerning_auto` no entran en `edit_batch`. Los dos últimos y `image_trace` piden plan si la operación es masiva (más de 20 entidades) o destructiva.
+
+## 7. Cómo trabaja un agente con FORMA
 
 ### Revisiones y conflictos
 
@@ -67,16 +101,16 @@ El token caduca a los 300 s, vale una sola vez y solo para el mismo actor y la m
 
 La política se elige al arrancar: `--policy prompted` (por defecto: toda operación destructiva o masiva pide plan), `auto` (las masivas no destructivas se aplican; las destructivas siguen pidiendo plan) o `strict` (reservada para la aplicación: hoy las operaciones que exigen aprobación responden `UNSUPPORTED`).
 
-## 7. Limitar lo que el agente puede hacer
+## 8. Limitar lo que el agente puede hacer
 
 | Opción | Efecto |
 |---|---|
 | `--read-only` | Rechaza toda herramienta que cambie algo. |
-| `--toolsets glyphs,preview` | Solo esos conjuntos (más `core`, siempre incluido). Disponibles: `core`, `glyphs`, `geometry`, `spacing`, `quality`, `export`, `preview`, `history`. |
+| `--toolsets glyphs,preview` | Solo esos conjuntos (más `core`, siempre incluido). Disponibles: `core`, `glyphs`, `geometry`, `spacing`, `quality`, `export`, `preview`, `history`, `components`, `kerning`, `trace`. |
 | `--policy auto\|prompted\|strict` | Ver arriba. |
 | `--audit-log <archivo>` | Agrega una línea JSON por llamada: hora, actor, herramienta, documento, revisiones, código de error y un hash de los argumentos (nunca los argumentos). |
 
-## 8. Recuperación tras un cierre inesperado
+## 9. Recuperación tras un cierre inesperado
 
 El servidor guarda un diario de recuperación de cada cambio confirmado en la carpeta de datos del usuario (`~/Library/Application Support/org.forma.forma/recovery` en macOS, `~/.local/share/forma/recovery` en Linux, `%APPDATA%\forma\forma\data\recovery` en Windows). Con `--journal-dir <carpeta>` se elige otra y con `--no-journal` se desactiva.
 
@@ -84,7 +118,7 @@ Si un documento se cerró mal, `document_open` responde `recovery_available: { r
 
 Un documento tiene **un solo escritor**: el proceso de FORMA que lo abrió primero mantiene un bloqueo del sistema sobre él (en `…/org.forma.forma/locks` dentro de la misma carpeta de datos; `--lock-dir <carpeta>` o la variable `FORMA_LOCK_DIR` eligen otra). Si otro proceso (otro agente, otra terminal) lo abre mientras tanto, recibe un handle de solo lectura (`read_only: true`, `locked_by_other_process: true`): puede leer, previsualizar, validar y exportar a archivos nuevos, pero cualquier cambio o guardado devuelve `UNSUPPORTED`. Para editarlo, ciérralo en el primer proceso y vuelve a abrirlo. Si el archivo cambió en disco desde que se abrió o guardó (otro programa lo editó), `document_save` pide aprobación antes de sobrescribirlo.
 
-## 9. Usar la CLI y diagnosticar
+## 10. Usar la CLI y diagnosticar
 
 - `forma call <herramienta> --args '<json>' --doc-path mi.forma --save` ejecuta cualquier herramienta desde la terminal; `--yes` aprueba un plan. `forma new`, `info`, `export`, `validate`, `pack` y `unpack` cubren lo habitual.
 - Los logs van a stderr; con `FORMA_LOG=debug` se ve el detalle. Por stdout solo pasa el protocolo: no imprimas nada ahí al envolver el comando en un script.

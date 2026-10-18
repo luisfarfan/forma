@@ -157,7 +157,9 @@ sequenceDiagram
 
 - Cualquier herramienta mutante acepta `dry_run: true` para obtener el plan sin aplicar nada.
 
-## 8. Catálogo inicial de herramientas (API v1)
+## 8. Catálogo de herramientas (API v1)
+
+El catálogo completo y exacto (descripciones y schemas tal como los recibe el agente) está en `docs/api/tools.md`, generado desde el registro. Tras el Hito 2 son **50 herramientas** en **11 conjuntos**; la tabla siguiente es el diseño original con las filas del Hito 2 corregidas, y la sección 8.1 resume las 15 herramientas nuevas.
 
 Convenciones: `snake_case`, prefijo de dominio, ≤ 40 caracteres, orden determinista. Todas las mutantes llevan `doc` y `base_rev`; todas las lecturas devuelven `rev`. Columna "Hito": **1** = Hito 1, **2…9** = hito del roadmap (`04-roadmap.md`, revisión 4).
 
@@ -182,16 +184,22 @@ Convenciones: `snake_case`, prefijo de dominio, ≤ 40 caracteres, orden determi
 | glyphs | `glyph_set_outline` (reemplaza contornos de una capa) | destructive | 1 |
 | glyphs | `contour_edit` (añadir/borrar/invertir/transformar contorno) | write | 1 |
 | glyphs | `nodes_edit` (mover, insertar, borrar, smooth/corner) | write | 1 |
-| glyphs | `component_add` / `anchor_set` | write | 2 (componentes) / 3 (anclas) |
+| components | `component_set` / `glyph_compose` / `glyph_decompose` | destructive (`component_set` sobre componentes existentes) / write / write | 2 |
+| glyphs | `glyph_stroke` (trazo de esqueleto con ancho y tapas) | destructive (`replace` sobre una capa dibujada) / write (`append`) | 2 |
+| glyphs | `anchor_set` | write | 3 |
 | geometry | `geometry_check` (contornos abiertos, dirección, extremos, puntos duplicados, segmentos diminutos, fuera de grilla; auto-intersecciones con las booleanas, Hitos 2 y 6) | read | 1 |
 | geometry | `geometry_fix` (correcciones seleccionadas → plan si es masivo) | write/mass | 1 |
-| geometry | `path_boolean` / `remove_overlap` | write | 2 (`remove_overlap`) / 6 (`path_boolean`) |
+| geometry | `remove_overlap` / `glyph_measure` | write / read | 2 |
+| geometry | `path_boolean` | write | 6 |
 | spacing | `metrics_get` / `metrics_set` (advance, LSB, RSB por glifo y master; lote) | write | 1 |
-| spacing | `kerning_get` / `kerning_set` (pares, grupos, excepciones) | write | 2 |
+| spacing | `spacing_auto` (espaciado óptico automático) | write | 2 |
+| kerning | `kerning_get` / `kerning_set` / `kerning_auto` / `kerning_check` (pares, grupos, excepciones, kerning y chequeo automáticos) | read / destructive / destructive / read | 2 |
 | masters | `axis_add` / `master_add` / `master_update` / `instance_set` | write | 5 |
 | masters | `compatibility_check` / `interpolate_preview` | read | 5 |
 | features | `features_get` / `features_set` / `features_generate` | write | 3 |
 | quality | `validate` (modelo + binario: OTS, fontspector, chequeos propios) | read | 1 |
+| quality | `charset_check` (cobertura de un perfil de juego de caracteres, p. ej. `unicase-es`) | read | 2 |
+| trace | `image_inspect` / `image_trace` / `trace_compare` (de una imagen a glifos) | read / destructive / read | 2 |
 | export | `export_font` (TTF; WOFF2; VF en el Hito 5; OTF en el Hito 6) | write (sobrescritura: destructive) | 1 |
 | preview | `preview_glyph` (PNG/SVG; capa, master, guías, nodos opcionales) | read | 1 |
 | preview | `preview_text` (prueba de texto con shaping) | read | 1 (sin shaping complejo) / 3 |
@@ -199,8 +207,41 @@ Convenciones: `snake_case`, prefijo de dominio, ≤ 40 caracteres, orden determi
 | history | `history_list` / `history_undo` / `history_redo` / `history_revert` / `history_restore` | write | 1 |
 | history | `document_diff` | read | 1 |
 
-- Toolset por defecto: `core, glyphs, geometry, spacing, quality, export, preview, history` (unas 25 herramientas). `forma mcp --toolsets …` y `--read-only` permiten ajustar.
+- Conjuntos: `core, glyphs, geometry, spacing, quality, export, preview, history, components, kerning, trace`. Por defecto se sirven todos (50 herramientas; `core` siempre se incluye). `forma mcp --toolsets …` y `--read-only` permiten ajustar y cargar solo lo necesario, porque la selección de herramientas se degrada con muchas definiciones (§2).
 - `_meta["anthropic/alwaysLoad"]` solo en `forma_capabilities`, `document_open` y `document_create`; el resto se carga vía *tool search*.
+
+### 8.1 Herramientas del Hito 2 (35 → 50) y flujo de una imagen a una fuente
+
+| Conjunto | Herramientas | Para qué |
+|---|---|---|
+| `trace` | `image_inspect`, `image_trace`, `trace_compare` | Detectar y numerar las letras de una imagen, vectorizarlas a glifos y comparar un glifo con la imagen (IoU) |
+| `components` | `component_set`, `glyph_compose`, `glyph_decompose` | Glifos compuestos (acentos) y su descomposición |
+| `glyphs` | `glyph_stroke` | Dibujar glifos nuevos con el trazo de esqueleto, en el mismo estilo |
+| `geometry` | `remove_overlap`, `glyph_measure` | Unir contornos solapados y medir el estilo del trazo |
+| `spacing` | `spacing_auto` | Márgenes ópticos |
+| `kerning` | `kerning_get`, `kerning_set`, `kerning_auto`, `kerning_check` | Kerning por pares, grupos y excepciones; automático; chequeo de colisiones |
+| `quality` | `charset_check` | Cobertura de `unicase-es` (119 códigos) |
+
+Flujo recomendado (las instrucciones del servidor lo resumen):
+
+1. `image_inspect` sobre la imagen: devuelve la imagen anotada con el número de cada candidato. El agente la mira y decide qué letra es cada número.
+2. `image_trace` con las asignaciones `{candidate, name, unicodes}`: crea los glifos y devuelve el IoU de cada uno; `trace_compare` permite revisar uno y `nodes_edit` corregirlo.
+3. `glyph_measure` sobre una letra trazada, para sacar el ancho y las tapas; `glyph_create` + `glyph_stroke` para los glifos que faltan (cifras, signos), y `glyph_compose` para las acentuadas.
+4. `spacing_auto`, luego `kerning_auto` y `kerning_check` con el mismo conjunto de glifos.
+5. `charset_check`, `geometry_check`/`remove_overlap`, `validate` y `export_font`.
+
+**Advertencia de derechos:** `image_inspect` e `image_trace` solo deben usarse con imágenes sobre las que la persona tiene derechos. Las imágenes de terceros no se versionan en el repositorio.
+
+**Notas de uso de las herramientas nuevas** (los límites y matices que las descripciones no pueden contener enteros):
+- `glyph_compose` usa solo el master por defecto y exige al menos una marca. `gap` se ignora con `center`.
+- `glyph_stroke`: `append` se clasifica como escritura; `replace` sobre una capa ya dibujada es destructivo y puede exigir plan.
+- `geometry_fix` no define la corrección de dirección en contornos que se cruzan y no se han unido: se ejecuta antes `remove_overlap`.
+- `history_revert` de una transacción que creó un glifo que después ganó kerning o componentes falla limpiamente (no hay cascada): primero se revierte lo posterior.
+- `kerning_check` debe usar el mismo conjunto `glyphs` y el mismo `min_distance` que `kerning_auto` para verificarlo (la rejilla de muestreo depende del conjunto).
+- `kerning_auto` con `replace` y un subconjunto `glyphs` solo borra los pares que involucran esos glifos (o sus grupos).
+- `image_inspect` lista como máximo 200 candidatos en el texto; la imagen anotada los muestra todos (hasta 500).
+- `image_trace`, `spacing_auto` y `kerning_auto` no se pueden usar dentro de `edit_batch`; se llaman por separado.
+- Una llamada mutante que no cambia nada devuelve `tx: null` y no avanza la `rev`.
 
 **Representación de contornos para agentes:** se aceptan dos formas equivalentes:
 - `svg_path` (cadena `d`, la que mejor producen los LLMs);
@@ -293,6 +334,7 @@ flowchart LR
 | Unitario | Cada handler del registro (vía API Rust) | `cargo test`, 3 SO |
 | Contrato | Snapshot de `tools/list`; validación de que cada `outputSchema` acepta las salidas reales (propiedad); paridad registro ↔ MCP ↔ CLI | CI por PR |
 | Integración stdio | Arranca el binario `forma mcp` con el cliente de rmcp (`TokioChildProcess`), **en ambos modos de ciclo de vida** (`Initialize` = era 2025, como Codex; `Discover` = 2026-07-28) [V]; ejecuta escenarios y verifica resultados y errores | CI por PR en **macOS, Windows y Ubuntu 24.04** |
+| Escenario Hito 2 | Imagen de prueba propia → `image_inspect` → `image_trace` → `glyph_stroke`/`glyph_compose` → `spacing_auto` → `kerning_auto` → `kerning_check` (0 colisiones) → `charset_check` (100 %) → `validate` → `export_font` → verificación externa (OTS, `hb-shape`, fontTools, fontspector, Chrome) | CI por PR, en los dos ciclos de vida |
 | Escenario Hito 1 | Crear fuente → glifos desde `svg_path` → espaciado → `geometry_check`/`geometry_fix` → `validate` → `export_font` TTF → verificación externa (OTS, `hb-shape`, fontTools) | CI por PR |
 | Concurrencia | Cliente "usuario" simulado (por IPC) y cliente MCP editando a la vez → conflictos detectados, sin pérdida de cambios | CI por PR (desde que exista IPC) |
 | Aprobaciones | Operaciones masivas o destructivas sin token → `APPROVAL_REQUIRED`; token caducado, reutilizado o de otro actor → rechazado | CI por PR |
