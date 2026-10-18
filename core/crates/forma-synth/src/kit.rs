@@ -27,6 +27,8 @@ const STRAIGHT: [&str; 4] = ["H", "N", "U", "M"];
 const DIAGONAL: [&str; 5] = ["A", "V", "X", "Y", "K"];
 /// Strokes whose thick-to-thin ratio is below this are monoline.
 pub const CONTRAST_RATIO: f64 = 1.3;
+/// The least half-width of the range of end shapes.
+const FILL_RANGE_MIN: f64 = 0.04;
 /// Ends at least this full are flat (a flat end measures about 1, a round
 /// one about 0.79).
 pub const FLAT_FILL: f64 = 0.9;
@@ -57,9 +59,14 @@ pub struct StyleKit {
     pub cap_height: f64,
     /// The typical stroke width: the median of the glyphs' median widths.
     pub stroke: f64,
-    /// How much a stroke width varies from glyph to glyph and along a
-    /// stroke (half the spread between the 10th and 90th percentiles).
+    /// How much a stroke width varies within glyphs: half the spread
+    /// between the typical thin and thick widths (the contrast).
     pub spread: f64,
+    /// How much the typical stroke varies from glyph to glyph: half the
+    /// spread between the 10th and 90th percentiles of the glyphs' median
+    /// strokes, at least a tenth of the stroke. A glyph's weight is judged
+    /// against it.
+    pub stroke_spread: f64,
     /// The thinnest and thickest typical widths (10th and 90th
     /// percentiles), the stroke's contrast.
     pub thin: f64,
@@ -88,6 +95,11 @@ pub struct StyleKit {
     pub rsb: f64,
     /// The glyphs measured, by name.
     pub sources: BTreeMap<String, GlyphId>,
+    /// How closely skeletons dressed in this style reproduce the font's own
+    /// letters (I, H, O, L, E, T, those it has): the median overlap, 1 for
+    /// a perfect match; `None` when it has none of them. Low, the drawing
+    /// has what skeletons do not draw (serifs, tapers, irregular strokes).
+    pub reproduction: Option<f64>,
 }
 
 fn median(values: &mut [f64]) -> Option<f64> {
@@ -234,21 +246,35 @@ impl StyleKit {
             )));
         }
         let stroke_m = median(&mut stroke).unwrap_or(0.0);
+        let stroke_spread = (percentile(&mut stroke, 0.9).unwrap_or(stroke_m)
+            - percentile(&mut stroke, 0.1).unwrap_or(stroke_m))
+            / 2.0;
         let thin_m = median(&mut thin).unwrap_or(stroke_m);
         let thick_m = median(&mut thick).unwrap_or(stroke_m);
-        let ball = median(&mut balls).filter(|r| *r >= BALL_RATIO);
-        Ok(StyleKit {
+        let fill = median(&mut fills);
+        // One class of ends: flat ends are flat even where serifs or flared
+        // ends make the end wider than the stroke; balls only where ends are
+        // round.
+        let ball = median(&mut balls)
+            .filter(|r| *r >= BALL_RATIO)
+            .filter(|_| fill.is_none_or(|f| f < FLAT_FILL));
+        // The range of end shapes, at least ±0.04 around the median: the
+        // measure itself varies that much with the direction of a stroke.
+        let fill_range = percentile(&mut fills, 0.1)
+            .zip(percentile(&mut fills, 0.9))
+            .zip(fill)
+            .map(|((low, high), m)| [low.min(m - FILL_RANGE_MIN), high.max(m + FILL_RANGE_MIN)]);
+        let mut kit = StyleKit {
             master,
             cap_height,
             stroke: stroke_m,
             spread: ((thick_m - thin_m) / 2.0).max(0.05 * stroke_m),
+            stroke_spread: stroke_spread.max(0.1 * stroke_m),
             thin: thin_m,
             thick: thick_m,
             ball,
-            terminal_fill_range: percentile(&mut fills, 0.1)
-                .zip(percentile(&mut fills, 0.9))
-                .map(|(a, b)| [a, b]),
-            terminal_fill: median(&mut fills),
+            terminal_fill_range: fill_range,
+            terminal_fill: fill,
             join_pinch: median(&mut pinches),
             widths: Widths {
                 round: by_class.get_mut("round").and_then(|v| median(v)),
@@ -264,6 +290,9 @@ impl StyleKit {
             lsb: median(&mut lsbs).unwrap_or(0.0),
             rsb: median(&mut rsbs).unwrap_or(0.0),
             sources,
-        })
+            reproduction: None,
+        };
+        kit.reproduction = crate::selftest::reproduction(font, &kit);
+        Ok(kit)
     }
 }

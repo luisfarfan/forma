@@ -81,3 +81,21 @@ jobs:
           name: fuzz-artifacts-${{ matrix.target }}
           path: core/fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore
+
+  # The mode C quality gate on the large levels of the benchmark corpus (M:
+  # Inter, EB Garamond and Fraunces at three sizes; M-hand: Patrick Hand),
+  # against core/crates/forma-bench/baseline.json. S, L and O run with every
+  # push (ci.yml); these take minutes, so they run here.
+  bench-m:
+    name: mode C regression (M, M-hand)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show
+      - name: Mode C on M and M-hand
+        run: cargo test -p forma-bench --release --locked --test regression -- --ignored

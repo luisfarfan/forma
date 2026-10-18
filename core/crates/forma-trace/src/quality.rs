@@ -33,7 +33,8 @@ const SAMPLE_PX: f64 = 0.25;
 const FEATURE_AREA_PX2: f64 = 2.0;
 /// A disagreement region with more than this share of its border of the
 /// other kind (background beside a filled region, shared ink beside a lost
-/// one) runs along an edge rather than being a slit or a stroke.
+/// one) runs along an edge; when it is also no deeper than the fit budget,
+/// it is the fit's deviation, not a feature.
 const EDGE_SHARE: f64 = 0.35;
 /// How much wider than a one-sample sliver (2/f pixels) a feature found
 /// on a coarse raster must be to be trusted without a finer look.
@@ -146,9 +147,10 @@ pub struct QualityReport {
     pub topology_ok: bool,
     /// Fine features filled or lost (at most the first 8).
     pub features: Vec<FeatureIssue>,
-    /// Disagreements narrower than twice what the font's unit grid
-    /// resolves: detail the font cannot hold at its units per em (more
-    /// units per em would). Reported, not failed.
+    /// Fine features (slits, notches, thin strokes) narrower than one font
+    /// unit: detail the font cannot hold at its units per em (more units
+    /// per em would). They fail the glyph like the other features: a person
+    /// decides.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub below_grid: usize,
     /// Smooth nodes whose tangents differ by more than the threshold.
@@ -180,6 +182,13 @@ impl QualityReport {
             } else {
                 out.push("a counter of the ink has no match in the outline".to_owned());
             }
+        }
+        if self.below_grid > 0 {
+            out.push(format!(
+                "{} fine detail(s) narrower than one font unit, which the font cannot hold at \
+                 its units per em (more units per em would keep them)",
+                self.below_grid
+            ));
         }
         for f in &self.features {
             let what = if f.kind == "filled" {
@@ -574,7 +583,7 @@ fn topology(ink: &[bool], w: usize, h: usize) -> (usize, Vec<u32>, Vec<(usize, b
 /// feature, as issues of `kind`, each with its box in image pixels.
 fn features(
     pick: &dyn Fn(usize) -> bool,
-    edge: Option<&dyn Fn(usize) -> bool>,
+    edge: Option<(&dyn Fn(usize) -> bool, f64)>,
     (w, h): (usize, usize),
     origin: (i64, i64),
     f: f64,
@@ -586,7 +595,18 @@ fn features(
     if !inside.iter().any(|&v| v) {
         return Vec::new();
     }
-    let edt = distance_transform(&inside, w, h);
+    // Outside the window counts as not of the region: framed by one sample
+    // of background, a region the window cuts measures its own width, not
+    // twice it (its edge pixels would otherwise find nothing beyond).
+    let (pw, ph) = (w + 2, h + 2);
+    let mut framed = vec![false; pw * ph];
+    for y in 0..h {
+        framed[(y + 1) * pw + 1..(y + 1) * pw + 1 + w].copy_from_slice(&inside[y * w..(y + 1) * w]);
+    }
+    let framed_edt = distance_transform(&framed, pw, ph);
+    let edt: Vec<f64> = (0..w * h)
+        .map(|i| framed_edt[(i / w + 1) * pw + i % w + 1])
+        .collect();
     let (labels, info) = regions(&|i| inside[i], w, h, true);
     let mut widest = vec![0.0f64; info.len()];
     let mut centre = vec![(0.0f64, 0.0f64); info.len()];
@@ -600,7 +620,7 @@ fn features(
         }
         let k = label as usize - 1;
         let (x, y) = (i % w, i / w);
-        if let Some(edge) = edge {
+        if let Some((edge, _)) = edge {
             for (nx, ny) in [
                 (x.wrapping_sub(1), y),
                 (x + 1, y),
@@ -627,10 +647,14 @@ fn features(
             let b = boxes[k];
             let px = |v: usize, o: i64| o + (v as f64 / f).floor() as i64;
             // A region bordered much by the `edge` kind hugs an edge: the
-            // outline runs beside the ink there (a deviation the distance
-            // gates bound), it does not close a slit or drop a stroke.
-            let (all, edge) = border[k];
-            let hugs = all > 0 && edge as f64 > EDGE_SHARE * all as f64;
+            // outline runs beside the ink there. When it is no deeper than
+            // the fit budget, it is the fit's deviation, not a slit closed
+            // or a stroke dropped; deeper, it is a feature whatever its
+            // border (a slit narrowed, a notch filled, a bump lost).
+            let (all, on_edge) = border[k];
+            let hugs = edge.is_some_and(|(_, budget)| {
+                all > 0 && on_edge as f64 > EDGE_SHARE * all as f64 && width_px <= budget
+            });
             (width_px >= min_width_px && area_px2 >= FEATURE_AREA_PX2 && !hugs).then(|| {
                 (
                     FeatureIssue {
@@ -657,6 +681,7 @@ fn refine(
     outline: &[Vec<Point>],
     bounds: (i64, i64, i64, i64),
     min_width_px: f64,
+    budget_px: f64,
     kind: &str,
 ) -> Result<Vec<FeatureIssue>, TraceError> {
     let pad = 3;
@@ -677,7 +702,7 @@ fn refine(
     };
     Ok(features(
         pick,
-        Some(edge),
+        Some((edge, budget_px)),
         size,
         (win.0, win.1),
         f,
@@ -869,11 +894,22 @@ pub(crate) fn evaluate(
             &shared as &dyn Fn(usize) -> bool,
         ),
     ] {
-        for (issue, bounds) in features(pick, Some(edge), size, origin, f, min, kind) {
+        let budget = allowance.fit_px + allowance.grid_px;
+        for (issue, bounds) in features(pick, Some((edge, budget)), size, origin, f, min, kind) {
             // Below what this raster resolves (a one-sample sliver measures
             // 2/f pixels), look again at full fineness around it.
             if f < FINE && issue.width_px < 2.0 / f + RESOLVE_MARGIN_PX {
-                found.extend(refine(reference, &outline, bounds, min, kind)?);
+                for refined in refine(reference, &outline, bounds, min, budget, kind)? {
+                    // Neighbouring coarse regions can refine to the same
+                    // feature.
+                    if !found.iter().any(|f: &FeatureIssue| {
+                        f.kind == refined.kind
+                            && (f.at_px[0] - refined.at_px[0]).abs() < 0.5
+                            && (f.at_px[1] - refined.at_px[1]).abs() < 0.5
+                    }) {
+                        found.push(refined);
+                    }
+                }
             } else {
                 found.push(issue);
             }
@@ -990,6 +1026,141 @@ pub(crate) fn faint_features(
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+#[cfg(test)]
+mod counterexamples {
+    //! Defects the feature gate must catch whatever their border: slits
+    //! narrowed, notches filled, bumps lost (review of block E, C1).
+    use forma_model::{Node, PathId};
+
+    use super::*;
+
+    fn ring(pts: &[(f64, f64)]) -> Vec<Point> {
+        let mut p: Vec<Point> = pts.iter().map(|&(x, y)| Point::new(x, y)).collect();
+        p.push(p[0]);
+        p
+    }
+
+    fn path(r: &[Point]) -> Path {
+        Path {
+            id: PathId(0),
+            closed: true,
+            nodes: r[..r.len() - 1]
+                .iter()
+                .map(|p| Node {
+                    x: p.x,
+                    y: -p.y,
+                    kind: NodeKind::Line,
+                    smooth: false,
+                })
+                .collect(),
+        }
+    }
+
+    fn flagged(reference: Vec<Point>, outline: Vec<Point>, grid: f64) -> bool {
+        let to = ToPixels {
+            scale: 1.0,
+            lsb: 0.0,
+            origin: (0.0, 0.0),
+        };
+        let allowance = Allowance {
+            fit_px: 0.5,
+            min_feature_px: 0.8,
+            grid_px: grid,
+        };
+        let q = evaluate(&[reference], &[path(&outline)], &to, &THRESHOLDS, allowance)
+            .unwrap_or_else(|e| panic!("{e}"));
+        !q.failures(&THRESHOLDS).is_empty()
+    }
+
+    fn square(s: f64) -> Vec<Point> {
+        ring(&[
+            (20.0, 20.0),
+            (20.0 + s, 20.0),
+            (20.0 + s, 20.0 + s),
+            (20.0, 20.0 + s),
+        ])
+    }
+
+    /// A notch `w` wide and `d` deep in the top edge (`d` < 0: a bump).
+    fn notched(s: f64, w: f64, d: f64) -> Vec<Point> {
+        let (x0, y0) = (20.0, 20.0);
+        let c = x0 + s / 2.0;
+        ring(&[
+            (x0, y0),
+            (c - w / 2.0, y0),
+            (c - w / 2.0, y0 + d),
+            (c + w / 2.0, y0 + d),
+            (c + w / 2.0, y0),
+            (x0 + s, y0),
+            (x0 + s, y0 + s),
+            (x0, y0 + s),
+        ])
+    }
+
+    /// A slit from the right edge, `len` deep and `gap` wide, its upper
+    /// wall moved down by `fill`.
+    fn slitted(s: f64, len: f64, gap: f64, fill: f64) -> Vec<Point> {
+        let (x0, y0) = (20.0, 20.0);
+        let mid = y0 + s / 2.0;
+        ring(&[
+            (x0, y0),
+            (x0 + s, y0),
+            (x0 + s, mid - gap / 2.0 + fill),
+            (x0 + s - len, mid - gap / 2.0 + fill),
+            (x0 + s - len, mid + gap / 2.0),
+            (x0 + s, mid + gap / 2.0),
+            (x0 + s, y0 + s),
+            (x0, y0 + s),
+        ])
+    }
+
+    #[test]
+    fn an_identical_outline_passes() {
+        assert!(!flagged(
+            notched(300.0, 8.0, 1.8),
+            notched(300.0, 8.0, 1.8),
+            0.0
+        ));
+    }
+
+    #[test]
+    fn filled_notches_are_caught() {
+        for (w, d) in [(5.0, 1.8), (8.0, 1.8), (8.0, 1.2), (6.0, 1.0), (3.0, 1.8)] {
+            assert!(
+                flagged(notched(300.0, w, d), square(300.0), 0.0),
+                "notch {w}x{d}"
+            );
+        }
+        assert!(flagged(notched(300.0, 10.0, 2.3), square(300.0), 0.25));
+    }
+
+    #[test]
+    fn lost_bumps_are_caught() {
+        for (w, d) in [(8.0, 1.8), (5.0, 1.5)] {
+            assert!(
+                flagged(notched(300.0, w, -d), square(300.0), 0.0),
+                "bump {w}x{d}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrowed_slits_are_caught() {
+        for size in [300.0, 600.0] {
+            for fill in [1.0, 1.4, 1.75] {
+                assert!(
+                    flagged(
+                        slitted(size, 20.0, 2.0, 0.0),
+                        slitted(size, 20.0, 2.0, fill),
+                        0.0
+                    ),
+                    "slit narrowed by {fill} at {size} px"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

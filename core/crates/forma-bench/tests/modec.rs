@@ -23,18 +23,21 @@ fn mode_c_builds_a_valid_font_from_the_specimen() {
     let names: Vec<&str> = stages.iter().filter_map(|s| s["stage"].as_str()).collect();
     for expected in [
         "document_create",
-        "image_inspect",
-        "image_trace",
-        "spacing_auto",
-        "kerning_auto",
-        "kerning_check",
-        "validate",
+        "font_from_image",
         "export_ttf",
         "export_woff2",
     ] {
         assert!(names.contains(&expected), "missing stage {expected}");
     }
     assert!(stages.iter().all(|s| s["ms"].as_f64().is_some()));
+    // Fidelity and typography are reported apart.
+    let typography = &result["typography"];
+    assert!(
+        typography["synthesized"].as_u64() > Some(30),
+        "{typography}"
+    );
+    assert_eq!(typography["composed"], 2);
+    assert_eq!(typography["validate_errors"], 0);
     assert!(dir.path().join("specimen/results.json").exists());
     let ttf = std::fs::read(dir.path().join("specimen/font.ttf")).expect("ttf");
     assert!(ttf.len() > 100);

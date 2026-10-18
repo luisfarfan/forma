@@ -34,6 +34,19 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Calibrates the quality gates and the style score on levels of the
+    /// corpus; writes `calibration.json`.
+    Calibrate {
+        /// The levels, comma separated (s, m, m-hand, l, o).
+        #[arg(long, default_value = "s,m,m-hand,l,o")]
+        levels: String,
+        /// What to calibrate: `fidelity`, `style` or `both`.
+        #[arg(long, default_value = "both")]
+        part: String,
+        /// The output folder.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Lists the case ids of a level.
     List {
         /// The level: s, m, m-hand, l or o.
@@ -51,9 +64,44 @@ enum Command {
     },
 }
 
+fn calibrate(levels: &str, part: &str, out: &Path) -> ExitCode {
+    let parsed: Option<Vec<Level>> = levels.split(',').map(|l| Level::parse(l.trim())).collect();
+    let Some(levels) = parsed else {
+        eprintln!("unknown level in {levels:?}");
+        return ExitCode::FAILURE;
+    };
+    let result = (|| -> Result<(), forma_bench::BenchError> {
+        let fidelity = if part == "style" {
+            serde_json::Value::Null
+        } else {
+            forma_bench::calibrate::fidelity(&levels)?
+        };
+        let style = if part == "fidelity" {
+            serde_json::Value::Null
+        } else {
+            forma_bench::calibrate::style(&levels)?
+        };
+        std::fs::create_dir_all(out)?;
+        let report = serde_json::json!({ "fidelity": fidelity, "style": style });
+        std::fs::write(
+            out.join("calibration.json"),
+            serde_json::to_string_pretty(&report)?,
+        )?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Run { mode, level, out } => run(&mode, &level, &out),
+        Command::Calibrate { levels, part, out } => calibrate(&levels, &part, &out),
         Command::List { level } => list(&level),
         Command::ExportCase { case, out } => export_case(&case, &out),
     }

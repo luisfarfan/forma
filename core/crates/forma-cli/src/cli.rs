@@ -8,7 +8,7 @@ use forma_engine::{Policy, Toolset};
 /// The FORMA font editor on the command line, and its MCP server.
 ///
 /// Every subcommand is a thin facade over the same command registry the MCP
-/// server and the editor use: `forma call <tool>` runs any of the 50 tools.
+/// server and the editor use: `forma call <tool>` runs any tool of the registry.
 #[derive(Debug, Parser)]
 #[command(
     name = "forma",

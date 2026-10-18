@@ -65,7 +65,7 @@
       "strategies": [{ "id": "skeleton", "dots": [{ "at": [0.5, 0.0] }] }] },
     { "name": "comma", "unicodes": ["U+002C"], "class": "punct", "width": 0.2, "stroke_check": false,
       "strategies": [{ "id": "skeleton",
-        "dots": [{ "at": [0.6, 0.0] }],
+        "dots": [{ "at": [0.6, 0.0], "joined": true }],
         "strokes": [{ "segs": [{ "line": [0.75, 0.02] }, { "line": [0.2, -0.2] }], "w": 0.7 }] }] },
     { "name": "colon", "unicodes": ["U+003A"], "class": "punct", "width": 0.16, "stroke_check": false,
       "strategies": [

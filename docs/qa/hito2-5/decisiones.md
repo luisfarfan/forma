@@ -165,7 +165,7 @@ Veredicto: cambios solicitados, con 2 hallazgos críticos, 7 importantes y 11 me
     - **D-13:** nombres `uXXXXX` fuera del BMP.
     - **D-14:** un cambio de diseño limpia `attention`.
     - **D-15:** aritmética saturada en `mask.rs`.
-47. **D-5, falsos rasgos en glifos grandes:** un rasgo que el ráster grueso encuentra por debajo de lo que resuelve (2/f + 0,25 px) se vuelve a medir a resolución completa en una ventana a su alrededor.
+47. **D-5, falsos rasgos en glifos grandes** (corregida por la revisión del bloque E, ver 50): un rasgo que el ráster grueso encuentra por debajo de lo que resuelve (2/f + 0,25 px) se vuelve a medir a resolución completa en una ventana a su alrededor.
     - **Bordes:** una región que bordea sobre todo el otro tipo (fondo junto a un relleno, tinta compartida junto a una pérdida) recorre un borde: es desviación de ajuste, acotada por las puertas de distancia, y no una ranura ni un trazo.
     - **Cuadrícula:** lo que mide menos de 2 × `grid_px` se informa (`below_grid`) y no bloquea.
     - **Tests:** anillos limpios de 600 px (UPM 1000), 1200 px y 1900 px (este último ignorado en debug) quedan sin `needs_review`.
@@ -192,3 +192,69 @@ Veredicto: cambios solicitados, con 2 hallazgos críticos, 7 importantes y 11 me
   - la síntesis tarda 4,4 s.
 
   Los rechazos son correctos: `= « »` fundidos, `! ?` con el punto pegado, `+ * #` con trazo inflado por las bolas, y `& @ €`. Las cifras 3, 4 y 6 salen más débiles (las bolas presionan el contrahueco): quedan pendientes para revisión humana.
+
+## Revisión independiente del bloque E (2026-10-18)
+
+Veredicto: cambios solicitados, con 3 hallazgos críticos, 6 importantes y 10 menores, reproducidos con geometría generada por código y el corpus OFL. La seguridad se sostiene: ningún camino aprueba un sintetizado y los planes son deterministas. Todos los críticos e importantes se corrigieron.
+
+50. **(C1, crítico, fidelidad) La exención de borde de D-5 ocultaba defectos reales:** ranuras de 2 px estrechadas a 0,25 px, muescas cerradas, protuberancias perdidas.
+    - **Exención acotada:** una región que bordea el otro tipo solo se excusa si no es más profunda que el presupuesto de ajuste (`fit_px + grid_px`), porque solo entonces es desviación tolerada.
+    - **Causa raíz de D-5:** era un artefacto de ventana. La transformada de distancia no veía fondo fuera de la ventana, y las regiones cortadas por el borde medían el doble de su ancho real. Ahora la ventana se enmarca con una muestra de fondo, y el anillo de 1900 px pasa sin excusas.
+    - **`below_grid`:** ahora es motivo de revisión (un detalle de menos de una unidad que la fuente no puede conservar).
+    - **Tests:** los contraejemplos del revisor son tests (`quality::counterexamples`).
+51. **(C2) Glifos corruptos con puntuación 1,0** (la tilde de EB Garamond con picos a ±1180 unidades, compuesta en Ñ): se rechaza todo contorno que sale de la caja de su esqueleto más su alcance y medio trazo (artefacto de trazado).
+52. **(C3) Defectos visibles con buena puntuación.** El control de estructura rechaza ahora, además de piezas fundidas o contrahuecos cerrados:
+    - **contrahuecos casi cerrados**, de menos de 0,6 trazos²;
+    - **piezas casi en contacto**, a menos de 0,3 trazos;
+    - **diacríticos desmedidos**, de más de 0,7 de la altura de mayúsculas de ancho o 0,5 de alto.
+
+    Otros dos cambios:
+    - Los puntos unidos por diseño (la cabeza de la coma) se marcan en los datos de la receta (`joined`), en lugar de adivinarse por geometría.
+    - **Puntuación vacía:** un glifo en el que nada pudo medirse queda marcado como «sin puntuar» (`needs_look`), en lugar de un 1,0 vacío.
+    - El tamaño de los puntos se compara con el del estilo.
+53. **(I1) Falsos rechazos:**
+    - **Proporción:** solo cuenta si el esqueleto ocupa el ancho (≥ 0,8), lo que excluye punto, coma y exclamación.
+    - **Una sola clase de final:** con finales planos (≥ 0,9) no hay bolas, aunque las remates ensanchen el final (Fraunces).
+    - **Medida de finales:** el rango de formas de final tiene al menos ±0,04, y la dirección del final es simétrica (media del último paso).
+    - **Peso esperado:** incluye la modulación de contraste que aplica el vestido (un 1 de astas verticales es tan pesado como las verticales), y se compara con la dispersión del trazo típico entre glifos, no con el contraste.
+    - **Finales hinchados:** se juzgan por la mediana de los finales, no por el máximo (en `* + 6 9` el máximo cae junto a un cruce).
+54. **(I2) Kerning del usuario en una nueva ejecución:** solo se reemplazan los pares entre dos glifos que hace la llamada (sin grupos). Los pares del usuario, y los que tienen un glifo que la llamada no hizo, se conservan. Además, los compuestos existentes siguen a sus bases retrazadas: antes chocaban, con 13 colisiones.
+55. **(I3) Toolsets:** cada etapa de `font_from_image` solo corre si el toolset de su herramienta está habilitado; si no, se informa `stage_disabled`. El perfil de herramientas no desactiva etapas, porque solo acota el catálogo que ve el agente.
+56. **(I4, revierte D-14)** Una edición no borra lo que el motor pidió mirar: un empujón de un nodo, o un arreglo automático, no demuestra que el problema desapareció. La atención permanece hasta la revisión.
+57. **(I5) Autoprueba de reproducción (`StyleKit::reproduction`):** se dibujan con esqueletos, en el estilo de la fuente, las letras que esta tenga (I, H, O, L, E, T), y se mide su solapamiento con las trazadas. Por debajo de 0,9, todo glifo dibujado por esqueleto pide una mirada: la fuente tiene remates, terminaciones afinadas o irregularidad que las recetas no dibujan.
+
+    | Fuentes | Solapamiento |
+    |---|---|
+    | Inter | 0,92–0,97 |
+    | Patrick Hand | 0,85–0,88 |
+    | specimen | 0,84 |
+    | casos orgánicos | 0,50–0,75 |
+    | imágenes rotadas | ≈ 0,62 |
+    | EB Garamond y Fraunces | ≈ 0,27 |
+
+    El umbral es 0,9 por el modo conservador, para no homogeneizar las fuentes manuscritas.
+58. **(I6) Tamaño de diacríticos:** cubierto por 52.
+59. **Menores:**
+    - `glyph_measure` informa `terminal_fill`;
+    - `glyph_synthesize` informa los nombres pedidos que ya existen;
+    - `style_extract` y `sources` deduplican y respetan el límite de 500;
+    - con menos de 3 glifos trazados, la síntesis se omite (`synthesis_skipped`) en lugar de fallar;
+    - `refine` no repite rasgos;
+    - en la hoja, los motivos se listan una vez (`reasons`) y cada celda los referencia por índice;
+    - en `font_from_image`, los avisos de síntesis se agrupan por motivo;
+    - documentación: CLAUDE.md y la ayuda de la CLI.
+60. **Pendiente para el responsable (no cambiado):**
+    - **Aprobar sintetizados con `glyph_review` bajo `auto`.** Hoy un agente puede aprobar hasta 20 glifos por llamada sin plan. ¿Debe aprobar sintetizados exigir siempre un plan humano, con cualquier política?
+    - **El boceto de `needs_design` en el informe** (§5.5) no está implementado.
+    - **Determinismo entre sistemas:** `forma-synth` usa `sin`, `cos` y `exp` de la biblioteca estándar. El redondeo a la cuadrícula oculta las diferencias de último bit, y las huellas de plan son de un mismo proceso.
+
+### Contrato `tools/list` (bloque E)
+
+Aditivo:
+- `style_extract` y `glyph_synthesize`, en el toolset nuevo `synthesis`;
+- `Cap::Flat` en `glyph_stroke`;
+- `terminal_fill` en `glyph_measure`;
+- `stages.synthesize` en `font_from_image`;
+- `strategy` en la procedencia sintetizada.
+
+`sources` de la procedencia sintetizada pasa de `GlyphId` a nombre. Ese campo solo existe en esta rama (el formato v3 no está publicado).

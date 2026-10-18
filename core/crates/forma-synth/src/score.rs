@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::kit::{COLOR_MIN_WIDTH, StyleKit};
-use crate::recipe::{Class, Recipe, Strategy};
+use crate::recipe::{Class, Recipe, Seg, Strategy};
 
 /// The version of the synthesis thresholds, recorded in provenance.
 pub const THRESHOLDS_VERSION: u32 = 1;
@@ -34,9 +34,16 @@ const W_PROPORTION: f64 = 0.10;
 /// The least spread of stroke widths a comparison allows, as a fraction of
 /// the stroke: the measure itself varies by a few percent.
 const SPREAD_FLOOR: f64 = 0.1;
+/// How far, as a share, a dot's size may be from the style's before its
+/// score falls (and how fast it falls beyond).
+const DOT_TOLERANCE: f64 = 0.1;
 /// How fast the terminal score falls outside the letters' range of end
 /// shapes (round and flat ends differ by about 0.2).
 const FILL_SCALE: f64 = 0.06;
+/// A glyph's width is compared only when its skeleton spans at least this
+/// share of its box (a period or an exclamation mark do not: their width is
+/// their stroke's).
+const PROPORTION_MIN_SPAN: f64 = 0.8;
 /// The narrowest glyph, in stroke widths, whose width is compared.
 const PROPORTION_MIN_STROKES: f64 = 2.5;
 
@@ -80,6 +87,26 @@ impl StyleScore {
     }
 }
 
+/// How much of its box's width a strategy's skeleton spans (0 to 1).
+fn span(strategy: &Strategy) -> f64 {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for spec in &strategy.strokes {
+        for seg in &spec.segs {
+            let (a, b) = match *seg {
+                Seg::Line([x, _]) => (x, x),
+                Seg::Arc([cx, _, rx, _, _, _]) | Seg::Ellipse([cx, _, rx, _]) => (cx - rx, cx + rx),
+            };
+            lo = lo.min(a);
+            hi = hi.max(b);
+        }
+    }
+    for dot in &strategy.dots {
+        lo = lo.min(dot.at[0]);
+        hi = hi.max(dot.at[0]);
+    }
+    (hi.min(1.0) - lo.max(0.0)).max(0.0)
+}
+
 /// Scores `paths` (a glyph made for `recipe` by `strategy`) against `kit`,
 /// measuring it in a copy of `font`. The stroke is compared with the width
 /// the strategy asks for (a hyphen is drawn a little lighter than the
@@ -93,6 +120,21 @@ pub fn score(
     recipe: &Recipe,
     strategy: &Strategy,
     paths: &[Path],
+) -> StyleScore {
+    score_with(font, kit, recipe, strategy, paths, 1.0)
+}
+
+/// [`score`] for a glyph whose strokes the contrast thickens or thins by
+/// `width_factor` (see `dress::Built::width_factor`): a figure 1 of
+/// vertical strokes is as heavy as the font's verticals, not as its
+/// median stroke.
+pub(crate) fn score_with(
+    font: &Font,
+    kit: &StyleKit,
+    recipe: &Recipe,
+    strategy: &Strategy,
+    paths: &[Path],
+    width_factor: f64,
 ) -> StyleScore {
     let skeleton = strategy.parts.is_empty();
     let weight = if skeleton && !strategy.strokes.is_empty() {
@@ -128,10 +170,26 @@ pub fn score(
     );
     let measured = forma_trace::measure(&scratch, id, kit.master).ok();
 
+    // A glyph of dots only (a period, a colon, a dieresis): its weight is
+    // the size of its dots.
+    let dots_only = strategy.strokes.is_empty() && !strategy.dots.is_empty() && skeleton;
     let stroke = match (&measured, recipe.stroke_check) {
+        (Some(m), _) if dots_only && m.stroke_median > 0.0 => {
+            let wanted = 2.0 * crate::dress::dot_radius(kit, strategy.dots[0].r);
+            let off = (m.stroke_median / wanted - 1.0).abs();
+            let s = (-(off - DOT_TOLERANCE).max(0.0) / DOT_TOLERANCE).exp();
+            if s < 0.6 {
+                reasons.push(format!(
+                    "dots {:.0} units across against the {wanted:.0} of the font's style",
+                    m.stroke_median
+                ));
+            }
+            Some(s)
+        }
         (Some(m), true) if m.stroke_median > 0.0 => {
-            let wanted = kit.stroke * weight;
-            let z = (m.stroke_median - wanted).abs() / kit.spread.max(SPREAD_FLOOR * kit.stroke);
+            let wanted = kit.stroke * weight * width_factor;
+            let z =
+                (m.stroke_median - wanted).abs() / kit.stroke_spread.max(SPREAD_FLOOR * kit.stroke);
             let s = (-(z - 1.0).max(0.0)).exp();
             if s < 0.6 {
                 reasons.push(format!(
@@ -154,7 +212,7 @@ pub fn score(
             }
             s
         }),
-        (Some(m), None) if recipe.stroke_check => m.terminal_radius.map(|r| {
+        (Some(m), None) if recipe.stroke_check => m.terminal_radius_median.map(|r| {
             let ratio = 2.0 * r / m.stroke_median.max(1e-9);
             if ratio > 1.4 {
                 reasons.push("swollen ends in a font with plain ends".to_owned());
@@ -210,8 +268,10 @@ pub fn score(
     // glyph about as narrow as its stroke or dot, the stroke sets it.
     let expected = recipe.width * kit.cap_height * kit.proportion();
     let proportion = (skeleton
+        && recipe.stroke_check
         && recipe.class != Class::Mark
         && ink_width > 0.0
+        && span(strategy) >= PROPORTION_MIN_SPAN
         && expected >= PROPORTION_MIN_STROKES * kit.stroke)
         .then(|| {
             let s = (-(ink_width / expected - 1.0).abs() / 0.2).exp();
@@ -232,7 +292,15 @@ pub fn score(
         .iter()
         .filter_map(|(c, w)| c.map(|c| (c * w, *w)))
         .fold((0.0, 0.0), |(s, t), (cw, w)| (s + cw, t + w));
-    let total = if weight > 0.0 { sum / weight } else { 1.0 };
+    let total = if weight > 0.0 {
+        sum / weight
+    } else {
+        // Nothing could be compared: no evidence against the glyph, and
+        // none for it. A person looks.
+        reasons
+            .push("nothing of this glyph could be compared with the style (unscored)".to_owned());
+        1.0
+    };
     StyleScore {
         total: (total * 1000.0).round() / 1000.0,
         stroke,

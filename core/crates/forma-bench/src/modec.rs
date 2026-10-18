@@ -1,13 +1,12 @@
-//! Mode C: the pipeline without an agent. For now it is the granular
-//! sequence of Milestone 2 driven through the engine registry, with the
-//! assignments built from the layout of the case:
+//! Mode C: the pipeline without an agent, through the engine registry:
+//! `document_create`, `font_from_image` (trace, synthesize, compose, space,
+//! kern, checks: one transaction) and `export_font` (TTF and WOFF2).
 //!
-//! `document_create`, `image_inspect`, `image_trace`, `spacing_auto`,
-//! `kerning_auto`, `kerning_check`, `validate`, `export_font` (TTF and WOFF2).
-//!
-//! The layout is matched to the candidates by reading order with exact row
-//! and count matching: a row whose number of candidates differs from the
-//! number of characters is reported and left unassigned, never guessed.
+//! Each case reports **fidelity** (the traced outlines against the truth:
+//! overlap, counters, review flags, outline quality) and **typography**
+//! (synthesis, composition, spacing, kerning, collisions, coverage,
+//! validation) separately: a faithful trace is not yet a good font, and a
+//! good-looking font may not be faithful.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -134,7 +133,7 @@ fn assignments(image: &[u8], layout: &[String]) -> (Vec<Value>, Vec<Value>, usiz
 /// The traced outline of `name`, mapped over the true outline: same center
 /// and the scale that makes the heights equal. The comparison measures the
 /// shape, not the placement the tracer chose.
-fn glyph_px(paths: &[ModelPath], truth: &TruthGlyph) -> Option<Vec<BezPath>> {
+pub(crate) fn glyph_px(paths: &[ModelPath], truth: &TruthGlyph) -> Option<Vec<BezPath>> {
     let beziers: Vec<BezPath> = paths.iter().filter_map(|p| to_bezpath(p).ok()).collect();
     let (mut union, mut have) = (kurbo::Rect::ZERO, false);
     for b in &beziers {
@@ -227,7 +226,8 @@ fn pipeline(
         json!({ "family_name": "Bench" }),
     )?;
     let doc = created["doc"].as_str().unwrap_or_default().to_owned();
-    run.json("image_inspect", "image_inspect", json!({ "path": image }))?;
+    // The engine's own matching decides; this read only reports what a
+    // reading-order match would assign, for the layout statistics.
     let (assigned, unmatched, candidates, matched) = assignments(&case.image, &case.layout);
     let layout_chars: usize = case.layout.iter().map(|r| r.chars().count()).sum();
     let mut out = json!({
@@ -237,27 +237,52 @@ fn pipeline(
         "unmatched": unmatched,
         "assigned": assigned.len(),
     });
-    if assigned.is_empty() {
-        out["pipeline_ok"] = json!(false);
-        return Ok(out);
-    }
-
     let rev = run.rev(&doc)?;
-    let traced = run.json(
-        "image_trace",
-        "image_trace",
-        json!({ "doc": doc, "base_rev": rev, "path": image, "assignments": assigned, "detail": "full" }),
-    )?;
+    let made = run.json(
+        "font_from_image",
+        "font_from_image",
+        json!({ "doc": doc, "base_rev": rev, "path": image, "layout": case.layout,
+            "detail": "full" }),
+    );
+    let made = match made {
+        Ok(v) => v,
+        Err(error) => {
+            out["pipeline_ok"] = json!(false);
+            out["pipeline_error"] = json!(error.to_string());
+            return Ok(out);
+        }
+    };
+    let stage = |name: &str| -> Value {
+        made["stages"]
+            .as_array()
+            .and_then(|s| s.iter().find(|s| s["name"] == name))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    // The detail of each traced glyph is in the call's report.
+    let report: Value = made["report_path"]
+        .as_str()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(Value::Null);
     let mut glyphs = Vec::new();
-    for entry in traced["traced"].as_array().cloned().unwrap_or_default() {
+    for entry in report["body"]["traced"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
         let name = entry["name"].as_str().unwrap_or_default().to_owned();
+        let quality = &entry["quality"];
         let mut g = json!({
             "name": name,
             "iou": entry["iou"],
-            "nodes": entry["nodes"],
-            "hausdorff_p95_px": entry["hausdorff_p95_px"],
-            "topology_ok": entry["topology_ok"],
-            "needs_review": entry["needs_review"],
+            "hausdorff_p95_px": quality["hausdorff_p95_px"],
+            "fit_deviation_px": quality["fit_deviation_px"],
+            "topology_ok": quality["topology_ok"],
+            "g1_violations": quality["g1_violations"],
+            "nodes_per_1000": quality["nodes_per_1000"],
+            "attempt": entry["attempt"],
+            "needs_review": !entry["reasons"].as_array().is_none_or(Vec::is_empty),
             "reasons": entry["reasons"],
         });
         if let Some(truth) = case.truth.as_ref().and_then(|t| t.glyphs.get(&name)) {
@@ -266,46 +291,15 @@ fn pipeline(
         glyphs.push(g);
     }
     out["glyphs"] = json!(glyphs);
-
-    // Spacing, kerning and checks; a failing stage is recorded and the
-    // pipeline goes on, so one problem does not hide the others.
-    let rev = run.rev(&doc)?;
-    // The reference glyphs are H and O; an alphabet without them (a set of
-    // other letters) falls back to the first two traced glyphs so that the
-    // rest of the pipeline can still be measured.
-    let names: Vec<&str> = glyphs.iter().filter_map(|g| g["name"].as_str()).collect();
-    let mut spacing_args = json!({ "doc": doc, "base_rev": rev });
-    if !(names.contains(&"H") && names.contains(&"O")) && !names.is_empty() {
-        spacing_args["references"] = json!([names[0], names[names.len().min(2) - 1]]);
-    }
-    let spacing = run.json("spacing_auto", "spacing_auto", spacing_args);
-    let rev = run.rev(&doc)?;
-    let kerning = run.json(
-        "kerning_auto",
-        "kerning_auto",
-        json!({ "doc": doc, "base_rev": rev }),
-    );
-    let checked = run.json(
-        "kerning_check",
-        "kerning_check",
-        json!({ "doc": doc, "min_distance": 20.0 }),
-    );
-    let validated = run.json("validate", "validate", json!({ "doc": doc }));
-    out["spacing_ok"] = json!(spacing.is_ok());
-    out["kerning_pairs"] = kerning
-        .as_ref()
-        .map_or(Value::Null, |k| k["pairs_set"].clone());
-    out["collisions_total"] = checked
-        .as_ref()
-        .map_or(Value::Null, |c| c["collisions_total"].clone());
-    let report = validated
-        .as_ref()
-        .map_or(Value::Null, |v| v["report"].clone());
+    out["engine_ms"] = made["engine_ms"].clone();
+    out["stages_engine"] = made["stages"].clone();
+    out["attention"] = made["attention"].clone();
+    let validated = stage("validate");
     out["validate"] = json!({
-        "errors": report["errors"],
-        "warnings": report["warnings"],
-        "compiled": report["compiled"],
+        "errors": validated["counts"]["errors"],
+        "warnings": validated["counts"]["warnings"],
     });
+    out["collisions_total"] = stage("check_collisions")["counts"]["collisions"].clone();
 
     let rev = run.rev(&doc)?;
     let mut exports = serde_json::Map::new();
@@ -329,9 +323,31 @@ fn pipeline(
     out["export"] = Value::Object(exports);
 
     let errors = out["validate"]["errors"].as_u64();
+    let rows_ok = made["attention"].as_array().is_none_or(|a| {
+        !a.iter()
+            .any(|i| i["kind"] == "row_mismatch" || i["kind"] == "ambiguous_grouping")
+    });
     out["pipeline_ok"] =
-        json!(matched && run.stages.iter().all(|s| s.error.is_none()) && errors == Some(0));
+        json!(rows_ok && run.stages.iter().all(|s| s.error.is_none()) && errors == Some(0));
     out["summary"] = summarize(&glyphs);
+    // Irregularity kept counts only drawings with irregularity of their own
+    // and an image that shows them as they are (a bleeding ink moves the
+    // edge, and a faithful trace follows it).
+    out["irregular"] =
+        json!(case.truth.as_ref().is_some_and(|t| {
+            t.irregularity_amplitude_px.is_some_and(|a| a > 0.0) && !t.bleeds
+        }));
+    out["typography"] = json!({
+        "synthesized": stage("synthesize")["counts"]["made"],
+        "needs_design": stage("synthesize")["counts"]["needs_design"],
+        "composed": stage("compose")["counts"]["composed"],
+        "spaced": stage("space")["counts"]["spaced"],
+        "kerning_commands": stage("kern")["counts"]["commands"],
+        "collisions": out["collisions_total"],
+        "charset_covered": stage("charset")["counts"]["covered"],
+        "charset_required": stage("charset")["counts"]["required"],
+        "validate_errors": errors,
+    });
     Ok(out)
 }
 
@@ -386,6 +402,8 @@ fn summarize(glyphs: &[Value]) -> Value {
         "holes_correct": holes_ok,
         "holes_checked": with_holes,
         "needs_review": glyphs.iter().filter(|g| g["needs_review"] == json!(true)).count(),
+        // Glyphs whose outline keeps the true shape (irregular, on level O).
+        "truth_good": truth_ious.iter().filter(|i| **i >= 0.97).count(),
         "undetected_topology_errors": glyphs
             .iter()
             .filter(|g| g["holes_match"] == json!(false) && g["needs_review"] != json!(true))
@@ -406,6 +424,9 @@ pub fn run_level(level: Level, out: &Path) -> Result<Value, BenchError> {
         let result = run_case(&case, &out.join(&case.id))?;
         cases.push(json!({
             "case": case.id,
+            "irregular": result["irregular"],
+            "typography": result["typography"],
+            "engine_ms": result["engine_ms"],
             "pipeline_ok": result["pipeline_ok"],
             "layout_matched": result["layout_matched"],
             "assigned": result["assigned"],

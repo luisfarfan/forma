@@ -13494,6 +13494,14 @@ expression: "lists[0]"
             "format": "double",
             "type": "number"
           },
+          "terminal_fill": {
+            "description": "How square the stroke ends are: about 1 for flat ends, about 0.79\nfor round ends and balls; `null` without measurable ends.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "terminal_radius": {
             "description": "The radius of the largest disc that fits at a stroke end; `null`\nwithout ends.",
             "format": "double",
@@ -14857,6 +14865,14 @@ expression: "lists[0]"
                 "$ref": "#/$defs/MasterId",
                 "description": "The master measured."
               },
+              "reproduction": {
+                "description": "How closely skeletons dressed in this style reproduce the font's own\nletters (I, H, O, L, E, T, those it has): the median overlap, 1 for\na perfect match; `None` when it has none of them. Low, the drawing\nhas what skeletons do not draw (serifs, tapers, irregular strokes).",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
               "rsb": {
                 "format": "double",
                 "type": "number"
@@ -14869,12 +14885,17 @@ expression: "lists[0]"
                 "type": "object"
               },
               "spread": {
-                "description": "How much a stroke width varies from glyph to glyph and along a\nstroke (half the spread between the 10th and 90th percentiles).",
+                "description": "How much a stroke width varies within glyphs: half the spread\nbetween the typical thin and thick widths (the contrast).",
                 "format": "double",
                 "type": "number"
               },
               "stroke": {
                 "description": "The typical stroke width: the median of the glyphs' median widths.",
+                "format": "double",
+                "type": "number"
+              },
+              "stroke_spread": {
+                "description": "How much the typical stroke varies from glyph to glyph: half the\nspread between the 10th and 90th percentiles of the glyphs' median\nstrokes, at least a tenth of the stroke. A glyph's weight is judged\nagainst it.",
                 "format": "double",
                 "type": "number"
               },
@@ -14917,6 +14938,7 @@ expression: "lists[0]"
               "cap_height",
               "stroke",
               "spread",
+              "stroke_spread",
               "thin",
               "thick",
               "widths",
@@ -15423,7 +15445,7 @@ expression: "lists[0]"
             "type": "integer"
           },
           "skipped_code_points": {
-            "description": "Code points left off a glyph because another glyph has them.",
+            "description": "What was left out: code points another glyph has, and glyphs asked\nfor that the font has already.",
             "items": {
               "type": "string"
             },

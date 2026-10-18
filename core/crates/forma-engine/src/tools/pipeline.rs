@@ -13,8 +13,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use forma_edit::GlyphRef;
-use forma_model::{Actor, Font, GlyphId, MasterId, Rev};
+use forma_edit::{Command, GlyphRef, KernRefInput};
+use forma_model::{Actor, Font, GlyphId, KernRef, MasterId, Rev};
 use forma_trace::{Extractor, Fidelity, RowMatch};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -536,6 +536,49 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         started,
     ));
 
+    // Glyphs traced again move under the composites built on them before
+    // this call (an Á from an earlier run): those follow, as they follow
+    // spacing.
+    let retraced: Vec<GlyphId> = assignments
+        .iter()
+        .filter_map(|a| font.glyph_by_name(&a.name).map(|g| g.id))
+        .collect();
+    if !retraced.is_empty() {
+        let (cmds, _) = realign_composites(font, &steps.after, master, &retraced)?;
+        for cmd in cmds {
+            steps.push(cmd)?;
+        }
+    }
+
+    // A stage runs only if the toolset of its tool is enabled: what the
+    // operator turned off on this server the pipeline does not do either.
+    // (A tool profile only narrows the catalogue an agent sees; the stages
+    // still run.)
+    let mut disabled = Vec::new();
+    let mut allowed = |stage: &str, tool: &str, wanted: bool| -> bool {
+        if !wanted {
+            return false;
+        }
+        let ok =
+            crate::registry::find(tool).is_some_and(|spec| engine.is_toolset_enabled(spec.toolset));
+        if !ok {
+            disabled.push(format!("{stage} (the toolset of {tool} is disabled)"));
+        }
+        ok
+    };
+    let run_synthesize = allowed("synthesize", "glyph_synthesize", op.stages.synthesize);
+    let run_compose = allowed("compose", "glyph_compose", op.stages.compose);
+    let run_space = allowed("space", "spacing_auto", op.stages.space);
+    let run_kern = allowed("kern", "kerning_auto", op.stages.kern);
+    if !disabled.is_empty() {
+        attention.push(AttentionItem {
+            kind: "stage_disabled".into(),
+            glyph: None,
+            row: None,
+            reason: format!("stages not run: {}", disabled.join(", ")),
+        });
+    }
+
     // The glyphs the call makes: only they are spaced and kerned.
     let mut produced: BTreeSet<String> = assignments.iter().map(|a| a.name.clone()).collect();
     let mut composed_names: BTreeSet<String> = BTreeSet::new();
@@ -546,7 +589,7 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
     // Synthesize what the image lacks.
     let started = Instant::now();
     let mut synth_detail = Value::Null;
-    if op.stages.synthesize {
+    if run_synthesize {
         match synthesize_commands(
             &steps.after,
             op.master,
@@ -557,6 +600,8 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         ) {
             Ok(synthesis) => {
                 let made = synthesis.made.len();
+                let mut by_reason: std::collections::BTreeMap<String, Vec<String>> =
+                    std::collections::BTreeMap::new();
                 for m in &synthesis.made {
                     produced.insert(m.name.clone());
                     synthesized.insert(m.name.clone());
@@ -567,13 +612,25 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
                         unspaced.insert(m.name.clone());
                     }
                     if !m.score.reasons.is_empty() {
-                        attention.push(AttentionItem {
-                            kind: "needs_review".into(),
-                            glyph: Some(m.name.clone()),
-                            row: None,
-                            reason: brief(&m.score.reasons),
-                        });
+                        by_reason
+                            .entry(brief(&m.score.reasons))
+                            .or_default()
+                            .push(m.name.clone());
                     }
+                }
+                // One item per reason, naming its glyphs: the same remark on
+                // fifty glyphs is one thing to look at, not fifty.
+                for (reason, names) in by_reason {
+                    let (glyph, reason) = match names.as_slice() {
+                        [one] => (Some(one.clone()), reason),
+                        _ => (None, format!("{}: {reason}", names.join(", "))),
+                    };
+                    attention.push(AttentionItem {
+                        kind: "needs_review".into(),
+                        glyph,
+                        row: None,
+                        reason,
+                    });
                 }
                 if !synthesis.needs_design.is_empty() {
                     attention.push(AttentionItem {
@@ -618,13 +675,27 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
                 ));
             }
             Err(error) => {
+                // Too few traced glyphs to learn the style from is expected
+                // (a partial image): the stage is skipped, not failed.
+                let sparse = error.code == ErrorCode::InvalidArgument
+                    && error.message.contains("traced glyphs");
                 attention.push(AttentionItem {
-                    kind: "stage_failed".into(),
+                    kind: if sparse {
+                        "synthesis_skipped"
+                    } else {
+                        "stage_failed"
+                    }
+                    .into(),
                     glyph: None,
                     row: None,
                     reason: format!("synthesis: {}", error.message),
                 });
-                stages.push(stage("synthesize", "fail", json!({}), started));
+                stages.push(stage(
+                    "synthesize",
+                    if sparse { "skipped" } else { "fail" },
+                    json!({}),
+                    started,
+                ));
             }
         }
     } else {
@@ -633,7 +704,7 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
 
     // Compose the accented letters of the profile.
     let started = Instant::now();
-    if op.stages.compose && profile == "unicase-es" && !default_master {
+    if run_compose && profile == "unicase-es" && !default_master {
         attention.push(AttentionItem {
             kind: "compose_skipped".into(),
             glyph: None,
@@ -643,7 +714,7 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
                 .into(),
         });
         stages.push(stage("compose", "skipped", json!({}), started));
-    } else if op.stages.compose && profile == "unicase-es" {
+    } else if run_compose && profile == "unicase-es" {
         let mut composed = 0;
         let mut missing_marks = BTreeSet::new();
         for (accented, base, mark) in ACCENTED {
@@ -719,7 +790,7 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         .filter(|n| !composed_names.contains(*n) && !unspaced.contains(*n))
         .map(|n| GlyphRef::Name(n.clone()))
         .collect();
-    if op.stages.space && !to_space.is_empty() {
+    if run_space && !to_space.is_empty() {
         let refs_exist = ["H", "O"]
             .iter()
             .all(|n| steps.after.glyph_by_name(n).is_some());
@@ -788,7 +859,36 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         .filter(|n| !unspaced.contains(*n) && !synthesized.contains(*n))
         .map(|n| GlyphRef::Name(n.clone()))
         .collect();
-    if op.stages.kern && steps.after.glyph_by_name("H").is_some() && to_kern.len() > 1 {
+    if run_kern && steps.after.glyph_by_name("H").is_some() && to_kern.len() > 1 {
+        // Only the pairs between two glyphs of this call are replaced: the
+        // user's pairs, and every pair with a glyph the call did not make,
+        // stay as they are.
+        let mine: BTreeSet<GlyphId> = to_kern
+            .iter()
+            .filter_map(|r| r.resolve(&steps.after))
+            .collect();
+        let stale: Vec<Command> = steps
+            .after
+            .kerning
+            .pairs
+            .get(&master)
+            .into_iter()
+            .flat_map(|pairs| pairs.keys())
+            .filter_map(|(first, second)| match (first, second) {
+                (KernRef::Glyph(a), KernRef::Glyph(b)) if mine.contains(a) && mine.contains(b) => {
+                    Some(Command::SetKerningPair {
+                        master: Some(master),
+                        first: KernRefInput::Glyph(GlyphRef::Id(*a)),
+                        second: KernRefInput::Glyph(GlyphRef::Id(*b)),
+                        value: 0.0,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        for cmd in stale {
+            steps.push(cmd)?;
+        }
         match kerning_auto_commands(
             &steps.after,
             KerningAutoOpArgs {
@@ -798,8 +898,8 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
                 min_value: None,
                 max_ratio: None,
                 min_distance: None,
-                grouping: None,
-                replace: true,
+                grouping: Some(false),
+                replace: false,
                 detail: Detail::Summary,
             },
         ) {

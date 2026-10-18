@@ -173,7 +173,8 @@ pub struct GlyphSynthesizeResult {
     pub made_total: usize,
     /// The glyphs not made, which need a design.
     pub needs_design: Vec<NeedsDesign>,
-    /// Code points left off a glyph because another glyph has them.
+    /// What was left out: code points another glyph has, and glyphs asked
+    /// for that the font has already.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_code_points: Vec<String>,
     /// Where the complete detail went.
@@ -191,7 +192,8 @@ pub(crate) struct Synthesis {
     pub made: Vec<Made>,
     /// The glyphs not made: name and reason.
     pub needs_design: Vec<NeedsDesign>,
-    /// Code points left off, as `name: U+XXXX (has glyph)`.
+    /// What was left out: code points another glyph has (`name: U+XXXX
+    /// (other has it)`) and glyphs asked for that exist already.
     pub skipped: Vec<String>,
 }
 
@@ -234,6 +236,7 @@ pub(crate) fn synthesize_commands(
 ) -> Result<Synthesis, ToolError> {
     let book = recipe_book(profile)?;
     let master_id = find_master(font, master)?;
+    let mut skipped = Vec::new();
     let kit = StyleKit::extract(font, master_id, sources).map_err(from_synth_error)?;
     let wanted: Vec<String> = match names {
         Some(names) => {
@@ -247,6 +250,11 @@ pub(crate) fn synthesize_commands(
                     "no recipe for {} in {profile}",
                     unknown.join(", ")
                 )));
+            }
+            for name in names {
+                if font.glyph_by_name(name).is_some() {
+                    skipped.push(format!("{name}: the font has it already"));
+                }
             }
             names.to_vec()
         }
@@ -271,7 +279,6 @@ pub(crate) fn synthesize_commands(
     let mut cmds = Vec::new();
     let mut made = Vec::new();
     let mut needs_design = Vec::new();
-    let mut skipped = Vec::new();
     let mut assigned: BTreeSet<u32> = BTreeSet::new();
     for outcome in outcomes {
         let m = match outcome {
@@ -354,6 +361,24 @@ pub(crate) fn synthesize_commands(
     })
 }
 
+/// The glyphs `refs` names, each once, in order; at most [`MAX_NAMED`].
+fn unique_ids(font: &Font, refs: &[GlyphRef]) -> Result<Vec<GlyphId>, ToolError> {
+    if refs.len() > MAX_NAMED {
+        return Err(ToolError::invalid_argument(format!(
+            "name at most {MAX_NAMED} glyphs"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for r in refs {
+        let id = find_glyph(font, r)?.id;
+        if seen.insert(id) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------- handlers
 
 fn style_extract(
@@ -366,11 +391,7 @@ fn style_extract(
     let font = open.font();
     let master = find_master(font, args.master)?;
     let ids = match &args.glyphs {
-        Some(refs) => Some(
-            refs.iter()
-                .map(|r| find_glyph(font, r).map(|g| g.id))
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
+        Some(refs) => Some(unique_ids(font, refs)?),
         None => None,
     };
     let kit = StyleKit::extract(font, master, ids.as_deref()).map_err(from_synth_error)?;
@@ -404,11 +425,7 @@ fn glyph_synthesize(
         )));
     }
     let sources = match &op.sources {
-        Some(refs) => Some(
-            refs.iter()
-                .map(|r| find_glyph(&font, r).map(|g| g.id))
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
+        Some(refs) => Some(unique_ids(&font, refs)?),
         None => None,
     };
     let profile = op

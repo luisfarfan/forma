@@ -66,6 +66,10 @@ pub struct Dot {
     /// Its size relative to the font's dot; 1 by default.
     #[serde(default = "one")]
     pub r: f64,
+    /// Whether a stroke of the glyph starts in it by design (the head of a
+    /// comma): it then counts as one piece with that stroke.
+    #[serde(default)]
+    pub joined: bool,
 }
 
 /// A glyph of the font reused as a piece.

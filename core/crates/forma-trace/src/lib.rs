@@ -31,7 +31,7 @@ pub use mask::{InkCoverage, ink_coverage};
 pub use measure::{StyleMeasure, measure};
 pub use palette::PaletteEntry;
 pub use quality::{FeatureIssue, QualityReport, QualityThresholds, THRESHOLDS};
-pub use vectorize::{Placement, TracedGlyph, trace, trace_groups};
+pub use vectorize::{Placement, TracedGlyph, assess, assess_batch, trace, trace_groups};
 
 /// The most candidates an analysis may report.
 pub const MAX_CANDIDATES: usize = 500;

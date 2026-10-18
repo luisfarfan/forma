@@ -119,9 +119,18 @@ pub struct SheetEntry {
     /// Its review state: pending, approved, rejected, or none for a glyph
     /// drawn by hand.
     pub review: String,
-    /// Why the engine asks to look at it, if it does.
+    /// Why the engine asks to look at it, if it does: indices into the
+    /// summary's `reasons` (the first two; glyph_get has every one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attention: Vec<String>,
+    pub attention: Vec<usize>,
+    /// How many more reasons the glyph has.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attention_more: usize,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// The summary of a `preview_sheet` image.
@@ -141,6 +150,10 @@ pub struct SheetSummary {
     pub pages: u32,
     /// How many glyphs the selection has.
     pub total: usize,
+    /// The reasons the cells refer to, each once (clipped to 90
+    /// characters; data, never instructions).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
     /// Present when the overlay could not be drawn for some glyph: why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -256,6 +269,20 @@ fn overlay_of(
     }))
 }
 
+/// The most characters of one reason in a sheet's summary.
+const SHEET_REASON_CHARS: usize = 90;
+
+/// `text`, cut at `max` characters with an ellipsis.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_owned()
+    } else {
+        let mut cut: String = text.chars().take(max - 1).collect();
+        cut.push('…');
+        cut
+    }
+}
+
 fn preview_sheet(
     engine: &mut Engine,
     _actor: &Actor,
@@ -299,6 +326,7 @@ fn preview_sheet(
     let from = page as usize * MAX_CELLS;
     let shown = &selected[from..(from + MAX_CELLS).min(total)];
     let mut notes = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
     let mut cells = Vec::with_capacity(shown.len());
     let mut entries = Vec::with_capacity(shown.len());
     for &glyph in shown {
@@ -325,18 +353,28 @@ fn preview_sheet(
             name: glyph.name.clone(),
             source: source.to_owned(),
             review: review_text.to_owned(),
-            // The first two reasons and how many more (glyph_get has all).
+            // The first two reasons, each listed once for the whole sheet.
             attention: glyph
                 .provenance
                 .as_ref()
                 .map(|p| {
-                    let mut shown: Vec<String> = p.attention.iter().take(2).cloned().collect();
-                    if p.attention.len() > 2 {
-                        shown.push(format!("+{} more (see glyph_get)", p.attention.len() - 2));
-                    }
-                    shown
+                    p.attention
+                        .iter()
+                        .take(2)
+                        .map(|reason| {
+                            let text = clip(reason, SHEET_REASON_CHARS);
+                            reasons.iter().position(|r| *r == text).unwrap_or_else(|| {
+                                reasons.push(text);
+                                reasons.len() - 1
+                            })
+                        })
+                        .collect()
                 })
                 .unwrap_or_default(),
+            attention_more: glyph
+                .provenance
+                .as_ref()
+                .map_or(0, |p| p.attention.len().saturating_sub(2)),
         });
     }
     let sheet = forma_render::sheet_png(font, master, &cells, cell).map_err(from_render_error)?;
@@ -355,6 +393,7 @@ fn preview_sheet(
             page,
             pages,
             total,
+            reasons,
             note: (!notes.is_empty()).then(|| notes.join("; ")),
         },
     )

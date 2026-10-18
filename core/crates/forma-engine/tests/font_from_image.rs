@@ -469,3 +469,63 @@ fn export_runs_when_allowed_and_skips_existing_files() {
             .is_some_and(|s| s.contains("exists"))
     );
 }
+
+#[test]
+fn a_rerun_keeps_the_users_pairs_with_the_glyphs_it_made() {
+    let (mut engine, _dir, image) = setup(Policy::Auto);
+    let doc = new_doc(&mut engine);
+    let base = rev(&mut engine, &doc);
+    ok(&mut engine, "font_from_image", args(&doc, base, &image));
+    let base = rev(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "kerning_set",
+        json!({ "doc": doc, "base_rev": base, "pairs": [
+            { "first": { "glyph": "A" }, "second": { "glyph": "quoteright" }, "value": -91 },
+            { "first": { "glyph": "F" }, "second": { "glyph": "period" }, "value": -77 } ] }),
+    );
+    let base = rev(&mut engine, &doc);
+    let error = call(&mut engine, "font_from_image", args(&doc, base, &image))
+        .expect_err("re-tracing replaces glyphs: a plan");
+    let token = error.details["plan"]["plan_token"].as_str().expect("token");
+    let again = ok(&mut engine, "plan_commit", json!({ "plan_token": token }));
+    let kerning = ok(&mut engine, "kerning_get", json!({ "doc": doc }));
+    assert_eq!(again["rev"], base + 1, "{again}");
+    // The composites of the first run follow their re-traced bases.
+    let check = ok(&mut engine, "kerning_check", json!({ "doc": doc }));
+    assert_eq!(check["collisions_total"], 0, "{check}");
+    let values: Vec<f64> = kerning["pairs"]
+        .as_array()
+        .map(|p| p.iter().filter_map(|p| p["value"].as_f64()).collect())
+        .unwrap_or_default();
+    assert!(
+        values.contains(&-91.0) && values.contains(&-77.0),
+        "{kerning}"
+    );
+}
+
+#[test]
+fn a_disabled_toolset_disables_its_stage() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/hito2/specimen.png");
+    let image = dir.path().join("specimen.png");
+    std::fs::copy(source, &image).expect("copy the specimen");
+    let mut engine = Engine::new(EngineConfig {
+        allowed_roots: vec![dir.path().to_path_buf()],
+        policy: Policy::Auto,
+        toolsets: Some(
+            Toolset::ALL
+                .into_iter()
+                .filter(|t| *t != Toolset::Synthesis)
+                .collect(),
+        ),
+        ..EngineConfig::default()
+    });
+    let doc = new_doc(&mut engine);
+    let base = rev(&mut engine, &doc);
+    let out = ok(&mut engine, "font_from_image", args(&doc, base, &image));
+    assert_eq!(stage(&out, "synthesize")["status"], "skipped", "{out}");
+    assert!(kinds(&out).contains(&"stage_disabled".to_owned()), "{out}");
+    assert_eq!(glyph_count(&mut engine, &doc), 8);
+}

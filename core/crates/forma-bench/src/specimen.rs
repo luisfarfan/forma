@@ -75,6 +75,7 @@ pub fn case() -> Result<CorpusCase, BenchError> {
         truth: Some(Truth {
             glyphs,
             irregularity_amplitude_px: None,
+            bleeds: false,
             scale_px_per_unit: Some(SCALE),
             cap_height_px: Some(700.0 * SCALE),
             stray_pieces: 0,

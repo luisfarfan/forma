@@ -18,6 +18,7 @@ mod error;
 mod kit;
 mod recipe;
 mod score;
+mod selftest;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -33,6 +34,11 @@ pub use recipe::{
     Class, Dot, Part, Recipe, RecipeBook, Seg, Strategy, StrokeSpec, UNICASE_ES, parse_code_point,
 };
 pub use score::{COMPONENT_FLOOR, MIN_STYLE_SCORE, StyleScore, THRESHOLDS_VERSION, score};
+
+/// Below this overlap between the font's letters and the same letters drawn
+/// from skeletons in its style, synthesized glyphs ask for a look
+/// (experimental, calibrated in `docs/qa/hito2-5/calibracion.md`).
+pub const SELF_TEST_MIN: f64 = 0.9;
 
 /// The gap between the cap height and a combining mark, in cap heights
 /// (the composing tools place marks again over each base).
@@ -206,16 +212,7 @@ pub fn synthesize(
                 continue;
             };
             let (paths, advance) = place(kit, recipe, &built.paths);
-            let mut s = score(&work, kit, recipe, strategy, &built.paths);
-            let legible = built.structure == built.expected;
-            s.structure = Some(if legible { 1.0 } else { 0.0 });
-            if !legible {
-                s.reasons.push(format!(
-                    "the strokes merge: {} piece(s) and {} counter(s) where the skeleton has {} \
-                     and {}",
-                    built.structure.0, built.structure.1, built.expected.0, built.expected.1
-                ));
-            }
+            let s = judge_built(&work, kit, recipe, strategy, &built);
             if s.accepts(min_score) {
                 let sources = built
                     .sources
@@ -270,6 +267,78 @@ pub fn synthesize(
         }
     }
     Ok(out)
+}
+
+/// The score of a glyph `built` for `recipe` by `strategy`, judged against
+/// `kit`: the style components, then its structure (merged pieces, closed
+/// counters, stray ink, an oversized mark), and whether the font's own
+/// letters are reproduced by skeletons at all.
+fn judge_built(
+    font: &Font,
+    kit: &StyleKit,
+    recipe: &Recipe,
+    strategy: &Strategy,
+    built: &dress::Built,
+) -> StyleScore {
+    let mut s = score::score_with(
+        font,
+        kit,
+        recipe,
+        strategy,
+        &built.paths,
+        built.width_factor,
+    );
+    let merged = built.structure != built.expected;
+    if merged {
+        s.reasons.push(format!(
+            "the strokes merge: {} piece(s) and {} counter(s) where the skeleton has {} and {}",
+            built.structure.0, built.structure.1, built.expected.0, built.expected.1
+        ));
+    }
+    s.reasons.extend(built.defects.iter().cloned());
+    s.structure = Some(if merged || !built.defects.is_empty() {
+        0.0
+    } else {
+        1.0
+    });
+    // A drawing whose own letters the skeletons do not reproduce (serifs,
+    // tapers, irregular strokes): what they draw needs a person's look,
+    // however well it scores.
+    if strategy.parts.is_empty()
+        && let Some(r) = kit.reproduction
+        && r < SELF_TEST_MIN
+    {
+        s.reasons.push(format!(
+            "skeletons match this drawing's letters at {r:.2} only (serifs, tapers or irregular \
+             strokes are not drawn)"
+        ));
+    }
+    s
+}
+
+/// Draws `recipe` by `strategy` in the style `dress_kit` and judges it
+/// against `kit` as synthesis does (style components and structure): for
+/// calibrating the score with kits that are wrong in one respect. `None`
+/// when a piece it reuses is missing.
+///
+/// # Errors
+///
+/// [`SynthError::Geometry`] if dressing a skeleton or uniting fails.
+pub fn judge(
+    font: &Font,
+    dress_kit: &StyleKit,
+    kit: &StyleKit,
+    recipe: &Recipe,
+    strategy: &Strategy,
+) -> Result<Option<(Vec<Path>, StyleScore)>, SynthError> {
+    Ok(
+        dress::build(font, dress_kit, recipe, strategy)?.map(|built| {
+            (
+                built.paths.clone(),
+                judge_built(font, kit, recipe, strategy, &built),
+            )
+        }),
+    )
 }
 
 /// Draws `recipe` by `strategy` in the style `kit`, placed as synthesis

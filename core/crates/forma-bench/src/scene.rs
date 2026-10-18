@@ -179,6 +179,7 @@ impl Scene {
             scale_px_per_unit: self.font_scale.map(|(s, _)| s),
             cap_height_px: self.font_scale.map(|(_, c)| c),
             stray_pieces: self.extras.len(),
+            bleeds: self.look.bleed,
         })
     }
 

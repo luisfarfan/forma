@@ -187,7 +187,7 @@ fn a_rejection_stands_after_a_design_change() {
 }
 
 #[test]
-fn a_design_change_clears_what_the_engine_asked_to_look_at() {
+fn what_the_engine_asked_to_look_at_survives_an_edit() {
     let font = base_font();
     let mut provenance = approved(&font, "A");
     provenance.review = Review::Pending;
@@ -201,12 +201,6 @@ fn a_design_change_clears_what_the_engine_asked_to_look_at() {
         },
     )
     .expect("set");
-    assert!(
-        glyph(&font, "A")
-            .provenance
-            .as_ref()
-            .is_some_and(Provenance::needs_look)
-    );
     let (next, _) = apply(
         &font,
         &Command::NodesEdit {
@@ -216,14 +210,14 @@ fn a_design_change_clears_what_the_engine_asked_to_look_at() {
             action: NodeAction::Move {
                 indices: vec![2],
                 dx: 0.0,
-                dy: 15.0,
+                dy: 1.0,
             },
         },
     )
     .expect("move");
+    // A one-unit nudge (or an automatic fix) does not show that the problem
+    // is gone: the glyph still asks for a look, and records the edit.
     let p = glyph(&next, "A").provenance.as_ref().expect("provenance");
-    assert!(
-        p.attention.is_empty() && p.edited && !p.needs_look(),
-        "{p:?}"
-    );
+    assert!(p.edited && p.needs_look(), "{p:?}");
+    assert_eq!(p.attention, vec!["slit or notch closed".to_owned()]);
 }

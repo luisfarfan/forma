@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod calibrate;
 pub mod corpus;
 pub mod degrade;
 pub mod det;

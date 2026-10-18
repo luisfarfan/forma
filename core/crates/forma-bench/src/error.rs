@@ -22,6 +22,12 @@ pub enum BenchError {
     /// A file could not be read or written.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// Tracing failed.
+    #[error("trace error: {0}")]
+    Trace(#[from] forma_trace::TraceError),
+    /// Something the benchmark relies on is malformed (the recipes).
+    #[error("invalid: {0}")]
+    Invalid(String),
     /// A JSON document could not be built or read.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),

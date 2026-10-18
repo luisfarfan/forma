@@ -1,0 +1,8 @@
+{
+  "note": "Mode C regression baseline (see tests/regression.rs). If a change moves a value, the PR says why.",
+  "s": { "cases_ok": 1, "iou_truth_mean": 0.995, "holes_correct_pct": 100.0, "synthesized": 50, "needs_design": 5 },
+  "l": { "cases_ok": 9, "iou_truth_mean": 0.998, "holes_correct_pct": 100.0 },
+  "o": { "cases_ok": 7, "iou_truth_mean": 0.983, "irregularity_kept_pct": 80.0 },
+  "m": { "cases_ok": 36, "iou_truth_mean": 0.974, "holes_correct_pct": 99.4 },
+  "m-hand": { "cases_ok": 12, "iou_truth_mean": 0.984, "holes_correct_pct": 100.0 }
+}

@@ -401,6 +401,10 @@ pub struct GlyphMeasureResult {
     /// The radius of the smallest disc at a join of strokes; `null` without
     /// joins.
     pub join_min: Option<f64>,
+    /// How square the stroke ends are: about 1 for flat ends, about 0.79
+    /// for round ends and balls; `null` without measurable ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_fill: Option<f64>,
 }
 
 // ----------------------------------------------------------------- helpers
@@ -908,6 +912,7 @@ fn glyph_measure(
         stroke_p90: measure.stroke_p90,
         terminal_radius: measure.terminal_radius,
         join_min: measure.join_min,
+        terminal_fill: measure.terminal_fill.map(|f| (f * 1000.0).round() / 1000.0),
     })
 }
 

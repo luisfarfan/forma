@@ -17,6 +17,8 @@ forma-model = { path = "../forma-model" }
 forma-geometry = { path = "../forma-geometry" }
 forma-render = { path = "../forma-render" }
 forma-trace = { path = "../forma-trace" }
+# The calibration of the style score.
+forma-synth = { path = "../forma-synth" }
 kurbo = { workspace = true }
 # Development tool only: the outlines of the OFL fonts of the corpus.
 skrifa = { workspace = true }

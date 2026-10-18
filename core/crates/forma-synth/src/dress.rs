@@ -29,6 +29,15 @@ const BALL_MIN_ARM: f64 = 0.9;
 /// A skeleton box is at least this many reaches (half strokes, or ball
 /// radii) wide, so a stroke has room to travel between its ends.
 const MIN_TRAVEL_REACHES: f64 = 2.0;
+/// A counter smaller than this many square strokes is nearly closed.
+const COUNTER_MIN_STROKES2: f64 = 0.6;
+/// Pieces closer than this many strokes nearly touch.
+const GAP_MIN_STROKES: f64 = 0.3;
+/// A mark wider or taller than these shares of the cap height is too large.
+const MARK_MAX_WIDTH_CAPS: f64 = 0.7;
+const MARK_MAX_HEIGHT_CAPS: f64 = 0.5;
+/// Ink may go this many strokes beyond the reach of its skeleton.
+const STRAY_MARGIN_STROKES: f64 = 0.5;
 /// A mark's box is at least this many stroke widths (or ball widths) on
 /// each side.
 const MARK_MIN_STROKES: f64 = 2.0;
@@ -47,6 +56,14 @@ pub(crate) struct Built {
     pub structure: (usize, usize),
     /// The pieces and counters of its skeleton drawn with a hairline.
     pub expected: (usize, usize),
+    /// How much the contrast thickens or thins its strokes: the median of
+    /// its nodes' widths over their strokes' base widths (1 without
+    /// contrast).
+    pub width_factor: f64,
+    /// What makes it unreadable or broken, in words: counters nearly
+    /// closed, pieces nearly touching, ink straying from the skeleton's box
+    /// (empty when none).
+    pub defects: Vec<String>,
 }
 
 fn geometry(error: impl std::fmt::Display) -> SynthError {
@@ -289,20 +306,93 @@ pub(crate) fn build(
     recipe: &Recipe,
     strategy: &Strategy,
 ) -> Result<Option<Built>, SynthError> {
-    let Some((paths, sources)) = dress(font, kit, recipe, strategy, false)? else {
+    let Some(drawn) = dress(font, kit, recipe, strategy, false)? else {
         return Ok(None);
     };
+    let paths = drawn.paths;
     let structure = topology(&paths);
     let expected = match dress(font, kit, recipe, strategy, true)? {
-        Some((hairline, _)) => topology(&hairline),
+        Some(hairline) => topology(&hairline.paths),
         None => structure,
     };
+    let mut defects = Vec::new();
+    if let Some(by) = drawn.strays {
+        defects.push(format!(
+            "the outline strays {by:.0} units beyond its skeleton's box (a stroking artefact)"
+        ));
+    }
+    let depths = forma_geometry::contour_depths(&paths);
+    let least_counter = COUNTER_MIN_STROKES2 * kit.stroke * kit.stroke;
+    let small = paths
+        .iter()
+        .zip(&depths)
+        .filter(|(p, d)| *d % 2 == 1 && forma_geometry::signed_area(p).abs() < least_counter)
+        .count();
+    if small > 0 {
+        defects.push(format!(
+            "{small} counter(s) nearly closed (smaller than {COUNTER_MIN_STROKES2} square strokes)"
+        ));
+    }
+    if let Some(gap) = least_gap(&paths, &depths)
+        && gap < GAP_MIN_STROKES * kit.stroke
+    {
+        defects.push(format!(
+            "pieces {gap:.0} units apart, nearly touching (at least {:.0})",
+            GAP_MIN_STROKES * kit.stroke
+        ));
+    }
+    if recipe.class == Class::Mark
+        && let Some(b) = bbox(&paths)
+        && (b.width() > MARK_MAX_WIDTH_CAPS * kit.cap_height
+            || b.height() > MARK_MAX_HEIGHT_CAPS * kit.cap_height)
+    {
+        defects.push(format!(
+            "a mark {:.0} by {:.0} units, too large for this font's capitals",
+            b.width(),
+            b.height()
+        ));
+    }
     Ok(Some(Built {
         paths,
-        sources,
+        width_factor: drawn.width_factor,
+        sources: drawn.sources,
         structure,
         expected,
+        defects,
     }))
+}
+
+/// The least distance between two pieces (outer contours at even depth),
+/// sampled along them; `None` with fewer than two pieces.
+fn least_gap(paths: &[Path], depths: &[usize]) -> Option<f64> {
+    let pieces: Vec<Vec<Point>> = paths
+        .iter()
+        .zip(depths)
+        .filter(|(_, d)| *d % 2 == 0)
+        .filter_map(|(p, _)| forma_geometry::to_bezpath(p).ok())
+        .map(|bez| {
+            let mut points = Vec::new();
+            kurbo::flatten(&bez, 2.0, |el| match el {
+                kurbo::PathEl::MoveTo(p) | kurbo::PathEl::LineTo(p) => points.push(p),
+                _ => {}
+            });
+            points
+        })
+        .collect();
+    if pieces.len() < 2 {
+        return None;
+    }
+    let mut least = f64::INFINITY;
+    for (i, a) in pieces.iter().enumerate() {
+        for b in &pieces[i + 1..] {
+            for p in a {
+                for q in b {
+                    least = least.min((*p - *q).hypot());
+                }
+            }
+        }
+    }
+    Some(least)
 }
 
 /// Pieces (outer contours) and counters (holes) of united contours.
@@ -340,8 +430,14 @@ fn arm_length(nodes: &[(Point, NodeKind)], last: bool) -> f64 {
     length
 }
 
-/// Contours, and the glyphs reused as pieces.
-type Drawn = (Vec<Path>, Vec<GlyphId>);
+/// A glyph drawn: its contours, the glyphs reused as pieces, and how far
+/// its ink strays beyond the skeleton's box, if it does.
+struct Drawn {
+    paths: Vec<Path>,
+    sources: Vec<GlyphId>,
+    strays: Option<f64>,
+    width_factor: f64,
+}
 
 /// Draws the glyph: in the font's style, or with a hairline along the same
 /// skeleton (for comparing structure).
@@ -390,7 +486,23 @@ fn dress(
     }
     let flat = !hairline && kit.flat_ends();
     let cap = if flat { Cap::Flat } else { Cap::Round };
-    let mut skeleton_points: Vec<Point> = Vec::new();
+    let mut factors: Vec<f64> = Vec::new();
+    let mut dot_reach: f64 = 0.0;
+    let mut stroke_reach: f64 = 0.0;
+    let mut skeleton_box = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    let mut widen = |p: Point| {
+        skeleton_box = (
+            skeleton_box.0.min(p.x),
+            skeleton_box.1.min(p.y),
+            skeleton_box.2.max(p.x),
+            skeleton_box.3.max(p.y),
+        );
+    };
     for spec in &strategy.strokes {
         let base = frame.stroke * spec.w;
         let reach = if closed_spec(spec) {
@@ -402,7 +514,8 @@ fn dress(
         if nodes.len() < 2 {
             continue;
         }
-        skeleton_points.extend(nodes.iter().map(|(p, _)| *p));
+        stroke_reach = stroke_reach.max(reach);
+        nodes.iter().for_each(|(p, _)| widen(*p));
         if flat && !closed {
             // A flat end stops where the skeleton does, half a width short
             // of where a round one reaches: lengthen the ends to match.
@@ -415,6 +528,15 @@ fn dress(
                 width_at(&nodes, i, closed, base, kit)
             }
         };
+        if !hairline {
+            factors.extend(
+                nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, kind))| *kind != NodeKind::OffCurve)
+                    .map(|(i, _)| width(i) / base),
+            );
+        }
         let skel = Skeleton {
             nodes: nodes
                 .iter()
@@ -449,20 +571,19 @@ fn dress(
             }
         }
     }
-    for Dot { at, r } in &strategy.dots {
+    for Dot { at, r, joined } in &strategy.dots {
         let radius = dot_radius(kit, *r);
         let centre = frame.point(*at, 2.0 * radius);
-        // A dot a stroke starts in (the head of a comma) is part of that
-        // stroke by design: it keeps its size in the hairline too.
-        let joined = skeleton_points
-            .iter()
-            .any(|p| (*p - centre).hypot() <= radius);
+        // A dot joined to a stroke by design (the head of a comma, as the
+        // recipe says) keeps its size in the hairline too.
         let drawn = if hairline && !joined {
             HAIRLINE * radius
         } else {
             radius
         };
         paths.push(circle(centre, drawn));
+        dot_reach = dot_reach.max(radius);
+        widen(centre);
     }
     if paths.is_empty() {
         return Ok(None);
@@ -483,10 +604,29 @@ fn dress(
         ],
         1.0,
     );
-    // Ink from x = 0 (it is placed later).
     let Some(b) = bbox(&fixed) else {
         return Ok(None);
     };
+    // A skeleton-drawn glyph stays within its box, widened by how far ink
+    // reaches around a skeleton (half a stroke, a ball, a dot, a thick
+    // stroke of the contrast) and a margin; ink beyond is an artefact.
+    let strays = (strategy.parts.is_empty() && !hairline)
+        .then(|| {
+            let thick = kit.contrast().map_or(1.0, |(_, thick)| thick / kit.stroke);
+            let reach = (stroke_reach * thick).max(dot_reach * 2.0) / 2.0
+                + STRAY_MARGIN_STROKES * kit.stroke;
+            // The box of the skeleton's own nodes and dots (recipes reach
+            // below the baseline or above the cap height: a comma, a
+            // bracket).
+            let (sx0, sy0, sx1, sy1) = skeleton_box;
+            let beyond = [sx0 - b.x0, b.x1 - sx1, sy0 - b.y0, b.y1 - sy1]
+                .into_iter()
+                .fold(0.0f64, f64::max);
+            let over = beyond - reach;
+            (over > 0.0).then_some(over)
+        })
+        .flatten();
+    // Ink from x = 0 (it is placed later).
     let shift = Transform {
         dx: -b.x0.round(),
         ..Transform::IDENTITY
@@ -495,5 +635,12 @@ fn dress(
     for (k, p) in placed.iter_mut().enumerate() {
         p.id = PathId(k as u32);
     }
-    Ok(Some((placed, sources)))
+    factors.sort_by(f64::total_cmp);
+    let width_factor = factors.get(factors.len() / 2).copied().unwrap_or(1.0);
+    Ok(Some(Drawn {
+        paths: placed,
+        sources,
+        strays,
+        width_factor,
+    }))
 }

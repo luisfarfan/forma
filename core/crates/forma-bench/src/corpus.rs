@@ -95,6 +95,9 @@ pub struct Truth {
     pub cap_height_px: Option<f64>,
     /// Pieces that are in the image but not in any glyph (dust, specks).
     pub stray_pieces: usize,
+    /// Whether the image spreads the ink beyond the true shapes (a bleeding
+    /// ink): a faithful trace follows the image, not the truth.
+    pub bleeds: bool,
 }
 
 /// One image of the corpus with its layout and what is known about it.

@@ -67,6 +67,10 @@ pub struct StyleMeasure {
     /// The radius of the smallest disc at a join of strokes; `None` without
     /// joins.
     pub join_min: Option<f64>,
+    /// The median of the radii at the ends of the strokes (where the
+    /// largest is a ball, or an end near a join); `None` without ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_radius_median: Option<f64>,
     /// How square the ends of the strokes are: the share of ink in the
     /// rectangle ahead of each end of the skeleton (as long as the stroke's
     /// half width, as wide as the stroke), median over the ends. About 1
@@ -260,7 +264,6 @@ fn end_fill(
     // Walk back along the skeleton, breadth first, about one radius.
     let mut seen = std::collections::BTreeSet::from([end]);
     let mut frontier = vec![end];
-    let mut far = end;
     for _ in 0..(r.ceil() as usize) {
         let mut next = Vec::new();
         for &i in &frontier {
@@ -280,10 +283,18 @@ fn end_fill(
             // A branch close to the end: no single direction.
             return None;
         }
-        far = next[0];
         frontier = next;
     }
-    let (qx, qy) = at(far);
+    // Where the walk got to: the mean of its last step (one pixel or two
+    // side by side), so the direction does not depend on the order the
+    // neighbours are visited in.
+    let (qx, qy) = {
+        let (sx, sy) = frontier
+            .iter()
+            .map(|&i| at(i))
+            .fold((0.0, 0.0), |(a, b), (x, y)| (a + x, b + y));
+        (sx / frontier.len() as f64, sy / frontier.len() as f64)
+    };
     let (dx, dy) = (px - qx, py - qy);
     let len = dx.hypot(dy);
     if len < 1.5 {
@@ -507,6 +518,11 @@ pub fn measure(font: &Font, glyph: GlyphId, master: MasterId) -> Result<StyleMea
         .filter(|&i| root[i] >= TERMINAL_MIN_RATIO * half_px)
         .collect();
     let terminal_radius = terminals.iter().map(|&i| dist[i] / ppu).reduce(f64::max);
+    let terminal_radius_median = {
+        let mut radii: Vec<f64> = terminals.iter().map(|&i| dist[i] / ppu).collect();
+        radii.sort_by(f64::total_cmp);
+        (!radii.is_empty()).then(|| percentile(&radii, 0.5))
+    };
     let join_min = branches.iter().map(|&i| dist[i] / ppu).reduce(f64::min);
     let mut fills: Vec<f64> = terminals
         .iter()
@@ -519,6 +535,7 @@ pub fn measure(font: &Font, glyph: GlyphId, master: MasterId) -> Result<StyleMea
         stroke_p10: percentile(&thickness, 0.1),
         stroke_p90: percentile(&thickness, 0.9),
         terminal_radius,
+        terminal_radius_median,
         join_min,
         terminal_fill,
     })

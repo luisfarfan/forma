@@ -718,21 +718,7 @@ pub fn trace_groups(
             )
         };
         let mut best: Option<Outcome> = None;
-        let allowance = Allowance {
-            fit_px: if hard || opts.fidelity == Fidelity::Clean {
-                THRESHOLDS.fit_clean_px
-            } else {
-                THRESHOLDS.fit_faithful_px
-            },
-            min_feature_px: if hard {
-                THRESHOLDS.feature_width_hard_px
-            } else {
-                THRESHOLDS.feature_width_px
-            },
-            // Coordinates are rounded to whole font units: half a unit, in
-            // image pixels, is beyond what any outline can follow.
-            grid_px: 0.5 / ink.scale,
-        };
+        let allowance = allowance_for(opts, hard, ink.scale);
         let mut last_error = None;
         for attempt in attempts(opts, hard) {
             // An attempt that cannot be traced or judged is a failed
@@ -815,6 +801,88 @@ pub fn trace_groups(
         });
     }
     Ok(out)
+}
+
+/// What a glyph is judged with besides the thresholds (see [`Allowance`]).
+fn allowance_for(opts: &TraceOptions, hard: bool, scale: f64) -> Allowance {
+    Allowance {
+        fit_px: if hard || opts.fidelity == Fidelity::Clean {
+            THRESHOLDS.fit_clean_px
+        } else {
+            THRESHOLDS.fit_faithful_px
+        },
+        min_feature_px: if hard {
+            THRESHOLDS.feature_width_hard_px
+        } else {
+            THRESHOLDS.feature_width_px
+        },
+        // Coordinates are rounded to whole font units: half a unit, in image
+        // pixels, is beyond what any outline can follow.
+        grid_px: 0.5 / scale,
+    }
+}
+
+/// Judges `paths` (font units, placed by `placement` like a traced glyph of
+/// `group`) against the group's ink with the quality gates of the tracer:
+/// for calibrating the gates on known defects, and for checking an outline
+/// edited after tracing. The failures are `report.failures(&THRESHOLDS)`.
+///
+/// # Errors
+///
+/// As [`trace_groups`].
+pub fn assess(
+    image: &RgbImage,
+    opts: &TraceOptions,
+    group: &[usize],
+    cap_height_units: f64,
+    placement: &Placement,
+    paths: &[Path],
+) -> Result<QualityReport, TraceError> {
+    assess_batch(image, opts, cap_height_units, &[(group, placement, paths)])?
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| Err(TraceError::Vectorize("nothing to assess".into())))
+}
+
+/// [`assess`] for several outlines of one image, which is analyzed once.
+/// Each outline gets its own result.
+///
+/// # Errors
+///
+/// The image's own errors (decoding, analysis, a bad cap height); an
+/// outline's errors are in its result.
+pub fn assess_batch(
+    image: &RgbImage,
+    opts: &TraceOptions,
+    cap_height_units: f64,
+    items: &[(&[usize], &Placement, &[Path])],
+) -> Result<Vec<Result<QualityReport, TraceError>>, TraceError> {
+    check_cap_height(cap_height_units)?;
+    let prepared = prepare(image, opts)?;
+    Ok(items
+        .iter()
+        .map(|&(group, placement, paths)| {
+            for &index in group {
+                check_index(&prepared.analysis, index)?;
+            }
+            let ink = group_ink(&prepared, group, cap_height_units)?;
+            let field = own_field(&prepared, &ink);
+            let reference = isolines(&field, opts.isoline as f32);
+            let hard = edge_softness(&field, opts.isoline as f32) < SOFT_EDGES;
+            let to = ToPixels {
+                scale: placement.scale,
+                lsb: placement.lsb,
+                origin: placement.origin_px,
+            };
+            quality::evaluate(
+                &reference,
+                paths,
+                &to,
+                &THRESHOLDS,
+                allowance_for(opts, hard, ink.scale),
+            )
+        })
+        .collect())
 }
 
 /// How bad an attempt that fails is, to keep the least bad when none
