@@ -226,7 +226,7 @@ Todos están automatizados en la CI de los 3 SO, salvo el 8, que es la demo manu
 
 ---
 
-## Hito 2.5 — De una imagen a una fuente con mínima intervención de IA  ← **hito en curso**
+## Hito 2.5 — De una imagen a una fuente con mínima intervención de IA  ← **implementado en la rama `hito2-5`; pendiente de CI en los 3 SO y de las decisiones del responsable (`docs/qa/hito2-5/README.md`)**
 
 > Diseño vinculante: `docs/superpowers/specs/2026-10-18-hito2-5-imagen-a-fuente-autonoma-design.md` (aprobado con ajustes el 2026-10-18). Plan: `docs/superpowers/plans/2026-10-18-hito2-5-imagen-a-fuente-autonoma.md`. ADR 0010. Rama `hito2-5`.
 

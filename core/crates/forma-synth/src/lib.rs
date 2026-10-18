@@ -243,7 +243,7 @@ pub fn synthesize(
             None => {
                 let reason = match &best {
                     Some(s) => format!(
-                        "no strategy reached the style score {min_score:.2} (best {:.2}{}{})",
+                        "no strategy reached the style score {min_score:.2} (best {:.3}{}{})",
                         s.total,
                         if s.reasons.is_empty() { "" } else { ": " },
                         s.reasons.join("; ")
@@ -280,14 +280,31 @@ fn judge_built(
     strategy: &Strategy,
     built: &dress::Built,
 ) -> StyleScore {
-    let mut s = score::score_with(
-        font,
-        kit,
-        recipe,
-        strategy,
-        &built.paths,
-        built.width_factor,
-    );
+    // The stroke the glyph should have: that of the glyphs it is made from
+    // when it reuses some (mirrored or rotated, they keep their weight),
+    // else the font's, as the contrast thickens or thins the skeleton.
+    let source_strokes: Vec<f64> = built
+        .sources
+        .iter()
+        .filter_map(|id| forma_trace::measure(font, *id, kit.master).ok())
+        .map(|m| m.stroke_median)
+        .filter(|w| *w > 0.0)
+        .collect();
+    let wanted = if strategy.parts.is_empty() || source_strokes.is_empty() {
+        let weight = if strategy.strokes.is_empty() {
+            1.0
+        } else {
+            let mut w: Vec<f64> = strategy.strokes.iter().map(|k| k.w).collect();
+            w.sort_by(f64::total_cmp);
+            w[w.len() / 2]
+        };
+        kit.stroke * weight * built.width_factor
+    } else {
+        let mut w = source_strokes;
+        w.sort_by(f64::total_cmp);
+        w[w.len() / 2]
+    };
+    let mut s = score::score_with(font, kit, recipe, strategy, &built.paths, Some(wanted));
     let merged = built.structure != built.expected;
     if merged {
         s.reasons.push(format!(
@@ -301,16 +318,24 @@ fn judge_built(
     } else {
         1.0
     });
-    // A drawing whose own letters the skeletons do not reproduce (serifs,
-    // tapers, irregular strokes): what they draw needs a person's look,
+    // A drawing whose own letters the skeletons do not reproduce: what they
+    // draw, or what is made from glyphs they drew, needs a person's look,
     // however well it scores.
-    if strategy.parts.is_empty()
+    let from_skeletons = strategy.parts.is_empty()
+        || built.sources.iter().any(|id| {
+            font.glyphs.get(id).is_some_and(|g| {
+                g.provenance
+                    .as_ref()
+                    .is_none_or(|p| p.source != forma_model::Source::Traced)
+            })
+        });
+    if from_skeletons
         && let Some(r) = kit.reproduction
         && r < SELF_TEST_MIN
     {
         s.reasons.push(format!(
-            "skeletons match this drawing's letters at {r:.2} only (serifs, tapers or irregular \
-             strokes are not drawn)"
+            "skeletons match this drawing's own letters at {r:.2} only: what they draw may not \
+             follow its style"
         ));
     }
     s

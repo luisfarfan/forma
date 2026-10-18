@@ -121,20 +121,21 @@ pub fn score(
     strategy: &Strategy,
     paths: &[Path],
 ) -> StyleScore {
-    score_with(font, kit, recipe, strategy, paths, 1.0)
+    score_with(font, kit, recipe, strategy, paths, None)
 }
 
-/// [`score`] for a glyph whose strokes the contrast thickens or thins by
-/// `width_factor` (see `dress::Built::width_factor`): a figure 1 of
-/// vertical strokes is as heavy as the font's verticals, not as its
-/// median stroke.
+/// [`score`] with the stroke the glyph should have, when it is not the
+/// font's typical stroke times the strategy's weight: a figure 1 of
+/// vertical strokes in a font with contrast is as heavy as its verticals,
+/// and a glyph derived from others (a `]` from a `[`) as heavy as they
+/// are.
 pub(crate) fn score_with(
     font: &Font,
     kit: &StyleKit,
     recipe: &Recipe,
     strategy: &Strategy,
     paths: &[Path],
-    width_factor: f64,
+    wanted_stroke: Option<f64>,
 ) -> StyleScore {
     let skeleton = strategy.parts.is_empty();
     let weight = if skeleton && !strategy.strokes.is_empty() {
@@ -187,7 +188,7 @@ pub(crate) fn score_with(
             Some(s)
         }
         (Some(m), true) if m.stroke_median > 0.0 => {
-            let wanted = kit.stroke * weight * width_factor;
+            let wanted = wanted_stroke.unwrap_or(kit.stroke * weight);
             let z =
                 (m.stroke_median - wanted).abs() / kit.stroke_spread.max(SPREAD_FLOOR * kit.stroke);
             let s = (-(z - 1.0).max(0.0)).exp();

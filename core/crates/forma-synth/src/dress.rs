@@ -486,7 +486,7 @@ fn dress(
     }
     let flat = !hairline && kit.flat_ends();
     let cap = if flat { Cap::Flat } else { Cap::Round };
-    let mut factors: Vec<f64> = Vec::new();
+    let mut factors: Vec<(f64, f64)> = Vec::new();
     let mut dot_reach: f64 = 0.0;
     let mut stroke_reach: f64 = 0.0;
     let mut skeleton_box = (
@@ -529,13 +529,23 @@ fn dress(
             }
         };
         if !hairline {
-            factors.extend(
-                nodes
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (_, kind))| *kind != NodeKind::OffCurve)
-                    .map(|(i, _)| width(i) / base),
-            );
+            // The width between two on-curve nodes changes linearly along
+            // the stroke: each stretch counts with its length, as the
+            // stroke's ridge is measured along its length.
+            let on: Vec<(Point, f64)> = nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, kind))| *kind != NodeKind::OffCurve)
+                .map(|(i, (p, _))| (*p, width(i) / base))
+                .collect();
+            let pairs = on.len().saturating_sub(1) + usize::from(closed && on.len() > 1);
+            for k in 0..pairs {
+                let (a, b) = (on[k], on[(k + 1) % on.len()]);
+                factors.push(((a.1 + b.1) / 2.0, (b.0 - a.0).hypot()));
+            }
+            if on.len() == 1 {
+                factors.push((on[0].1, 1.0));
+            }
         }
         let skel = Skeleton {
             nodes: nodes
@@ -635,8 +645,17 @@ fn dress(
     for (k, p) in placed.iter_mut().enumerate() {
         p.id = PathId(k as u32);
     }
-    factors.sort_by(f64::total_cmp);
-    let width_factor = factors.get(factors.len() / 2).copied().unwrap_or(1.0);
+    // The length-weighted median of the stretches' widths.
+    factors.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let total: f64 = factors.iter().map(|(_, len)| len).sum();
+    let mut run = 0.0;
+    let width_factor = factors
+        .iter()
+        .find(|(_, len)| {
+            run += len;
+            run >= total / 2.0
+        })
+        .map_or(1.0, |(w, _)| *w);
     Ok(Some(Drawn {
         paths: placed,
         sources,

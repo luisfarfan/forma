@@ -258,3 +258,39 @@ Aditivo:
 - `strategy` en la procedencia sintetizada.
 
 `sources` de la procedencia sintetizada pasa de `GlyphId` a nombre. Ese campo solo existe en esta rama (el formato v3 no está publicado).
+
+## Re-revisión del bloque E (2026-10-18, sobre fc4b600)
+
+- **Fidelidad (C1): aprobada.** El revisor probó 957 variantes nuevas:
+  - tamaños de 60 a 1900 px;
+  - ranuras en el borde de la ventana;
+  - diagonales de 10° a 60°;
+  - muescas y protuberancias en curvas;
+  - todos los modos de tolerancia.
+
+  Lo que no se marca es lo que el diseño admite: una desviación no más profunda que el presupuesto de ajuste. `slit_1px` marca ahora su O, un verdadero positivo que la exención anterior ocultaba.
+- **Resuelto también:** C2, C3a, C3b, C3d, I1a, I1b, I2, I3 e I4.
+
+**Correcciones de esta ronda:**
+
+61. **(N5, importante) Glifos derivados en fuentes de contraste.** Un `]` hecho de un `[`, un `¡` de un `!` o un `$` de una S se rechazaban por peso. Ahora:
+    - **Peso de los derivados:** se juzga contra el trazo medido de los glifos de los que se derivan, que reflejados o girados conservan su peso.
+    - **Peso de los dibujados por esqueleto:** se juzga contra el trazo de la fuente por el factor de contraste del vestido, como mediana ponderada por la longitud de cada tramo (antes, mediana de nodos: en una elipse elegía las verticales gruesas).
+    - **Resultado en EB Garamond 200 px:** 49 glifos hechos (antes 46), y solo `+ *` y la tilde corrupta piden diseño.
+62. **(N2 y N3) Aviso de la autoprueba:**
+    - **Texto neutral:** «skeletons match this drawing's own letters at X only: what they draw may not follow its style». Ya no afirma que haya remates: el specimen da 0,84 porque solo tiene H y O, y el sobrepasado de la O cuenta como diferencia.
+    - **Alcance:** se aplica también a los glifos derivados de glifos dibujados por esqueleto (un `9` de un `6`, un `)` de un `(`).
+63. **(N6) Precisión del motivo:** la puntuación del motivo de rechazo se escribe con tres decimales, para que «best 0,750» no parezca un aprobado.
+64. **(C3c) Tilde:** la receta es más ancha y ligera (0,46 × 0,20 alturas de mayúscula, 0,75 trazos). En fuentes de trazo pesado, la de 0,36 × 0,16 salía como un gancho aplastado.
+65. **(N4) Límite conocido:** un par de kerning entre dos glifos que la llamada vuelve a trazar se recalcula, aunque lo haya escrito el usuario. El kerning no lleva procedencia, de modo que un par del usuario y uno de una corrida anterior no se distinguen.
+
+    Los pares del usuario con cualquier glifo que la llamada no hace se conservan. Corrige el alcance de 45 y 54.
+66. **Límites conocidos:**
+    - **N1:** en glifos de unos 1900 px y con una cuadrícula grande, un defecto apenas más profundo que el presupuesto puede descartarse antes de la nueva medición a resolución completa.
+    - **I1c:** la medida de finales sigue variando con la orientación, ahora dentro de una tolerancia más ancha. Algunos pares reflejados divergen.
+    - **I6:** comillas y puntos suspensivos muy anchos en fuentes muy pesadas solo se marcan como «sin puntuar».
+
+### Contrato `tools/list` (N7, notas completas del bloque E)
+
+- **`style_extract.kit` (aditivo):** `reproduction`, `stroke_spread`, `terminal_fill_range` y `color_range`. `spread` cambia de definición: ahora es solo el contraste.
+- **`preview_sheet` (resumen de imagen, sin esquema):** la atención por celda pasa de textos a índices de `reasons`, con `attention_more`. Ese resumen solo existe en esta rama.
