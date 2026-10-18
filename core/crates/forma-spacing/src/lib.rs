@@ -23,7 +23,7 @@ mod kerning;
 mod profile;
 mod spacing;
 
-pub use collision::{Collision, MAX_CHECK_PAIRS, collisions};
+pub use collision::{Collision, MAX_CHECK_PAIRS, collisions, collisions_among};
 pub use error::SpacingError;
 pub use kerning::{
     KerningParams, KerningPlan, MAX_KERNING_GLYPHS, PlannedGroup, PlannedPair, PlannedRef,

@@ -10,7 +10,7 @@ use forma_model::{
 };
 use forma_spacing::{
     KerningParams, KerningPlan, PlannedRef, SpacingError, SpacingParams, auto_kerning,
-    auto_spacing, collisions,
+    auto_spacing, collisions, collisions_among,
 };
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
@@ -394,6 +394,76 @@ fn errors() {
     let (m, o) = (master(&font), id(&font, "O"));
     let err = auto_kerning(&font, m, &[o], &KerningParams::default()).unwrap_err();
     assert!(matches!(err, SpacingError::MissingReference(_)), "{err}");
+}
+
+/// `.notdef` taller than every other glyph sets the sampling grid of the
+/// guard (it is sampled, though never kerned): the check must use the same
+/// grid, so a plan checked at the guard's distance finds nothing.
+#[test]
+fn a_tall_notdef_shares_its_grid_with_the_check() {
+    let mut font = fixture_with_v();
+    let m = master(&font);
+    let notdef = id(&font, ".notdef");
+    {
+        let glyphs = std::sync::Arc::make_mut(&mut font.glyphs);
+        let glyph = std::sync::Arc::make_mut(glyphs.get_mut(&notdef).expect("notdef"));
+        glyph.layers.get_mut(&m).expect("layer").paths = forma_geometry::paths_from_svg(
+            "M50 -300 L450 -300 L450 1000 L50 1000 Z",
+            forma_geometry::CoordinateSystem::Font,
+        )
+        .expect("svg");
+    }
+    let glyphs = inked(&font);
+    // Strong kerning makes the guard bind on round pairs (OO), where the
+    // sampling grid matters: checked on the grid of the pairs alone (plain
+    // `collisions`) OO reads 19.7 against the guard's 20.
+    let params = KerningParams {
+        strength: 3.0,
+        max_ratio: 0.5,
+        ..KerningParams::default()
+    };
+    let plan = auto_kerning(&font, m, &glyphs, &params).expect("plan");
+    apply(&mut font, m, &plan);
+    // `.notdef` is not kerned: none of the plan's pairs names it.
+    assert!(
+        plan.pairs
+            .iter()
+            .all(|p| p.first != PlannedRef::Glyph(notdef) && p.second != PlannedRef::Glyph(notdef))
+    );
+    let kerned: Vec<GlyphId> = glyphs.iter().copied().filter(|g| *g != notdef).collect();
+    let found = collisions_among(&font, m, &glyphs, &all_pairs(&kerned), 20.0).expect("check");
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_reference_with_ink_but_no_stem_is_not_called_inkless() {
+    let mut font = Font::new("T", 1000);
+    font.masters[0].metrics.cap_height = 700.0;
+    // H has ink, but only near the baseline: nothing in the middle half of
+    // the cap height, where the stem is measured.
+    let h = add_svg_glyph(&mut font, "H", 700.0, "M80 0 L160 0 L160 100 L80 100 Z");
+    add_svg_glyph(&mut font, "O", 700.0, "M80 0 L600 0 L600 700 L80 700 Z");
+    let m = master(&font);
+    let error = auto_kerning(&font, m, &[h], &KerningParams::default()).unwrap_err();
+    assert!(
+        matches!(&error, SpacingError::MissingReference(text)
+            if text.contains("no vertical stem") && !text.contains("no ink")),
+        "{error}"
+    );
+    let error = auto_spacing(&font, m, &[h], &SpacingParams::default()).unwrap_err();
+    assert!(
+        matches!(&error, SpacingError::MissingReference(text) if text.contains("no vertical stem")),
+        "{error}"
+    );
+    // A reference without ink at all keeps its own message.
+    let mut font = Font::new("T", 1000);
+    let h = common::add_glyph(&mut font, "H", 700.0, Vec::new(), Vec::new());
+    add_svg_glyph(&mut font, "O", 700.0, "M80 0 L600 0 L600 700 L80 700 Z");
+    let error = auto_kerning(&font, master(&font), &[h], &KerningParams::default()).unwrap_err();
+    assert!(
+        matches!(&error, SpacingError::MissingReference(text) if text.contains("no ink")),
+        "{error}"
+    );
 }
 
 #[test]

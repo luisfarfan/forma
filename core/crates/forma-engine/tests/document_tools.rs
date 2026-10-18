@@ -108,6 +108,12 @@ fn registry_order_and_names_match_spec() {
         "glyph_decompose",
         "glyph_stroke",
         "remove_overlap",
+        "spacing_auto",
+        "kerning_get",
+        "kerning_set",
+        "kerning_auto",
+        "kerning_check",
+        "charset_check",
     ];
     let names: Vec<&str> = registry().iter().map(|spec| spec.name).collect();
     assert_eq!(names, expected);
@@ -185,6 +191,12 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "glyph_decompose",
         "glyph_stroke",
         "remove_overlap",
+        "spacing_auto",
+        "kerning_get",
+        "kerning_set",
+        "kerning_auto",
+        "kerning_check",
+        "charset_check",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");
@@ -244,6 +256,9 @@ fn toolsets_effects_and_outputs_match_rulings() {
             "component_set" | "glyph_compose" | "glyph_decompose" => Components,
             "glyph_stroke" => Glyphs,
             "remove_overlap" => Geometry,
+            "spacing_auto" => Spacing,
+            "kerning_get" | "kerning_set" | "kerning_auto" | "kerning_check" => Kerning,
+            "charset_check" => Quality,
             other => panic!("unexpected tool {other}"),
         }
     };
@@ -262,6 +277,9 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "preview_compare",
         "history_list",
         "document_diff",
+        "kerning_get",
+        "kerning_check",
+        "charset_check",
     ];
     // Every tool that can require approval for being destructive (MCP's
     // "may perform destructive updates"); the engine enforces approvals
@@ -279,6 +297,8 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "history_restore",
         "component_set",
         "glyph_stroke",
+        "kerning_set",
+        "kerning_auto",
     ];
     let images = ["preview_glyph", "preview_text", "preview_compare"];
     for spec in registry() {
@@ -414,7 +434,8 @@ fn capabilities_report_limits() {
             "export",
             "preview",
             "history",
-            "components"
+            "components",
+            "kerning"
         ])
     );
     assert_eq!(
@@ -517,7 +538,7 @@ fn read_only_mode_allows_closing_documents() {
 fn toolsets_can_be_disabled() {
     let root = TempDir::new().expect("tempdir");
     let all = engine_with(&[root.path()]);
-    assert_eq!(all.enabled_specs().len(), 40);
+    assert_eq!(all.enabled_specs().len(), 46);
     assert_eq!(all.enabled_toolsets(), Toolset::ALL.to_vec());
 
     let mut engine = Engine::new(EngineConfig {

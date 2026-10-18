@@ -414,7 +414,9 @@ fn median(values: &mut [f64]) -> f64 {
 /// The plan assumes it replaces the master's kerning for these glyphs:
 /// applied to a master without other pairs or groups for them, each
 /// glyph pair gets exactly the kern described. Glyphs without ink and
-/// `.notdef` (never typeset on purpose) are left out. The result is deterministic: it does not depend on the order of
+/// `.notdef` (never typeset on purpose) are left out, though `.notdef` still
+/// counts for the sampling grid (see [`collisions_among`](crate::collisions_among)).
+/// The result is deterministic: it does not depend on the order of
 /// `glyphs` or on duplicates in it.
 ///
 /// # Errors
@@ -448,16 +450,14 @@ pub fn auto_kerning(
         .cap_height;
     let mut seen = HashSet::new();
     let distinct: Vec<GlyphId> = glyphs.iter().copied().filter(|g| seen.insert(*g)).collect();
-    // `.notdef` stands in for missing characters: it is never kerned.
+    // `.notdef` stands in for missing characters: it is never kerned, but it
+    // is sampled with the rest so that the guard and a later
+    // `collisions_among` check on the same list share one grid.
     let notdef = font.glyph_by_name(NOTDEF).map(|glyph| glyph.id);
-    let distinct: Vec<GlyphId> = distinct
-        .into_iter()
-        .filter(|g| Some(*g) != notdef)
-        .collect();
-    if distinct.len() > MAX_KERNING_GLYPHS {
+    let kerned_count = distinct.iter().filter(|g| Some(**g) != notdef).count();
+    if kerned_count > MAX_KERNING_GLYPHS {
         return Err(SpacingError::InvalidParameter(format!(
-            "at most {MAX_KERNING_GLYPHS} glyphs can be kerned at once, got {}",
-            distinct.len()
+            "at most {MAX_KERNING_GLYPHS} glyphs can be kerned at once, got {kerned_count}"
         )));
     }
     let upm = f64::from(font.units_per_em);
@@ -471,7 +471,15 @@ pub fn auto_kerning(
         .glyph_by_name(REFERENCE)
         .map(|glyph| glyph.id)
         .ok_or_else(no_ink)?;
-    let stem = stem_width(&h_outline, cap_height, params.lines).ok_or_else(no_ink)?;
+    if h_outline.bbox.is_none() {
+        return Err(no_ink());
+    }
+    let stem = stem_width(&h_outline, cap_height, params.lines).ok_or_else(|| {
+        SpacingError::MissingReference(format!(
+            "glyph {REFERENCE} has ink but no vertical stem could be measured in the middle \
+             half of the cap height (is cap_height set for this master?)"
+        ))
+    })?;
     let measure = Measure {
         grid,
         zone: measurement_zone(font, master),
@@ -485,7 +493,7 @@ pub fn auto_kerning(
 
     // The glyphs with ink, in name order.
     let mut kerned_glyphs = Vec::new();
-    for id in distinct {
+    for id in distinct.into_iter().filter(|g| Some(*g) != notdef) {
         if let Some(outline) = outlines.remove(&id)
             && let Some(glyph) = kerned(font, master, id, outline, grid)?
         {

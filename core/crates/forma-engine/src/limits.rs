@@ -36,7 +36,8 @@ pub struct Limits {
     pub max_nodes: usize,
     /// The largest text argument, in bytes.
     pub max_text_bytes: usize,
-    /// Operations affecting more glyphs than this need an approved plan.
+    /// Operations affecting more entities than this (glyphs, kerning pairs and
+    /// kerning groups, counted together) need an approved plan.
     pub mass_threshold: usize,
     /// Lifetime of a plan token, in seconds.
     pub plan_ttl_secs: u64,

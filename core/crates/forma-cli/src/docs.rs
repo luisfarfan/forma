@@ -186,6 +186,9 @@ const fn toolset_summary(toolset: Toolset) -> &'static str {
         Toolset::Components => {
             "Componentes: fijarlos, componer glifos con marcas y descomponerlos."
         }
+        Toolset::Kerning => {
+            "Kerning: leer, fijar, calcular automáticamente y comprobar grupos y pares."
+        }
         // `Toolset` is `#[non_exhaustive]`: a new one shows up without text
         // until it is written here.
         _ => "",

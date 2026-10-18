@@ -94,9 +94,9 @@ pub(crate) const REVERT: CommandSpec = CommandSpec {
          actor, as a new undoable transaction: the entities it touched go back to their values \
          before it. It fails with REVISION_CONFLICT if any of them changed since. A revert \
          that deletes a glyph, replaces or empties a drawn layer, replaces components, removes \
-         a kerning pair or group, or touches more than 20 glyphs, kerning pairs and groups may \
-         require approval depending on the server policy (APPROVAL_REQUIRED with a plan to \
-         confirm); with `dry_run: true` the call only returns the plan.",
+         a kerning pair or group, or touches more than 20 entities (glyphs, kerning pairs or \
+         groups) may require approval depending on the server policy (APPROVAL_REQUIRED with a \
+         plan to confirm); with `dry_run: true` the call only returns the plan.",
         base_rev_note!()
     ),
     toolset: Toolset::History,

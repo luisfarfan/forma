@@ -10,6 +10,8 @@ description = "FORMA command registry, document lifecycle and path sandbox share
 forma-model = { path = "../forma-model" }
 forma-edit = { path = "../forma-edit" }
 forma-geometry = { path = "../forma-geometry" }
+# spacing_auto, kerning_auto and kerning_check.
+forma-spacing = { path = "../forma-spacing" }
 forma-store = { path = "../forma-store" }
 # validate, export_font and the previews.
 forma-validate = { path = "../forma-validate" }

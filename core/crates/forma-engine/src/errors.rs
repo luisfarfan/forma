@@ -9,6 +9,7 @@ use forma_geometry::GeometryError;
 use forma_interop::InteropError;
 use forma_model::{EntityKey, Font, GlyphId, KernRef, KerningGroupId, Rev};
 use forma_render::RenderError;
+use forma_spacing::SpacingError;
 use forma_store::StoreError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -187,6 +188,29 @@ pub fn from_stroke_error(error: GeometryError) -> ToolError {
         GeometryError::Degenerate(_) => {
             ToolError::new(ErrorCode::InvalidGeometry, error.to_string())
         }
+    }
+}
+
+/// Maps a [`SpacingError`] of the spacing and kerning functions onto a
+/// [`ToolError`]:
+///
+/// | `SpacingError`     | code               | why                                         |
+/// |--------------------|--------------------|---------------------------------------------|
+/// | `InvalidParameter` | `INVALID_ARGUMENT` | an argument is out of range                 |
+/// | `MissingReference` | `INVALID_ARGUMENT` | `H`/`O` is missing or has no ink: the call  |
+/// |                    |                    | is valid, the font cannot be measured as is |
+/// | `MissingLayer`     | `INVALID_ARGUMENT` | a listed glyph has no layer in the master   |
+/// | `Geometry`         | `INVALID_GEOMETRY` | an outline cannot be expanded               |
+///
+/// The glyphs and masters of a call are resolved before the functions run,
+/// so none of these is a missing handle (`NOT_FOUND`): they are preconditions
+/// on the font, which the caller fixes by drawing the reference glyph or
+/// choosing other glyphs.
+#[must_use]
+pub fn from_spacing_error(error: SpacingError) -> ToolError {
+    match error {
+        SpacingError::Geometry(_) => ToolError::new(ErrorCode::InvalidGeometry, error.to_string()),
+        _ => ToolError::invalid_argument(error.to_string()),
     }
 }
 
@@ -449,6 +473,27 @@ mod tests {
                 "message": "unknown document handle",
                 "details": null
             }))
+        );
+    }
+
+    #[test]
+    fn spacing_errors_map_to_codes() {
+        let code = |error| from_spacing_error(error).code;
+        assert_eq!(
+            code(SpacingError::InvalidParameter("x".into())),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            code(SpacingError::MissingReference("x".into())),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            code(SpacingError::MissingLayer("x".into())),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            code(SpacingError::Geometry("x".into())),
+            ErrorCode::InvalidGeometry
         );
     }
 

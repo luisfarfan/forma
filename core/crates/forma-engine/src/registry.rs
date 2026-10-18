@@ -13,8 +13,8 @@ use forma_model::Actor;
 use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::tools::{
-    capabilities, components, document, edit_batch, export, font, geometry, glyphs, history,
-    metrics, outlines, plans, preview, quality, stroke,
+    capabilities, charset, components, document, edit_batch, export, font, geometry, glyphs,
+    history, kerning, metrics, outlines, plans, preview, quality, stroke,
 };
 
 /// A group of related tools that a facade can enable or disable together.
@@ -41,11 +41,13 @@ pub enum Toolset {
     History,
     /// Components: setting, composing and decomposing.
     Components,
+    /// Kerning: reading, setting, computing and checking groups and pairs.
+    Kerning,
 }
 
 impl Toolset {
     /// Every toolset, in the order the registry introduces them.
-    pub const ALL: [Toolset; 9] = [
+    pub const ALL: [Toolset; 10] = [
         Self::Core,
         Self::Glyphs,
         Self::Geometry,
@@ -55,6 +57,7 @@ impl Toolset {
         Self::Preview,
         Self::History,
         Self::Components,
+        Self::Kerning,
     ];
 
     /// The serialized name, such as `"core"`.
@@ -70,6 +73,7 @@ impl Toolset {
             Self::Preview => "preview",
             Self::History => "history",
             Self::Components => "components",
+            Self::Kerning => "kerning",
         }
     }
 }
@@ -162,7 +166,7 @@ pub struct CommandSpec {
 }
 
 /// Every command, in the exact registration order of the public API.
-static REGISTRY: [CommandSpec; 40] = [
+static REGISTRY: [CommandSpec; 46] = [
     // core
     capabilities::SPEC,
     document::CREATE,
@@ -212,6 +216,13 @@ static REGISTRY: [CommandSpec; 40] = [
     components::DECOMPOSE,
     stroke::SPEC,
     geometry::REMOVE_OVERLAP,
+    // spacing, kerning and character set (Hito 2)
+    metrics::AUTO,
+    kerning::GET,
+    kerning::SET,
+    kerning::AUTO,
+    kerning::CHECK,
+    charset::CHECK,
 ];
 
 /// Every command, in the exact registration order of the public API.

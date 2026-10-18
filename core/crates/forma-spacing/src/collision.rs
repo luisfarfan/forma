@@ -197,6 +197,27 @@ pub fn collisions(
     pairs: &[(GlyphId, GlyphId)],
     min_distance: f64,
 ) -> Result<Vec<Collision>, SpacingError> {
+    collisions_among(font, master, &[], pairs, min_distance)
+}
+
+/// [`collisions`] with the sampling grid chosen from the tallest of
+/// `grid_glyphs` as well as of the glyphs in `pairs`.
+///
+/// [`auto_kerning`](crate::auto_kerning) chooses its grid from every glyph it
+/// is given, `.notdef` included, though it never kerns `.notdef`. To check a
+/// plan on that same grid, pass the same glyph list as `grid_glyphs` and the
+/// pairs without `.notdef`: the guard and the check then sample alike.
+///
+/// # Errors
+///
+/// As [`collisions`], also for a glyph of `grid_glyphs`.
+pub fn collisions_among(
+    font: &Font,
+    master: MasterId,
+    grid_glyphs: &[GlyphId],
+    pairs: &[(GlyphId, GlyphId)],
+    min_distance: f64,
+) -> Result<Vec<Collision>, SpacingError> {
     if pairs.len() > MAX_CHECK_PAIRS {
         return Err(SpacingError::InvalidParameter(format!(
             "at most {MAX_CHECK_PAIRS} pairs can be checked at once, got {}",
@@ -211,7 +232,10 @@ pub fn collisions(
     let (_, samples) = sample_glyphs(
         font,
         master,
-        pairs.iter().flat_map(|&(left, right)| [left, right]),
+        grid_glyphs
+            .iter()
+            .copied()
+            .chain(pairs.iter().flat_map(|&(left, right)| [left, right])),
     )?;
     let mut found = Vec::new();
     for &(left, right) in pairs {

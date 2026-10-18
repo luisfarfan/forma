@@ -654,7 +654,7 @@ fn relative_paths_with_dotdot_resolve_against_cwd() {
 fn parity_every_registry_tool_is_callable() {
     let dir = temp();
     let tools = registry();
-    assert_eq!(tools.len(), 40);
+    assert_eq!(tools.len(), 46);
     for spec in tools {
         let assert = forma(dir.path())
             .args(["call", spec.name, "--args", "{}"])
@@ -781,12 +781,12 @@ fn mcp_stdout_is_protocol_only() {
     );
 
     // Every stdout line is JSON-RPC (checked by `run_mcp`), and the session
-    // worked: the handshake and the 40 tools.
+    // worked: the handshake and the 46 tools.
     assert_eq!(
         run.response(1)["result"]["serverInfo"]["name"],
         json!("forma")
     );
-    assert_eq!(run.tool_names().len(), 40);
+    assert_eq!(run.tool_names().len(), 46);
     assert_eq!(run.messages.len(), 2, "{:#?}", run.messages);
     // stderr is for logs only: the warning is there, and no protocol.
     assert!(run.stderr.contains("WARN"), "{}", run.stderr);
@@ -877,7 +877,7 @@ fn mcp_toolsets_always_include_core() {
 
     // Without the flag, everything.
     let all = run_mcp(dir.path(), &["--no-journal"], &opening());
-    assert_eq!(all.tool_names().len(), 40);
+    assert_eq!(all.tool_names().len(), 46);
 }
 
 #[test]

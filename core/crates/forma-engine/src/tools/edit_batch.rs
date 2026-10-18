@@ -28,7 +28,7 @@ use crate::tools::mutate::{
 };
 use crate::tools::plans::OrPlan;
 use crate::tools::steps::Steps;
-use crate::tools::{components, font, geometry, glyphs, metrics, outlines, stroke};
+use crate::tools::{components, font, geometry, glyphs, kerning, metrics, outlines, stroke};
 
 /// `edit_batch`.
 pub(crate) const SPEC: CommandSpec = CommandSpec {
@@ -36,16 +36,15 @@ pub(crate) const SPEC: CommandSpec = CommandSpec {
     title: "Edit in batch",
     description: concat!(
         "Apply several operations to `doc` atomically, as one undoable transaction with one \
-         new `rev`: all apply or none does. Each item of `ops` is \
-         {\"tool\", \"args\"}: `tool` is font_set_info, font_set_vertical_metrics, \
+         new `rev`. Each item of `ops` is {\"tool\", \"args\"}: `tool` is font_set_info, font_set_vertical_metrics, \
          glyph_create, glyph_update, glyph_delete, glyph_set_outline, contour_edit, \
          nodes_edit, metrics_set, geometry_fix, component_set, glyph_compose, glyph_decompose, \
-         glyph_stroke or remove_overlap, and `args` are that tool's arguments without \
-         `doc` and `base_rev`. Operations run in order, each on the result of the previous \
-         ones. A failing one is named by `details.op_index` (from 0). At most 2000 operations. \
-         A batch that destroys data (as glyph_delete does) or touches more than 20 glyphs may \
-         require approval depending on the server policy (APPROVAL_REQUIRED with a plan; with \
-         `dry_run: true` the call only returns the plan).",
+         glyph_stroke, remove_overlap or kerning_set, and `args` are that tool's arguments without \
+         `doc` and `base_rev`. Operations run in order, each on the previous result. A \
+         failing one is named by `details.op_index`. At most 2000 operations. \
+         A batch that destroys data (as glyph_delete does) or touches more than 20 entities \
+         (glyphs, kerning pairs or groups) may require approval depending on the server policy \
+         (APPROVAL_REQUIRED with a plan; with `dry_run: true` the call only returns the plan).",
         base_rev_note!()
     ),
     toolset: Toolset::Core,
@@ -122,6 +121,8 @@ pub enum BatchTool {
     GlyphStroke,
     /// `remove_overlap`.
     RemoveOverlap,
+    /// `kerning_set`.
+    KerningSet,
 }
 
 /// Parses `args` into a tool's own arguments and translates them.
@@ -158,6 +159,7 @@ fn translate(tool: BatchTool, font: &Font, args: &Value) -> Result<Translation, 
         }
         BatchTool::GlyphStroke => translate_with(font, args, stroke::glyph_stroke_commands),
         BatchTool::RemoveOverlap => translate_with(font, args, geometry::remove_overlap_commands),
+        BatchTool::KerningSet => translate_with(font, args, kerning::kerning_set_commands),
     }
 }
 
@@ -337,7 +339,8 @@ mod tests {
             "glyph_compose",
             "glyph_decompose",
             "glyph_stroke",
-            "remove_overlap"
+            "remove_overlap",
+            "kerning_set"
         ]))
         .expect("tool names");
         for tool in tools {

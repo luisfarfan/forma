@@ -292,7 +292,15 @@ pub fn auto_spacing(
     let no_ink = |name: &str| SpacingError::MissingReference(format!("glyph {name} has no ink"));
     let h_outline = reference(font, master, first)?;
     let o_outline = reference(font, master, second)?;
-    let stem = stem_width(&h_outline, cap_height, params.lines).ok_or_else(|| no_ink(first))?;
+    if h_outline.bbox.is_none() {
+        return Err(no_ink(first));
+    }
+    let stem = stem_width(&h_outline, cap_height, params.lines).ok_or_else(|| {
+        SpacingError::MissingReference(format!(
+            "glyph {first} has ink but no vertical stem could be measured in the middle half \
+             of the cap height (is cap_height set for this master?)"
+        ))
+    })?;
     let depth = params.depth_ratio * stem;
     let h_sides = sides_of(&h_outline, zone, params, depth).ok_or_else(|| no_ink(first))?;
     sides_of(&o_outline, zone, params, depth).ok_or_else(|| no_ink(second))?;

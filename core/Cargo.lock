@@ -1137,6 +1137,7 @@ dependencies = [
  "forma-interop",
  "forma-model",
  "forma-render",
+ "forma-spacing",
  "forma-store",
  "forma-validate",
  "getrandom 0.4.3",
