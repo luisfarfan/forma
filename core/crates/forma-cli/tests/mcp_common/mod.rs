@@ -112,6 +112,25 @@ pub async fn with_timeout<F: Future>(name: &str, test: F) -> F::Output {
     }
 }
 
+/// Like [`with_timeout`], with a longer `limit` for the heavier scenarios.
+pub async fn with_timeout_for<F: Future>(name: &str, limit: Duration, test: F) -> F::Output {
+    match tokio::time::timeout(limit, test).await {
+        Ok(output) => output,
+        Err(_) => panic!("{name} did not finish within {limit:?}"),
+    }
+}
+
+/// Copies the Milestone 2 specimen image (`tests/fixtures/hito2/specimen.png`
+/// at the root of the repository) into `root` as `name`; returns its path.
+pub fn copy_specimen(root: &Path, name: &str) -> PathBuf {
+    let from =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/hito2/specimen.png");
+    let to = root.join(name);
+    std::fs::copy(&from, &to)
+        .unwrap_or_else(|error| panic!("cannot copy {}: {error}", from.display()));
+    to
+}
+
 /// Spawns `forma mcp` on a fresh temporary root and connects the test client
 /// to it in `mode`. Checks the negotiated revision: 2025-06-18 for the legacy
 /// handshake, 2026-07-28 for discovery.
