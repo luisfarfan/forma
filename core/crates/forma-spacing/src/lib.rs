@@ -6,6 +6,8 @@
 //! * [`auto_spacing`] computes sidebearings that give every glyph the same
 //!   amount of white on each side as the reference `H` has with a margin of
 //!   `tightness ×` its stem width.
+//! * [`auto_kerning`] plans class kerning from the optical gaps of pairs,
+//!   with a collision guard.
 //! * [`collisions`] finds kerned pairs whose ink comes closer than a minimum
 //!   distance.
 //!
@@ -17,11 +19,16 @@
 
 mod collision;
 mod error;
+mod kerning;
 mod profile;
 mod spacing;
 
 pub use collision::{Collision, MAX_CHECK_PAIRS, collisions};
 pub use error::SpacingError;
+pub use kerning::{
+    KerningParams, KerningPlan, MAX_KERNING_GLYPHS, PlannedGroup, PlannedPair, PlannedRef,
+    auto_kerning,
+};
 pub use profile::{MAX_LINES, MIN_LINES, Profile, Zone, measurement_zone, profile};
 pub use spacing::{
     DEFAULT_DEPTH_RATIO, DEFAULT_EDGE_WEIGHT, Sidebearings, SpacingParams, auto_spacing,

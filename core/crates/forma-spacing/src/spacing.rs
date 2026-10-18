@@ -106,17 +106,19 @@ impl Sides {
     }
 }
 
-/// The weight of a line at each height of `ys`: `edge_weight + (1 −
+/// The weight of a line at height `y`: `edge_weight + (1 −
 /// edge_weight)·sin(π·t)`, with `t` the height's position in `zone`
 /// (clamped to `[0, 1]`), so the middle of the zone counts fully and its
 /// edges count `edge_weight`.
+pub(crate) fn line_weight(y: f64, zone: Zone, edge_weight: f64) -> f64 {
+    let t = ((y - zone.bottom) / (zone.top - zone.bottom)).clamp(0.0, 1.0);
+    edge_weight + (1.0 - edge_weight) * (std::f64::consts::PI * t).sin()
+}
+
+/// The weight of a line at each height of `ys` (see [`line_weight`]).
 fn line_weights(ys: &[f64], zone: Zone, edge_weight: f64) -> Vec<f64> {
-    let height = zone.top - zone.bottom;
     ys.iter()
-        .map(|y| {
-            let t = ((y - zone.bottom) / height).clamp(0.0, 1.0);
-            edge_weight + (1.0 - edge_weight) * (std::f64::consts::PI * t).sin()
-        })
+        .map(|&y| line_weight(y, zone, edge_weight))
         .collect()
 }
 
@@ -148,7 +150,7 @@ fn solve_margin(target: f64, depth: f64, range: (f64, f64)) -> f64 {
 
 /// The stem width of a glyph: the median width of the ink runs on the lines
 /// of the middle half of the cap height (centred on half the cap height).
-fn stem_width(outline: &Outline, cap_height: f64, lines: usize) -> Option<f64> {
+pub(crate) fn stem_width(outline: &Outline, cap_height: f64, lines: usize) -> Option<f64> {
     let band = Zone {
         bottom: 0.25 * cap_height,
         top: 0.75 * cap_height,
@@ -215,7 +217,11 @@ fn sides_of(outline: &Outline, zone: Zone, params: &SpacingParams, depth: f64) -
 }
 
 /// The outline of the reference glyph `name`.
-fn reference(font: &Font, master: MasterId, name: &str) -> Result<Outline, SpacingError> {
+pub(crate) fn reference(
+    font: &Font,
+    master: MasterId,
+    name: &str,
+) -> Result<Outline, SpacingError> {
     let glyph = font
         .glyph_by_name(name)
         .ok_or_else(|| SpacingError::MissingReference(format!("glyph {name} does not exist")))?;

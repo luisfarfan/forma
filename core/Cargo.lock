@@ -1223,6 +1223,7 @@ dependencies = [
  "forma-geometry",
  "forma-model",
  "kurbo",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",

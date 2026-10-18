@@ -57,7 +57,7 @@ impl Grid {
     }
 
     /// The height of line `k`.
-    fn y(self, k: i64) -> f64 {
+    pub(crate) fn y(self, k: i64) -> f64 {
         (k as f64 + 0.5) * self.step
     }
 }
@@ -82,7 +82,7 @@ impl InkSamples {
     }
 
     /// The extents on line `k`, if the glyph has ink there.
-    fn at(&self, k: i64) -> Option<(f64, f64)> {
+    pub(crate) fn at(&self, k: i64) -> Option<(f64, f64)> {
         let index = usize::try_from(k - self.first).ok()?;
         *self.extents.get(index)?
     }
@@ -92,14 +92,54 @@ impl InkSamples {
         self.first + self.extents.len() as i64
     }
 
+    /// The lines where both `left` and `right` may have ink.
+    pub(crate) fn shared_lines(left: &InkSamples, right: &InkSamples) -> std::ops::Range<i64> {
+        left.first.max(right.first)..left.end().min(right.end())
+    }
+
     /// The smallest horizontal distance between the ink of `left` and that
     /// of `right` placed `offset` units to its right, over the lines where
     /// both have ink; `None` if there is no such line.
     pub(crate) fn min_distance(left: &InkSamples, right: &InkSamples, offset: f64) -> Option<f64> {
-        (left.first.max(right.first)..left.end().min(right.end()))
+        InkSamples::shared_lines(left, right)
             .filter_map(|k| Some(offset + right.at(k)?.0 - left.at(k)?.1))
             .reduce(f64::min)
     }
+}
+
+/// The outline of every glyph of `glyphs`, each once.
+///
+/// # Errors
+///
+/// As [`collisions`]: a glyph that does not exist, has no layer in
+/// `master`, or cannot be expanded.
+pub(crate) fn load_outlines(
+    font: &Font,
+    master: MasterId,
+    glyphs: impl IntoIterator<Item = GlyphId>,
+) -> Result<HashMap<GlyphId, Outline>, SpacingError> {
+    let mut outlines: HashMap<GlyphId, Outline> = HashMap::new();
+    for glyph in glyphs {
+        if let Entry::Vacant(entry) = outlines.entry(glyph) {
+            layer(font, glyph, master)?;
+            entry.insert(Outline::of(font, glyph, master)?);
+        }
+    }
+    Ok(outlines)
+}
+
+/// The grid of a check of the glyphs whose outlines are `outlines`: chosen
+/// from the tallest of them.
+pub(crate) fn grid_for<'a>(
+    units_per_em: u16,
+    outlines: impl IntoIterator<Item = &'a Outline>,
+) -> Grid {
+    let tallest = outlines
+        .into_iter()
+        .filter_map(|outline| outline.bbox)
+        .map(|bbox| bbox.height())
+        .fold(0.0, f64::max);
+    Grid::new(units_per_em, tallest)
 }
 
 /// The samples of every glyph of `glyphs` (each once) on one grid chosen
@@ -115,19 +155,8 @@ pub(crate) fn sample_glyphs(
     master: MasterId,
     glyphs: impl IntoIterator<Item = GlyphId>,
 ) -> Result<(Grid, HashMap<GlyphId, Option<InkSamples>>), SpacingError> {
-    let mut outlines: HashMap<GlyphId, Outline> = HashMap::new();
-    for glyph in glyphs {
-        if let Entry::Vacant(entry) = outlines.entry(glyph) {
-            layer(font, glyph, master)?;
-            entry.insert(Outline::of(font, glyph, master)?);
-        }
-    }
-    let tallest = outlines
-        .values()
-        .filter_map(|outline| outline.bbox)
-        .map(|bbox| bbox.height())
-        .fold(0.0, f64::max);
-    let grid = Grid::new(font.units_per_em, tallest);
+    let outlines = load_outlines(font, master, glyphs)?;
+    let grid = grid_for(font.units_per_em, outlines.values());
     let samples = outlines
         .into_iter()
         .map(|(glyph, outline)| (glyph, InkSamples::new(&outline, grid)))
