@@ -72,3 +72,39 @@ fn too_many_pairs_is_an_error() {
     let err = collisions(&font, master(&font), &[(h, h)], f64::NAN).unwrap_err();
     assert!(matches!(err, SpacingError::InvalidParameter(_)), "{err}");
 }
+
+#[test]
+fn many_glyphs_with_distinct_heights_are_checked_quickly() {
+    // 89 glyphs of slightly different heights and depths: every pair has its
+    // own union of ink heights.
+    let mut font = fixture_font();
+    let mut glyphs = Vec::new();
+    for i in 0..89 {
+        let bottom = -f64::from(i % 13);
+        let top = 690.0 + f64::from(i % 17);
+        let d = format!(
+            "M40 {bottom} L{r} {bottom} L{r} {top} L40 {top} Z",
+            r = 200.0 + f64::from(i)
+        );
+        glyphs.push(add_svg_glyph(
+            &mut font,
+            &format!("g{i}"),
+            280.0 + f64::from(i),
+            &d,
+        ));
+    }
+    let pairs: Vec<_> = glyphs
+        .iter()
+        .flat_map(|a| glyphs.iter().map(move |b| (*a, *b)))
+        .collect();
+    let start = std::time::Instant::now();
+    let found = collisions(&font, master(&font), &pairs, 200.0).expect("check");
+    assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
+    // Every pair is 80 + 40 apart: the advance leaves 80, the next starts at 40.
+    assert_eq!(found.len(), pairs.len());
+    assert!(
+        found.iter().all(|c| (c.distance - 120.0).abs() < 1e-9),
+        "{:?}",
+        &found[..3]
+    );
+}

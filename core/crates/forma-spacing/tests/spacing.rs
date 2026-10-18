@@ -349,3 +349,115 @@ fn negative_margins_are_clamped_to_zero() {
     assert_eq!(sb["O"], (0.0, 0.0));
     assert!(sb.values().all(|&(l, r)| l >= 0.0 && r >= 0.0), "{sb:?}");
 }
+
+/// A horizontal stadium (a dash with round ends) `width` wide and `height`
+/// tall, its bottom at `y`, starting at x = 0.
+fn stadium(width: f64, height: f64, y: f64) -> String {
+    let r = height / 2.0;
+    let k = 0.552_284_75 * r;
+    let (cy, x0, x1) = (y + r, r, width - r);
+    format!(
+        "M{x0} {y} L{x1} {y} C{a} {y} {width} {b} {width} {cy} C{width} {c} {a} {t} {x1} {t} \
+         L{x0} {t} C{d} {t} 0 {c} 0 {cy} C0 {b} {d} {y} {x0} {y} Z",
+        a = x1 + k,
+        b = cy - k,
+        c = cy + k,
+        d = x0 - k,
+        t = y + height,
+    )
+}
+
+#[test]
+fn white_is_continuous_in_glyph_height() {
+    let mut font = fixture_font();
+    let mut rects = Vec::new();
+    let mut dashes = Vec::new();
+    for (i, h) in (60..=320).step_by(20).enumerate() {
+        let h = f64::from(h);
+        let top = 300.0 + h;
+        rects.push(add_svg_glyph(
+            &mut font,
+            &format!("rect{i}"),
+            300.0,
+            &format!("M0 300 L200 300 L200 {top} L0 {top} Z"),
+        ));
+        dashes.push(add_svg_glyph(
+            &mut font,
+            &format!("dash{i}"),
+            300.0,
+            &stadium(240.0, h, 300.0),
+        ));
+    }
+    for set in [rects, dashes] {
+        let sb =
+            auto_spacing(&font, master(&font), &set, &SpacingParams::default()).expect("spacing");
+        assert_eq!(sb.len(), set.len());
+        for s in &sb {
+            assert!(s.lsb >= 0.0 && s.rsb >= 0.0, "{sb:?}");
+            assert!((s.lsb - s.rsb).abs() <= 1.0, "{sb:?}");
+        }
+        for pair in sb.windows(2) {
+            assert!(
+                (pair[0].lsb - pair[1].lsb).abs() <= 6.0,
+                "jump between neighbouring heights: {sb:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn punctuation_gets_plausible_margins() {
+    let mut font = fixture_font();
+    let glyphs = [
+        add_svg_glyph(&mut font, "period", 200.0, "M60 0 L140 0 L140 80 L60 80 Z"),
+        add_svg_glyph(
+            &mut font,
+            "hyphen",
+            300.0,
+            "M40 300 L260 300 L260 380 L40 380 Z",
+        ),
+        add_svg_glyph(
+            &mut font,
+            "quotesingle",
+            200.0,
+            "M70 500 L130 500 L140 700 L60 700 Z",
+        ),
+        add_svg_glyph(&mut font, "dot", 200.0, &stadium(100.0, 100.0, 0.0)),
+    ];
+    let h = 48.0;
+    let sb =
+        auto_spacing(&font, master(&font), &glyphs, &SpacingParams::default()).expect("spacing");
+    assert_eq!(sb.len(), glyphs.len());
+    for s in &sb {
+        for side in [s.lsb, s.rsb] {
+            assert!((0.0..=1.2 * h).contains(&side), "{sb:?}");
+        }
+        assert!(!s.clamped_left && !s.clamped_right, "{sb:?}");
+    }
+    // A round dot is spaced a little tighter than a square one, not to 0.
+    assert!(sb[3].lsb >= 0.5 * h && sb[3].lsb <= sb[0].lsb, "{sb:?}");
+}
+
+#[test]
+fn sidebearings_flag_clamped_sides() {
+    let font = fixture_font();
+    let glyphs = ids(&font, &["H", "A"]);
+    let normal =
+        auto_spacing(&font, master(&font), &glyphs, &SpacingParams::default()).expect("spacing");
+    assert!(normal.iter().all(|s| !s.clamped_left && !s.clamped_right));
+    let tight = auto_spacing(
+        &font,
+        master(&font),
+        &glyphs,
+        &SpacingParams {
+            tightness: 0.0,
+            ..SpacingParams::default()
+        },
+    )
+    .expect("spacing");
+    assert!(
+        !tight[0].clamped_left && !tight[0].clamped_right,
+        "{tight:?}"
+    );
+    assert!(tight[1].clamped_left && tight[1].clamped_right, "{tight:?}");
+}

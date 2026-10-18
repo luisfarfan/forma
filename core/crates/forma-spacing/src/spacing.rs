@@ -60,12 +60,18 @@ pub struct Sidebearings {
     /// The right sidebearing: from the right of the bounding box to the
     /// advance.
     pub rsb: f64,
+    /// Whether the left margin solved below 0 and was clamped to 0: the
+    /// glyph wants to come closer to its left neighbours (kerning).
+    pub clamped_left: bool,
+    /// Whether the right margin solved below 0 and was clamped to 0.
+    pub clamped_right: bool,
 }
 
 /// What a side of a glyph contributes to the white next to it.
+#[derive(Debug)]
 struct Sides {
     /// The weighted mean depth of the clipped profile on each side: the
-    /// white between the bounding box and the ink, per unit of zone height.
+    /// white between the bounding box and the ink, per unit of height.
     left_depth: f64,
     right_depth: f64,
 }
@@ -73,48 +79,42 @@ struct Sides {
 impl Sides {
     /// The sides of `profile` for a glyph whose ink spans `left_edge` to
     /// `right_edge` (its bounding box): each line's depth is the distance
-    /// from the edge to the ink, clipped at `depth` (lines without ink count
-    /// as the full depth), and the lines are averaged with
-    /// [`line_weights`]`(lines, edge_weight)`. `None` if the profile has no
-    /// ink.
+    /// from the edge to the ink, clipped at `depth`, and the lines are
+    /// averaged with `weights`. Lines without ink do not count, so the
+    /// measure does not depend on how much empty space surrounds the ink.
+    /// `None` if no line with ink has a positive weight.
     fn of(
         profile: &Profile,
         (left_edge, right_edge): (f64, f64),
         depth: f64,
-        edge_weight: f64,
+        weights: &[f64],
     ) -> Option<Sides> {
-        profile.left.iter().flatten().next()?;
-        let weights = line_weights(profile.ys.len(), edge_weight);
-        let total: f64 = weights.iter().sum();
-        let mean = |values: &mut dyn Iterator<Item = f64>| {
-            values.zip(&weights).map(|(v, w)| v * w).sum::<f64>() / total
-        };
-        let left_depth = mean(
-            &mut profile
-                .left
-                .iter()
-                .map(|x| x.map_or(depth, |x| (x - left_edge).clamp(0.0, depth))),
-        );
-        let right_depth = mean(
-            &mut profile
-                .right
-                .iter()
-                .map(|x| x.map_or(depth, |x| (right_edge - x).clamp(0.0, depth))),
-        );
-        Some(Sides {
-            left_depth,
-            right_depth,
+        let mut total = 0.0;
+        let (mut left, mut right) = (0.0, 0.0);
+        for ((l, r), w) in profile.left.iter().zip(&profile.right).zip(weights) {
+            let (Some(l), Some(r)) = (l, r) else {
+                continue;
+            };
+            total += w;
+            left += w * (l - left_edge).clamp(0.0, depth);
+            right += w * (right_edge - r).clamp(0.0, depth);
+        }
+        (total > 0.0).then(|| Sides {
+            left_depth: left / total,
+            right_depth: right / total,
         })
     }
 }
 
-/// The weight of each of `lines` lines: `edge_weight + (1 − edge_weight) ·
-/// sin(π·t)`, with `t` the line's position in the zone (band centres), so
-/// the middle of the zone counts fully and the edges count `edge_weight`.
-fn line_weights(lines: usize, edge_weight: f64) -> Vec<f64> {
-    (0..lines)
-        .map(|i| {
-            let t = (i as f64 + 0.5) / lines as f64;
+/// The weight of a line at each height of `ys`: `edge_weight + (1 −
+/// edge_weight)·sin(π·t)`, with `t` the height's position in `zone`
+/// (clamped to `[0, 1]`), so the middle of the zone counts fully and its
+/// edges count `edge_weight`.
+fn line_weights(ys: &[f64], zone: Zone, edge_weight: f64) -> Vec<f64> {
+    let height = zone.top - zone.bottom;
+    ys.iter()
+        .map(|y| {
+            let t = ((y - zone.bottom) / height).clamp(0.0, 1.0);
             edge_weight + (1.0 - edge_weight) * (std::f64::consts::PI * t).sin()
         })
         .collect()
@@ -129,6 +129,10 @@ fn white(margin: f64, depth: f64) -> f64 {
 
 /// The margin, within `range`, whose white matches `target` to within
 /// [`TOLERANCE`], by bisection.
+///
+/// [`white`] is linear in the margin, so this equals the closed form
+/// `target − depth` (to within the tolerance); the bisection is kept so the
+/// white measure can become non-linear without changing the solver.
 fn solve_margin(target: f64, depth: f64, range: (f64, f64)) -> f64 {
     let (mut lo, mut hi) = range;
     while hi - lo > TOLERANCE {
@@ -189,15 +193,25 @@ fn check_params(params: &SpacingParams) -> Result<(), SpacingError> {
     check_lines(params.lines)
 }
 
-/// The sides of a glyph measured over `zone`, or `None` without ink.
+/// The sides of a glyph: its profile on `params.lines` lines spread over
+/// its own ink height (so short glyphs get as many lines as tall ones and
+/// there is no threshold), weighted by their position in the measurement
+/// `zone`. Uniform weights stand in when every line sits where the zone
+/// weight is 0. `None` without ink.
 fn sides_of(outline: &Outline, zone: Zone, params: &SpacingParams, depth: f64) -> Option<Sides> {
     let bbox = outline.bbox?;
-    Sides::of(
-        &outline.glyph_profile(zone, params.lines),
-        (bbox.x0, bbox.x1),
-        depth,
-        params.edge_weight,
-    )
+    if bbox.height() <= 0.0 {
+        return None;
+    }
+    let own = Zone {
+        bottom: bbox.y0,
+        top: bbox.y1,
+    };
+    let profile = outline.raw_profile(own, params.lines);
+    let edges = (bbox.x0, bbox.x1);
+    let weights = line_weights(&profile.ys, zone, params.edge_weight);
+    Sides::of(&profile, edges, depth, &weights)
+        .or_else(|| Sides::of(&profile, edges, depth, &vec![1.0; profile.ys.len()]))
 }
 
 /// The outline of the reference glyph `name`.
@@ -215,16 +229,18 @@ fn reference(font: &Font, master: MasterId, name: &str) -> Result<Outline, Spaci
 ///    height. Its margin is `tightness ×` the stem, and the profile depth
 ///    is `depth_ratio ×` the stem: the white the eye takes in next to a
 ///    letter is bounded by the letter's own stroke weight, not by the em.
-/// 2. Each glyph is profiled on `params.lines` lines of the
-///    [measurement zone](measurement_zone) (its own ink height if it has
-///    ink on fewer than 8 of them). On each line the depth of a side is
-///    the distance from the bounding box to the ink, clipped at the profile
-///    depth; lines without ink count the full depth.
+/// 2. Each glyph is profiled on `params.lines` lines spread over its own
+///    ink height (its bounding box), so a short glyph is measured as finely
+///    as a tall one and the measure changes continuously with the glyph's
+///    height. On each line with ink the depth of a side is the distance
+///    from the bounding box to the ink, clipped at the profile depth; lines
+///    without ink (between the two marks of a colon) do not count.
 /// 3. The white of a side is the margin (sidebearing) plus the weighted
 ///    mean depth, the weight of a line being `edge_weight + (1 −
-///    edge_weight)·sin(π·t)` at position `t` of the zone: white near the
-///    top and bottom of the zone (above an apex, below a bowl) reads as
-///    line space more than as letter space, so it counts less.
+///    edge_weight)·sin(π·t)` at its position `t` in the
+///    [measurement zone](measurement_zone) (clamped to the zone): white
+///    near the top and bottom of the zone (beside an apex, a bowl's ends)
+///    reads as line space more than as letter space, so it counts less.
 /// 4. The target white is the mean white of the two sides of `H` with its
 ///    margin. Each side of each glyph gets the margin whose white matches
 ///    the target, by bisection to within 0.5 units, rounded to an integer.
@@ -277,7 +293,15 @@ pub fn auto_spacing(
     let margin = params.tightness * stem;
     let target = 0.5 * (white(margin, h_sides.left_depth) + white(margin, h_sides.right_depth));
     let range = (-2.0 * upm, 2.0 * upm);
-    let side = |depth: f64| solve_margin(target, depth, range).max(0.0).round();
+    // The sidebearing of a side, rounded, and whether it was clamped to 0.
+    let side = |depth: f64| {
+        let margin = solve_margin(target, depth, range).round();
+        if margin < 0.0 {
+            (0.0, true)
+        } else {
+            (margin + 0.0, false)
+        }
+    };
 
     let mut seen = HashSet::new();
     let mut result = Vec::new();
@@ -293,10 +317,14 @@ pub fn auto_spacing(
         let Some(sides) = sides_of(&outline, zone, params, depth) else {
             continue;
         };
+        let (lsb, clamped_left) = side(sides.left_depth);
+        let (rsb, clamped_right) = side(sides.right_depth);
         result.push(Sidebearings {
             glyph,
-            lsb: side(sides.left_depth),
-            rsb: side(sides.right_depth),
+            lsb,
+            rsb,
+            clamped_left,
+            clamped_right,
         });
     }
     Ok(result)
@@ -317,32 +345,37 @@ mod tests {
 
     #[test]
     fn weights_are_full_in_the_middle_and_edge_weight_at_the_edges() {
-        let w = line_weights(1000, 0.25);
-        assert!((w[0] - 0.25).abs() < 0.01 && (w[999] - 0.25).abs() < 0.01);
-        assert!((w[500] - 1.0).abs() < 1e-4);
-        assert!(
-            line_weights(8, 1.0)
-                .iter()
-                .all(|&x| (x - 1.0).abs() < 1e-12)
-        );
+        let zone = Zone {
+            bottom: 0.0,
+            top: 100.0,
+        };
+        let w = line_weights(&[-10.0, 0.0, 50.0, 100.0, 120.0], zone, 0.25);
+        assert_eq!(w[0], 0.25);
+        assert_eq!(w[1], 0.25);
+        assert!((w[2] - 1.0).abs() < 1e-12);
+        assert!((w[3] - 0.25).abs() < 1e-12);
+        assert!((w[4] - 0.25).abs() < 1e-12);
+        let flat = line_weights(&[10.0, 90.0], zone, 1.0);
+        assert!(flat.iter().all(|&x| (x - 1.0).abs() < 1e-12));
     }
 
     #[test]
-    fn sides_count_missing_lines_as_full_depth() {
+    fn sides_skip_lines_without_ink() {
         let profile = Profile {
             ys: vec![0.0, 1.0, 2.0, 3.0],
             left: vec![Some(10.0), Some(40.0), Some(500.0), None],
             right: vec![Some(90.0), Some(90.0), Some(60.0), None],
         };
-        // Uniform weights: plain means.
-        let sides = Sides::of(&profile, (10.0, 90.0), 100.0, 1.0).expect("ink");
-        assert_eq!(sides.left_depth, (0.0 + 30.0 + 100.0 + 100.0) / 4.0);
-        assert_eq!(sides.right_depth, (0.0 + 0.0 + 30.0 + 100.0) / 4.0);
+        let sides = Sides::of(&profile, (10.0, 90.0), 100.0, &[1.0; 4]).expect("ink");
+        assert_eq!(sides.left_depth, (0.0 + 30.0 + 100.0) / 3.0);
+        assert_eq!(sides.right_depth, (0.0 + 0.0 + 30.0) / 3.0);
         let empty = Profile {
             ys: vec![0.0],
             left: vec![None],
             right: vec![None],
         };
-        assert!(Sides::of(&empty, (0.0, 1.0), 100.0, 1.0).is_none());
+        assert!(Sides::of(&empty, (0.0, 1.0), 100.0, &[1.0]).is_none());
+        // Ink only where the weight is 0: no measure.
+        assert!(Sides::of(&profile, (10.0, 90.0), 100.0, &[0.0; 4]).is_none());
     }
 }
