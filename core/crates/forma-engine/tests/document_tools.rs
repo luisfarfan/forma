@@ -118,7 +118,9 @@ fn registry_order_and_names_match_spec() {
         "image_trace",
         "trace_compare",
         "glyph_measure",
+        "preview_sheet",
         "glyph_review",
+        "font_from_image",
     ];
     let names: Vec<&str> = registry().iter().map(|spec| spec.name).collect();
     assert_eq!(names, expected);
@@ -205,6 +207,7 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "image_trace",
         "glyph_measure",
         "glyph_review",
+        "font_from_image",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");
@@ -227,13 +230,14 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "preview_compare",
         "image_inspect",
         "trace_compare",
+        "preview_sheet",
     ] {
         let spec = forma_engine::find(name).expect("registered");
         let input = (spec.input_schema)();
         assert_eq!(input["additionalProperties"], json!(false), "{name}");
         assert!(spec.output_schema.is_none(), "{name}");
     }
-    assert_eq!(implemented.len() + 5, registry().len());
+    assert_eq!(implemented.len() + 6, registry().len());
     let create = (forma_engine::find("document_create")
         .expect("registered")
         .input_schema)();
@@ -276,6 +280,8 @@ fn toolsets_effects_and_outputs_match_rulings() {
             "image_inspect" | "image_trace" | "trace_compare" => Trace,
             "glyph_measure" => Geometry,
             "glyph_review" => Glyphs,
+            "preview_sheet" => Preview,
+            "font_from_image" => Trace,
             other => panic!("unexpected tool {other}"),
         }
     };
@@ -300,6 +306,7 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "image_inspect",
         "trace_compare",
         "glyph_measure",
+        "preview_sheet",
     ];
     // Every tool that can require approval for being destructive (MCP's
     // "may perform destructive updates"); the engine enforces approvals
@@ -320,6 +327,7 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "kerning_set",
         "kerning_auto",
         "image_trace",
+        "font_from_image",
     ];
     let images = [
         "preview_glyph",
@@ -327,6 +335,7 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "preview_compare",
         "image_inspect",
         "trace_compare",
+        "preview_sheet",
     ];
     for spec in registry() {
         let name = spec.name;
@@ -571,7 +580,7 @@ fn read_only_mode_allows_closing_documents() {
 fn toolsets_can_be_disabled() {
     let root = TempDir::new().expect("tempdir");
     let all = engine_with(&[root.path()]);
-    assert_eq!(all.enabled_specs().len(), 51);
+    assert_eq!(all.enabled_specs().len(), 53);
     assert_eq!(all.enabled_toolsets(), Toolset::ALL.to_vec());
 
     let mut engine = Engine::new(EngineConfig {

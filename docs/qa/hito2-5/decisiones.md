@@ -85,3 +85,35 @@ Veredicto: cambios solicitados. Hubo 0 hallazgos críticos, 4 importantes y 10 m
   |---|---|---|
   | E | IoU 0,936, ranura cerrada | IoU 0,994, ranura conservada, sin revisión |
   | H | no se podía asignar como un glifo | candidatos 7+8 agrupados automáticamente, IoU 0,9925, sin revisión |
+
+## Revisión independiente del bloque C (2026-10-18)
+
+Veredicto: cambios solicitados, con 2 hallazgos críticos, 7 importantes y 11 menores. Todos los críticos e importantes se reprodujeron y se corrigieron. Las correcciones se verificaron con los escenarios de reproducción del revisor.
+
+22. **(Crítico) Cuelgue de Hausdorff con un conjunto vacío.** La búsqueda por anillos queda acotada a las celdas ocupadas, recorre solo el perímetro de cada anillo y devuelve el resultado al instante si un lado no tiene borde. Una referencia vacía (la tinta no alcanza la isolínea) o un contorno vacío marcan el glifo `needs_review` con el motivo.
+23. **(Crítico) La agrupación podía unir letras vecinas** (H I O: la barra de la H a 7 px de su asta y la I a 4 px). Ahora:
+    - **Contraste obligatorio:** el hueco dentro de un grupo debe ser menor que 0,5 × el menor hueco entre los grupos de la fila (las piezas de una letra están más juntas que las letras).
+    - **Ambigüedad:** la segunda mejor partición debe costar al menos 2× la mejor (antes 1,15×); si no, la fila queda `ambiguous_grouping`.
+    - **Límite de hueco:** se mantiene el de §5.3 (0,8 × trazo, con un mínimo de 1,5 px).
+
+    La H del alfabeto privado (piezas solapadas), `multi_piece_h` y `stencil` se siguen agrupando solas; H I O queda informado.
+24. **(Importante) Desviación de ajuste (§4):** `fit_deviation_px` (percentil 99 de la distancia contorno ↔ isolínea) es bloqueante, con 0,5 px en `faithful` y 1,0 px en `clean` y en bordes duros. Se suma media unidad de fuente en píxeles (`grid_px`), porque las coordenadas se redondean a unidades enteras y ningún contorno puede seguir la tinta con más detalle que eso.
+25. **(Importante) Glifos grandes:** los rásters de calidad se adaptan (como máximo 4 muestras por píxel y 4 Mmuestras en total). El error de un intento ya no aborta la llamada. Un glifo de 1900 px se traza en 1,6 s.
+26. **(Importante) Imágenes de alta resolución:** el suelo de simplificación es ¼ de píxel de origen (entre 0,25 y 1,5 unidades), no 1,5 unidades fijas.
+27. **(Importante) Estimación del trazo:** 2 × la mediana de la transformada de distancia sobre la cresta de la tinta, menos 1 px. Antes, 4 × la mediana, sesgada en unos 2 px.
+28. **(Importante) `candidates`:** se une la tinta propia de cada candidato. Los otros candidatos que caen dentro de la caja común ya no se cuelan.
+29. **(Importante) El IoU de la puerta se mide contra la isolínea al nivel trazado** (rasterizada), no contra la máscara al 0,5. `iou` sigue informando el IoU contra la máscara.
+30. **(Importante) Bordes duros:** solo cuentan los píxeles de escalón (con cruce a la vez horizontal y vertical). Los bordes alineados con la cuadrícula son exactos y no hacen que una imagen antialiasada parezca dura.
+31. **(Menor)** Los contrahuecos se emparejan con IoU ≥ 0,5 (§4 decía 0,8; con contrahuecos de pocos píxeles, 0,8 rechaza trazados correctos; se recalibra en la Task 18b). La procedencia registra `attempt` e `isoline`.
+32. **Control nuevo: autointersección** (`crossings`, bloqueante). Un contorno que se cruza crea un lazo que el relleno no-cero oculta, pero que el editor muestra.
+33. **Límite de medición conocido:** el benchmark cuenta huecos en un ráster más fino que el control de calidad. Dos glifos de M a 60 px tienen muescas estrechadas por debajo de ¼ de píxel, que el benchmark ve como contrahueco y el control no. No es un error del dibujo; se revisa en la calibración.
+
+### Corpus, modo C tras las correcciones del bloque C
+
+| Nivel | Pipelines correctos | IoU media contra la verdad | Peor IoU | Huecos | `needs_review` |
+|---|---|---|---|---|---|
+| S | 1/1 | 0,995 | 0,984 | 8/8 | 0/8 |
+| L | 9/11 | 0,998 | 0,983 | 35/35 | 1/35 |
+| O | 6/7 | 0,983 | 0,944 | 35/36 | 2/36 |
+| M | 36/36 | 0,974 | 0,569 | 931/936 | 25/936 |
+| M-hand | 12/12 | 0,984 | 0,906 | 312/312 | 0/312 |

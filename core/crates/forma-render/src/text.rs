@@ -70,6 +70,108 @@ struct Placed {
 ///   pixels per font unit).
 pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderError> {
     let height_px = check_size(height)?;
+    let line = layout(font, text, height)?;
+    let width = line.width_px()?;
+    let mut canvas = Canvas::new(width, height_px);
+    line.draw(&mut canvas, 0.0);
+    canvas.finish()
+}
+
+/// The tallest image [`text_png_wrapped`] produces, in pixels; lines that
+/// do not fit are left out.
+pub const MAX_WRAPPED_HEIGHT: u32 = 4096;
+
+/// Renders text like [`text_png`], but wraps it at spaces into several
+/// lines (each `height` pixels tall) instead of clipping it at 2048 px, so
+/// that nothing is cut off. A word wider than a whole line is clipped like
+/// in [`text_png`]. Explicit line breaks (`\n`) start a new line. At most
+/// [`MAX_WRAPPED_HEIGHT`] pixels of lines are drawn.
+///
+/// # Errors
+///
+/// As [`text_png`].
+pub fn text_png_wrapped(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderError> {
+    let height_px = check_size(height)?;
+    if text.is_empty() {
+        return Err(RenderError::InvalidText);
+    }
+    let max_width = f64::from(MAX_TEXT_WIDTH);
+    let mut lines: Vec<Line> = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut current = String::new();
+        for word in paragraph.split(' ') {
+            let candidate = if current.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{current} {word}")
+            };
+            if !current.is_empty() && layout(font, &candidate, height)?.pen_end > max_width {
+                lines.push(layout(font, &current, height)?);
+                current = word.to_owned();
+            } else {
+                current = candidate;
+            }
+        }
+        lines.push(layout(
+            font,
+            if current.is_empty() { " " } else { &current },
+            height,
+        )?);
+    }
+    let fit = (MAX_WRAPPED_HEIGHT / height).max(1) as usize;
+    lines.truncate(fit);
+    let width = lines
+        .iter()
+        .map(Line::width_px)
+        .collect::<Result<Vec<u16>, _>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(1);
+    let total =
+        u16::try_from(lines.len() as u32 * height).map_err(|_| RenderError::InvalidSize(height))?;
+    let mut canvas = Canvas::new(width, total);
+    for (k, line) in lines.iter().enumerate() {
+        line.draw(&mut canvas, k as f64 * f64::from(height_px));
+    }
+    canvas.finish()
+}
+
+/// A line of text laid out: the glyphs and where each goes.
+struct Line {
+    placed: Vec<Placed>,
+    items: Vec<(usize, f64)>,
+    scale: f64,
+    baseline: f64,
+    /// The pen position after the last glyph plus the margin, in pixels.
+    pen_end: f64,
+}
+
+impl Line {
+    /// The image width: the laid-out width, clamped to 1..=2048 px.
+    fn width_px(&self) -> Result<u16, RenderError> {
+        // The epsilon keeps floating-point noise from adding a column; an
+        // infinite pen (huge advances) just means "wider than the cap".
+        let wanted = (self.pen_end - 1e-9).ceil();
+        if wanted.is_nan() {
+            return Err(degenerate("the line width is not a number"));
+        }
+        // Clamped to 1..=2048, so the conversions cannot fail.
+        u16::try_from(wanted.clamp(1.0, f64::from(MAX_TEXT_WIDTH)) as u32)
+            .map_err(|_| degenerate("the line width does not fit an image"))
+    }
+
+    /// Draws the line with its top at `top` pixels.
+    fn draw(&self, canvas: &mut Canvas, top: f64) {
+        for &(index, x) in &self.items {
+            let to_px = Affine::new([self.scale, 0.0, 0.0, -self.scale, x, top + self.baseline]);
+            canvas.fill(&self.placed[index].path, to_px, BLACK);
+        }
+    }
+}
+
+/// Lays out one line of text (see [`text_png`]).
+fn layout(font: &Font, text: &str, height: u32) -> Result<Line, RenderError> {
+    check_size(height)?;
     if text.is_empty() {
         return Err(RenderError::InvalidText);
     }
@@ -151,21 +253,13 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
         pen += placed[index].advance * scale;
     }
 
-    // The epsilon keeps floating-point noise from adding a column; an
-    // infinite pen (huge advances) just means "wider than the cap".
-    let wanted = (pen + margin - 1e-9).ceil();
-    if wanted.is_nan() {
-        return Err(degenerate("the line width is not a number"));
-    }
-    // Clamped to 1..=2048, so the conversions cannot fail.
-    let width = u16::try_from(wanted.clamp(1.0, max_width) as u32)
-        .map_err(|_| degenerate("the line width does not fit an image"))?;
-    let mut canvas = Canvas::new(width, height_px);
-    for (index, x) in items {
-        let to_px = Affine::new([scale, 0.0, 0.0, -scale, x, baseline]);
-        canvas.fill(&placed[index].path, to_px, BLACK);
-    }
-    canvas.finish()
+    Ok(Line {
+        placed,
+        items,
+        scale,
+        baseline,
+        pen_end: pen + margin,
+    })
 }
 
 /// Maps code points to the first glyph (in glyph order) that encodes them.

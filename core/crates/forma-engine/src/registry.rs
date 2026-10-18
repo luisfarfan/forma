@@ -14,7 +14,7 @@ use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::tools::{
     capabilities, charset, components, document, edit_batch, export, font, geometry, glyphs,
-    history, kerning, metrics, outlines, plans, preview, quality, stroke, trace,
+    history, kerning, metrics, outlines, pipeline, plans, preview, quality, sheet, stroke, trace,
 };
 
 /// A group of related tools that a facade can enable or disable together.
@@ -171,7 +171,7 @@ pub struct CommandSpec {
 }
 
 /// Every command, in the exact registration order of the public API.
-static REGISTRY: [CommandSpec; 51] = [
+static REGISTRY: [CommandSpec; 53] = [
     // core
     capabilities::SPEC,
     document::CREATE,
@@ -233,8 +233,10 @@ static REGISTRY: [CommandSpec; 51] = [
     trace::TRACE,
     trace::COMPARE,
     trace::MEASURE,
-    // review (Hito 2.5)
+    // contact sheets and review (Hito 2.5)
+    sheet::SHEET,
     glyphs::REVIEW,
+    pipeline::FROM_IMAGE,
 ];
 
 /// The tools of the `image-font` profile, in registry order: what turning

@@ -136,7 +136,7 @@ pub(crate) const CHECK: CommandSpec = CommandSpec {
 /// # Errors
 ///
 /// `NOT_FOUND` for an unknown glyph; `INVALID_ARGUMENT` for an empty list.
-fn kerning_glyphs(
+pub(crate) fn kerning_glyphs(
     font: &Font,
     glyphs: Option<&[GlyphRef]>,
     master: MasterId,

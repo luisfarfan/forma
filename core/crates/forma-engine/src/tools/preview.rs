@@ -51,7 +51,8 @@ pub(crate) const TEXT: CommandSpec = CommandSpec {
     description: "Render a line of `text` set with the glyphs of `doc` (default master, \
                   characters mapped through the glyphs' code points, spaced by their advance \
                   widths) as a PNG image `height` pixels tall (16 to 1024, default 128) and as \
-                  wide as the line (at most 2048 pixels; the rest is clipped). A character \
+                  wide as the line (at most 2048 pixels; the rest is clipped, unless `wrap: true` \
+                  sets it on several lines, each `height` tall, at most 4096 pixels in all). A character \
                   without a glyph is drawn as .notdef, or as an empty box; a space or no-break \
                   space without one is a blank as wide as the space the export adds (a quarter \
                   of the em). At most 4096 \
@@ -167,10 +168,14 @@ pub struct PreviewTextArgs {
     /// The text to set: from 1 to 4096 characters.
     #[schemars(length(max = MAX_TEXT_CHARS))]
     pub text: String,
-    /// The height of the image, in pixels.
+    /// The height of the image, in pixels (of each line, with `wrap`).
     #[serde(default = "default_height")]
     #[schemars(range(min = 16, max = 1024))]
     pub height: u32,
+    /// Wrap the text at spaces (and at `\n`) into several lines instead of
+    /// clipping it at 2048 pixels; false by default.
+    #[serde(default)]
+    pub wrap: bool,
 }
 
 /// The summary of a `preview_text` image.
@@ -311,8 +316,12 @@ fn preview_text(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<Tool
         ));
     }
     let open = engine.doc(&args.doc)?;
-    let png =
-        forma_render::text_png(open.font(), &args.text, args.height).map_err(from_render_error)?;
+    let png = if args.wrap {
+        forma_render::text_png_wrapped(open.font(), &args.text, args.height)
+    } else {
+        forma_render::text_png(open.font(), &args.text, args.height)
+    }
+    .map_err(from_render_error)?;
     let (width, height) = png_dimensions(&png)
         .ok_or_else(|| ToolError::io("internal error: the rendered preview is not a PNG"))?;
     let summary = TextPreviewSummary {

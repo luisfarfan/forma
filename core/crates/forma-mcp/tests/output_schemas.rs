@@ -475,6 +475,20 @@ async fn every_output_validates_against_its_output_schema() {
             json!({ "doc": doc, "base_rev": r, "glyphs": ["tracedH"], "decision": "approve" }),
         )
         .await);
+    let sheet = c.raw("preview_sheet", json!({ "doc": doc })).await;
+    assert_ne!(sheet.is_error, Some(true), "{sheet:?}");
+    // The whole pipeline on a fresh document, as a dry run then for real.
+    let fresh = c
+        .ok("document_create", json!({ "family_name": "Pipeline" }))
+        .await;
+    let fdoc = fresh["doc"].as_str().expect("doc").to_owned();
+    let frev = fresh["rev"].as_u64().unwrap_or(0);
+    let pipeline = json!({ "doc": fdoc, "base_rev": frev, "path": image,
+        "layout": ["ABCH", "OFMR"], "dry_run": true });
+    c.ok("font_from_image", pipeline.clone()).await;
+    let mut real = pipeline;
+    real["dry_run"] = json!(false);
+    c.ok("font_from_image", real).await;
 
     // Deletion: refused without a plan, discarded, then committed.
     let error = c
@@ -606,7 +620,7 @@ async fn every_output_validates_against_its_output_schema() {
         Vec::<&&String>::new(),
         "tools never validated"
     );
-    assert_eq!(declared.len(), 46, "{declared:?}");
+    assert_eq!(declared.len(), 47, "{declared:?}");
     let total: usize = c.validated.values().sum();
     assert!(total > 80, "{total} results validated");
     c.client.cancel().await.expect("close");

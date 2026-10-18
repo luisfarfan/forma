@@ -311,11 +311,11 @@ fn with_layer(font: &Font, master: MasterId) -> Vec<GlyphId> {
 
 /// What `spacing_auto` does to a font: the master, the translation, the
 /// spaced glyphs and those whose side bearings were clamped.
-struct SpacingPlan {
-    master: MasterId,
-    translation: Translation,
-    spaced: Vec<GlyphId>,
-    clamped: Vec<ClampedGlyph>,
+pub(crate) struct SpacingPlan {
+    pub master: MasterId,
+    pub translation: Translation,
+    pub spaced: Vec<GlyphId>,
+    pub clamped: Vec<ClampedGlyph>,
 }
 
 /// Computes the spacing of `op` against `font` (pure).
@@ -325,7 +325,7 @@ struct SpacingPlan {
 /// `NOT_FOUND` for a master or glyph that does not exist; `INVALID_ARGUMENT`
 /// for a `tightness` outside 0.05 to 3, an empty `glyphs`, or the errors of
 /// [`from_spacing_error`].
-fn plan_spacing(font: &Font, op: SpacingAutoOpArgs) -> Result<SpacingPlan, ToolError> {
+pub(crate) fn plan_spacing(font: &Font, op: SpacingAutoOpArgs) -> Result<SpacingPlan, ToolError> {
     let master = find_master(font, op.master)?;
     let mut params = SpacingParams::default();
     if let Some(tightness) = op.tightness {
@@ -415,7 +415,7 @@ fn is_translation(transform: &Transform) -> bool {
 ///
 /// `INVALID_ARGUMENT` when the outline of a spaced glyph cannot be
 /// expanded.
-fn realign_composites(
+pub(crate) fn realign_composites(
     before: &Font,
     after: &Font,
     master: MasterId,

@@ -22,14 +22,19 @@ mod compare;
 mod draw;
 mod glyph;
 mod mask;
+mod sheet;
 mod svg;
 mod text;
 
 pub use compare::compare_png;
 pub use glyph::glyph_png;
 pub use mask::{MAX_MASK_PIXELS, Mask, coverage_mask, mask_iou};
+pub use sheet::{
+    MAX_CELL, MAX_CELLS, MAX_SHEET_SIDE, MIN_CELL, Origin, Overlay, ReviewMark, SheetCell,
+    SheetImage, sheet_png,
+};
 pub use svg::glyph_svg;
-pub use text::text_png;
+pub use text::{MAX_WRAPPED_HEIGHT, text_png, text_png_wrapped};
 
 /// The smallest preview size, in pixels.
 pub const MIN_SIZE: u32 = 16;

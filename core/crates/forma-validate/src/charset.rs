@@ -19,6 +19,123 @@ const UNICASE_ES: [u32; 119] = [
     0x002A, 0x002B, 0x003D, 0x005F, 0x003C, 0x003E, 0x2026, 0x00B7, 0x00AB, 0x00BB, 0x20AC,
 ];
 
+/// Production names of the glyphs FORMA makes for the profile's code
+/// points (Adobe Glyph List names), and of the combining marks it composes
+/// accented letters with.
+const NAMES: [(u32, &str); 70] = [
+    (0x0020, "space"),
+    (0x0021, "exclam"),
+    (0x0022, "quotedbl"),
+    (0x0023, "numbersign"),
+    (0x0024, "dollar"),
+    (0x0025, "percent"),
+    (0x0026, "ampersand"),
+    (0x0027, "quotesingle"),
+    (0x0028, "parenleft"),
+    (0x0029, "parenright"),
+    (0x002A, "asterisk"),
+    (0x002B, "plus"),
+    (0x002C, "comma"),
+    (0x002D, "hyphen"),
+    (0x002E, "period"),
+    (0x002F, "slash"),
+    (0x0030, "zero"),
+    (0x0031, "one"),
+    (0x0032, "two"),
+    (0x0033, "three"),
+    (0x0034, "four"),
+    (0x0035, "five"),
+    (0x0036, "six"),
+    (0x0037, "seven"),
+    (0x0038, "eight"),
+    (0x0039, "nine"),
+    (0x003A, "colon"),
+    (0x003B, "semicolon"),
+    (0x003C, "less"),
+    (0x003D, "equal"),
+    (0x003E, "greater"),
+    (0x003F, "question"),
+    (0x0040, "at"),
+    (0x005B, "bracketleft"),
+    (0x005C, "backslash"),
+    (0x005D, "bracketright"),
+    (0x005F, "underscore"),
+    (0x007B, "braceleft"),
+    (0x007D, "braceright"),
+    (0x00A0, "uni00A0"),
+    (0x00A1, "exclamdown"),
+    (0x00AB, "guillemotleft"),
+    (0x00B7, "periodcentered"),
+    (0x00BB, "guillemotright"),
+    (0x00BF, "questiondown"),
+    (0x00C1, "Aacute"),
+    (0x00C9, "Eacute"),
+    (0x00CD, "Iacute"),
+    (0x00D1, "Ntilde"),
+    (0x00D3, "Oacute"),
+    (0x00DA, "Uacute"),
+    (0x00DC, "Udieresis"),
+    (0x00E1, "aacute"),
+    (0x00E9, "eacute"),
+    (0x00ED, "iacute"),
+    (0x00F1, "ntilde"),
+    (0x00F3, "oacute"),
+    (0x00FA, "uacute"),
+    (0x00FC, "udieresis"),
+    (0x0301, "acutecomb"),
+    (0x0303, "tildecomb"),
+    (0x0308, "dieresiscomb"),
+    (0x2013, "endash"),
+    (0x2014, "emdash"),
+    (0x2018, "quoteleft"),
+    (0x2019, "quoteright"),
+    (0x201C, "quotedblleft"),
+    (0x201D, "quotedblright"),
+    (0x2026, "ellipsis"),
+    (0x20AC, "Euro"),
+];
+
+/// The name FORMA gives the glyph of code point `cp`: the letter itself for
+/// ASCII letters (`A`, `a`), the Adobe Glyph List name for the code points
+/// it knows (`zero`, `comma`, `Aacute`, `acutecomb`), `uniXXXX` otherwise.
+#[must_use]
+pub fn glyph_name(cp: u32) -> String {
+    if let Some(c) = char::from_u32(cp)
+        && c.is_ascii_alphabetic()
+    {
+        return c.to_string();
+    }
+    NAMES
+        .iter()
+        .find(|(code, _)| *code == cp)
+        .map_or_else(|| format!("uni{cp:04X}"), |(_, name)| (*name).to_owned())
+}
+
+/// The code points the glyph made for `cp` encodes in the profile called
+/// `profile`: in `unicase-es` a capital (plain or accented) also encodes
+/// its lowercase, and the space also the no-break space; otherwise `cp`
+/// alone.
+#[must_use]
+pub fn glyph_codepoints(profile: &str, cp: u32) -> Vec<u32> {
+    let Some(c) = char::from_u32(cp) else {
+        return vec![cp];
+    };
+    if profile == "unicase-es" {
+        if cp == 0x20 {
+            return vec![0x20, 0xA0];
+        }
+        if c.is_uppercase() {
+            let lower: Vec<char> = c.to_lowercase().collect();
+            if let [l] = lower.as_slice()
+                && UNICASE_ES.contains(&u32::from(*l))
+            {
+                return vec![cp, u32::from(*l)];
+            }
+        }
+    }
+    vec![cp]
+}
+
 /// The code points of the profile called `name`, in the order of its table, or
 /// `None` if there is no such profile.
 ///
@@ -100,5 +217,23 @@ pub fn check_charset(font: &Font, codepoints: &[u32]) -> CharsetReport {
         missing,
         composite,
         outlined,
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+
+    #[test]
+    fn names_and_unicase_codepoints() {
+        assert_eq!(glyph_name('A' as u32), "A");
+        assert_eq!(glyph_name('0' as u32), "zero");
+        assert_eq!(glyph_name(0xC1), "Aacute");
+        assert_eq!(glyph_name(0x2603), "uni2603");
+        assert_eq!(glyph_codepoints("unicase-es", 'A' as u32), vec![0x41, 0x61]);
+        assert_eq!(glyph_codepoints("unicase-es", 0xD1), vec![0xD1, 0xF1]);
+        assert_eq!(glyph_codepoints("unicase-es", 0x20), vec![0x20, 0xA0]);
+        assert_eq!(glyph_codepoints("unicase-es", '7' as u32), vec![0x37]);
+        assert_eq!(glyph_codepoints("other", 'A' as u32), vec![0x41]);
     }
 }
