@@ -549,13 +549,15 @@ fn write_acceptance(out: &Path, root: &Path, model: &[ModelGlyph], kerning: &Val
     let expected = json!({
         "format": "family, upm; glyphs {name: {unicodes, advance}}; cmap {U+XXXX: name}; \
                    shaping {text, glyphs}; kerning [{left, right, value}] effective glyph-glyph \
-                   values (nonzero, rounded to integers as HarfBuzz reports them) between the traced letters",
+                   values (nonzero, rounded to integers as HarfBuzz reports them) between the traced letters; \
+                   kerning_domain [name] the glyphs whose every pair is listed (the others are zero)",
         "family": "Specimen Demo",
         "upm": 1000,
         "glyphs": glyphs,
         "cmap": cmap,
         "shaping": { "text": SHAPING_TEXT, "glyphs": shaped },
         "kerning": expected_pairs,
+        "kerning_domain": letters,
     });
     let mut text = serde_json::to_string_pretty(&expected).expect("JSON");
     text.push('\n');

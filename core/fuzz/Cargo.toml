@@ -16,6 +16,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 forma-store = { path = "../crates/forma-store" }
+forma-trace = { path = "../crates/forma-trace" }
 
 [[bin]]
 name = "load_package"
@@ -27,6 +28,13 @@ bench = false
 [[bin]]
 name = "load_forma"
 path = "fuzz_targets/load_forma.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_decode"
+path = "fuzz_targets/image_decode.rs"
 test = false
 doc = false
 bench = false

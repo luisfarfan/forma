@@ -7,6 +7,10 @@
 //! picks which file the remaining bytes replace. The valid files are the seeds
 //! in `seeds/load_package/` (a seed is the index of its file plus its contents),
 //! which are also the starting corpus of the nightly run.
+//!
+//! The high bit of the first byte picks the manifest of the untouched part of
+//! the package: format version 1 (clear) or version 2 (set), so that both
+//! manifests (and the migration path of a v1 document) are exercised.
 #![no_main]
 
 use std::fs;
@@ -36,6 +40,10 @@ const FILES: [(&str, &[u8]); 4] = [
     ),
 ];
 
+/// The manifest of a format-version-2 package (the unreplaced one when the
+/// high bit of the selector is set); its first byte is skipped like the others.
+const MANIFEST_V2: &[u8] = include_bytes!("../seeds/load_package/manifest_v2.seed");
+
 /// A scratch folder per process, so parallel fuzzing jobs do not clash.
 fn scratch() -> &'static PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -50,7 +58,8 @@ fuzz_target!(|data: &[u8]| {
     let Some((&selector, replacement)) = data.split_first() else {
         return;
     };
-    let replaced = usize::from(selector) % FILES.len();
+    let replaced = usize::from(selector & 0x7f) % FILES.len();
+    let v2 = selector & 0x80 != 0;
 
     let package = scratch().join("input.formapackage");
     let _ = fs::remove_dir_all(&package);
@@ -58,6 +67,8 @@ fuzz_target!(|data: &[u8]| {
     for (index, (name, seed)) in FILES.iter().enumerate() {
         let contents = if index == replaced {
             replacement
+        } else if index == 0 && v2 {
+            &MANIFEST_V2[1..]
         } else {
             &seed[1..]
         };

@@ -8,22 +8,23 @@ Usage (an isolated interpreter that has tools/oracle/requirements.txt):
 `expected.json` is written by the scenario tests (`hito2-expected.json` of
 `mcp_scenario_hito2.rs`, `unicase-expected.json` of `unicase_font.rs`):
 family, upm, glyphs {name: {unicodes, advance}}, cmap, optional composites,
-shaping {text, glyphs} and kerning [{left, right, value}].
+shaping {text, glyphs} and kerning [{left, right, value}], optional kerning_domain [name].
 
 Checks:
 
 1. OTS accepts the TTF and the WOFF2.
 2. HarfBuzz (uharfbuzz): shaping `shaping.text` gives the expected glyph
    names, and for every expected kerning pair the x advance of the first
-   glyph equals its hmtx advance plus the expected value, exactly.
+   glyph equals its hmtx advance plus the expected value, exactly; and up to 50
+   pairs without expected kerning (sorted order) get no kerning at all.
 3. fontTools: family, units per em and cmap equal the expected ones; the
    glyphs that are components (`composites`) are exactly the expected ones;
    `GPOS` has a `kern` feature with at least one lookup.
 4. Chrome (if one is installed: `google-chrome`, `google-chrome-stable`,
    `chromium`, `chromium-browser` on the PATH, or the macOS app): a page
    with `@font-face` loads the WOFF2 and `document.fonts.check` says true.
-   Otherwise this check prints SKIPPED (it is required only where a browser
-   exists).
+   Otherwise this check prints SKIPPED, unless the environment variable
+   FORMA_REQUIRE_CHROME is set (CI on Ubuntu): then it FAILS.
 
 Exits 0 only if every check passes, 1 if one fails, 2 on a usage error or a
 missing package.
@@ -55,6 +56,7 @@ except ImportError as missing:
 MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
 MARKER = "FORMA_FONT_CHECK"
+ZERO_SAMPLE = 50
 
 
 class Check:
@@ -129,6 +131,31 @@ def check_shaping(check: Check, ttf: Path, font: TTFont, expected: dict) -> None
         check.fail("expected.json has no kerning pairs to check")
     check.notes.append(f"{checked} kerning pairs")
 
+    # Pairs with no expected kerning must not be kerned by accident: a
+    # deterministic sample (sorted order, at most ZERO_SAMPLE) must advance by
+    # exactly the hmtx advance.
+    # `kerning_domain` (optional) names the glyphs whose every kerned pair is
+    # listed; without it, every encoded glyph is in the domain.
+    domain = sorted(g for g in expected.get("kerning_domain", first_char) if g in first_char)
+    listed = {(pair["left"], pair["right"]) for pair in pairs}
+    candidates = sorted(
+        (left, right)
+        for left in domain
+        for right in domain
+        if (left, right) not in listed
+    )[:ZERO_SAMPLE]
+    zero_checked = 0
+    for left, right in candidates:
+        names, advances = shape(first_char[left] + first_char[right])
+        if names != [left, right]:
+            continue  # reshaped (ligature, mark or substitution): not a plain pair
+        if advances[0] != glyphs[left]["advance"]:
+            check.fail(
+                f"{left} {right}: advance {advances[0]}, expected the unkerned {glyphs[left]['advance']}"
+            )
+        zero_checked += 1
+    check.notes.append(f"{zero_checked} unkerned pairs")
+
 
 def check_fonttools(check: Check, font: TTFont, expected: dict) -> None:
     families = sorted({r.toUnicode() for r in font["name"].names if r.nameID == 1})
@@ -201,7 +228,6 @@ document.fonts.load('16px "FormaCheck"', 'ABC').then(function (faces) {{
             chrome,
             "--headless=new",
             "--disable-gpu",
-            "--no-sandbox",
             "--no-first-run",
             "--allow-file-access-from-files",
             f"--user-data-dir={work / 'profile'}",
@@ -209,6 +235,9 @@ document.fonts.load('16px "FormaCheck"', 'ABC').then(function (faces) {{
             "--dump-dom",
             page.as_uri(),
         ]
+        if sys.platform.startswith("linux"):
+            # CI containers and root users cannot start Chrome's sandbox.
+            command.insert(1, "--no-sandbox")
         try:
             result = subprocess.run(
                 command, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -254,7 +283,12 @@ def main() -> int:
     if check_chrome(chrome, args.woff2):
         ok &= chrome.report()
     else:
-        print("[SKIPPED] Chrome @font-face and document.fonts.check (no Chrome or Chromium found)")
+        if os.environ.get("FORMA_REQUIRE_CHROME"):
+            print("[FAIL] Chrome @font-face and document.fonts.check (no Chrome or Chromium found, "
+                  "and FORMA_REQUIRE_CHROME is set)")
+            ok = False
+        else:
+            print("[SKIPPED] Chrome @font-face and document.fonts.check (no Chrome or Chromium found)")
     print("verify_hito2: " + ("OK" if ok else "FAILED"))
     return 0 if ok else 1
 

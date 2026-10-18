@@ -1,7 +1,8 @@
 name: Nightly
 
-# Fuzzing of the document loaders (core/fuzz): arbitrary bytes as a .forma file
-# and as a .formapackage must give an error or a valid font, never a panic, a
+# Fuzzing of the document loaders and the image decoder (core/fuzz): arbitrary
+# bytes as a .forma file, as a .formapackage or as an image (forma-trace) must
+# give an error or a valid result, never a panic, a
 # hang or an out-of-memory. cargo-fuzz needs a nightly compiler; it is
 # installed here only and never touches the pinned toolchain of the main CI
 # (rust-toolchain.toml).
@@ -26,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [load_package, load_forma]
+        target: [load_package, load_forma, image_decode]
     defaults:
       run:
         working-directory: core
