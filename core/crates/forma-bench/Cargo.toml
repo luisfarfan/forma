@@ -1,0 +1,29 @@
+[package]
+name = "forma-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FORMA benchmark: deterministic image-to-font corpus (S, M, M-hand, L, O) with ground truth, and the model-free mode C runner"
+
+[[bin]]
+name = "forma-bench"
+path = "src/bin/forma-bench.rs"
+
+[dependencies]
+forma-engine = { path = "../forma-engine" }
+forma-model = { path = "../forma-model" }
+forma-geometry = { path = "../forma-geometry" }
+forma-render = { path = "../forma-render" }
+kurbo = { workspace = true }
+# Development tool only: the outlines of the OFL fonts of the corpus.
+skrifa = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]

@@ -18,6 +18,9 @@ core/target/
 __pycache__/
 *.pyc
 
+# Benchmark transcripts and results (local)
+bench-out/
+
 # Build outputs
 /dist/
 /out/

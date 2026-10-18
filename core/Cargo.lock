@@ -1072,6 +1072,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "forma-bench"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "forma-engine",
+ "forma-geometry",
+ "forma-model",
+ "forma-render",
+ "image",
+ "kurbo",
+ "serde",
+ "serde_json",
+ "skrifa 0.46.2",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "forma-cli"
 version = "0.0.1"
 dependencies = [
@@ -1432,7 +1450,7 @@ dependencies = [
  "log",
  "peniko",
  "png",
- "skrifa",
+ "skrifa 0.44.0",
  "smallvec",
  "vello_common",
 ]
@@ -2898,6 +2916,16 @@ checksum = "819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68"
 dependencies = [
  "bytemuck",
  "read-fonts 0.41.0",
+]
+
+[[package]]
+name = "skrifa"
+version = "0.46.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4febebda507fb889c545a37a135517769d1391941013561292897961d1887d6"
+dependencies = [
+ "bytemuck",
+ "read-fonts 0.43.3",
 ]
 
 [[package]]
