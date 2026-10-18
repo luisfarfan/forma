@@ -262,13 +262,31 @@ pub fn sheet_png(
             .layers
             .get(&master)
             .map_or(0.0, |layer| layer.advance_width);
+        let paths = if c.glyph.layers.contains_key(&master) {
+            Some(flat_paths(font, c.glyph, master)?)
+        } else {
+            None
+        };
+        // A glyph without advance (a combining mark) is framed on its ink,
+        // centred both ways, instead of hanging off the cell's edges.
+        let ink = paths.as_deref().and_then(forma_geometry::bbox);
+        let (advance, shift) = match ink {
+            Some(b) if advance <= 0.0 && b.width() > 0.0 => (
+                2.0 * b.width(),
+                (
+                    b.width() / 2.0 - b.x0,
+                    (metrics.ascender + metrics.descender) / 2.0 - (b.y0 + b.y1) / 2.0,
+                ),
+            ),
+            _ => (advance, (0.0, 0.0)),
+        };
         let frame = Frame::new(&metrics, advance, side_u16)?;
-        let to_px = Affine::translate((x, y)) * frame.to_pixels();
+        let to_px = Affine::translate((x, y)) * frame.to_pixels() * Affine::translate(shift);
         if let Some(overlay) = &c.overlay {
             draw_overlay(&mut canvas, overlay, to_px);
         }
-        if c.glyph.layers.contains_key(&master) {
-            let path = outline(&c.glyph.name, &flat_paths(font, c.glyph, master)?)?;
+        if let Some(paths) = &paths {
+            let path = outline(&c.glyph.name, paths)?;
             canvas.fill(&path, to_px, BLACK);
         }
         marks(&mut canvas, x, y, unit, c.origin, c.review);

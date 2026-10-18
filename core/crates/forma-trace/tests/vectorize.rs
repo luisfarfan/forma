@@ -762,3 +762,37 @@ fn every_attempt_judges_against_the_same_reference() {
     );
     assert!(g.reasons.is_empty());
 }
+
+/// A clean anti-aliased ring `diameter` pixels across, traced for a font of
+/// `upm` units with the ring as tall as the cap height `cap`.
+fn big_ring(diameter: f64, cap: f64, upm: u16) -> TracedGlyph {
+    let side = diameter as u32 + 80;
+    let mut img = canvas(side, side);
+    let c = f64::from(side) / 2.0;
+    ring(&mut img, c, c, diameter / 2.0, diameter * 0.3);
+    let opts = TraceOptions::default();
+    let mut traced = trace(&img, &opts, &[0], cap, upm).unwrap();
+    traced.remove(0)
+}
+
+#[test]
+fn large_clean_rings_are_not_flagged() {
+    // A coarse raster's one-sample slivers, or the rounding of the unit
+    // grid, are not features of the drawing (review D-5).
+    for (diameter, cap, upm) in [(600.0, 700.0, 1000), (1200.0, 2800.0, 4000)] {
+        let g = big_ring(diameter, cap, upm);
+        assert!(
+            !g.needs_review,
+            "{diameter} px at {upm} units per em: {:?}",
+            g.reasons
+        );
+        assert_eq!(g.paths.len(), 2, "{diameter} px: a ring");
+    }
+}
+
+#[test]
+#[ignore = "slow in debug builds; run with --release --ignored"]
+fn very_large_clean_ring_is_not_flagged() {
+    let g = big_ring(1900.0, 2800.0, 4000);
+    assert!(!g.needs_review, "{:?}", g.reasons);
+}

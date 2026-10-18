@@ -97,7 +97,8 @@ const NAMES: [(u32, &str); 70] = [
 
 /// The name FORMA gives the glyph of code point `cp`: the letter itself for
 /// ASCII letters (`A`, `a`), the Adobe Glyph List name for the code points
-/// it knows (`zero`, `comma`, `Aacute`, `acutecomb`), `uniXXXX` otherwise.
+/// it knows (`zero`, `comma`, `Aacute`, `acutecomb`), `uniXXXX` otherwise
+/// (`uXXXXX` beyond U+FFFF).
 #[must_use]
 pub fn glyph_name(cp: u32) -> String {
     if let Some(c) = char::from_u32(cp)
@@ -105,10 +106,18 @@ pub fn glyph_name(cp: u32) -> String {
     {
         return c.to_string();
     }
-    NAMES
-        .iter()
-        .find(|(code, _)| *code == cp)
-        .map_or_else(|| format!("uni{cp:04X}"), |(_, name)| (*name).to_owned())
+    NAMES.iter().find(|(code, _)| *code == cp).map_or_else(
+        // `uni` takes exactly four hex digits; beyond the BMP the AGL
+        // convention is `u` and five or six.
+        || {
+            if cp > 0xFFFF {
+                format!("u{cp:05X}")
+            } else {
+                format!("uni{cp:04X}")
+            }
+        },
+        |(_, name)| (*name).to_owned(),
+    )
 }
 
 /// The code points the glyph made for `cp` encodes in the profile called

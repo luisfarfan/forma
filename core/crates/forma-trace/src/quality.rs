@@ -31,6 +31,13 @@ const SAMPLE_PX: f64 = 0.25;
 /// (square pixels). Narrower slivers along an edge are the fitting error
 /// the Hausdorff gate bounds.
 const FEATURE_AREA_PX2: f64 = 2.0;
+/// A disagreement region with more than this share of its border of the
+/// other kind (background beside a filled region, shared ink beside a lost
+/// one) runs along an edge rather than being a slit or a stroke.
+const EDGE_SHARE: f64 = 0.35;
+/// How much wider than a one-sample sliver (2/f pixels) a feature found
+/// on a coarse raster must be to be trusted without a finer look.
+const RESOLVE_MARGIN_PX: f64 = 0.25;
 /// Most features listed per glyph.
 const MAX_LISTED: usize = 8;
 
@@ -119,7 +126,8 @@ pub struct QualityReport {
     /// 95th percentile distance between the outline and the ink's edge,
     /// both ways, in image pixels.
     pub hausdorff_p95_px: f64,
-    /// 99th percentile of that distance: the fit deviation (spec §4).
+    /// 99th percentile of that distance: the fit deviation (spec §4; the
+    /// largest distance is bounded by `hausdorff_max_px`'s gate).
     pub fit_deviation_px: f64,
     /// The fit deviation allowed for this glyph: the fidelity's budget plus
     /// what the font's unit grid cannot resolve.
@@ -138,6 +146,11 @@ pub struct QualityReport {
     pub topology_ok: bool,
     /// Fine features filled or lost (at most the first 8).
     pub features: Vec<FeatureIssue>,
+    /// Disagreements narrower than twice what the font's unit grid
+    /// resolves: detail the font cannot hold at its units per em (more
+    /// units per em would). Reported, not failed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub below_grid: usize,
     /// Smooth nodes whose tangents differ by more than the threshold.
     pub g1_violations: usize,
     /// Places where the outline crosses itself or another of its contours
@@ -558,15 +571,16 @@ fn topology(ink: &[bool], w: usize, h: usize) -> (usize, Vec<u32>, Vec<(usize, b
 }
 
 /// The disagreement regions of `pick` wide and large enough to be a
-/// feature, as issues of `kind`.
+/// feature, as issues of `kind`, each with its box in image pixels.
 fn features(
     pick: &dyn Fn(usize) -> bool,
+    edge: Option<&dyn Fn(usize) -> bool>,
     (w, h): (usize, usize),
     origin: (i64, i64),
     f: f64,
     min_width_px: f64,
     kind: &str,
-) -> Vec<FeatureIssue> {
+) -> Vec<(FeatureIssue, (i64, i64, i64, i64))> {
     let (x0, y0) = origin;
     let inside: Vec<bool> = (0..w * h).map(pick).collect();
     if !inside.iter().any(|&v| v) {
@@ -576,31 +590,103 @@ fn features(
     let (labels, info) = regions(&|i| inside[i], w, h, true);
     let mut widest = vec![0.0f64; info.len()];
     let mut centre = vec![(0.0f64, 0.0f64); info.len()];
+    let mut boxes = vec![(usize::MAX, usize::MAX, 0usize, 0usize); info.len()];
+    // Around each region: how many neighbours there are, and how many are
+    // of the `edge` kind.
+    let mut border = vec![(0usize, 0usize); info.len()];
     for (i, &label) in labels.iter().enumerate() {
         if label == 0 {
             continue;
         }
         let k = label as usize - 1;
+        let (x, y) = (i % w, i / w);
+        if let Some(edge) = edge {
+            for (nx, ny) in [
+                (x.wrapping_sub(1), y),
+                (x + 1, y),
+                (x, y.wrapping_sub(1)),
+                (x, y + 1),
+            ] {
+                if nx < w && ny < h && labels[ny * w + nx] != label {
+                    border[k].0 += 1;
+                    border[k].1 += usize::from(edge(ny * w + nx));
+                }
+            }
+        }
         widest[k] = widest[k].max(edt[i].sqrt());
-        centre[k].0 += (i % w) as f64;
-        centre[k].1 += (i / w) as f64;
+        centre[k].0 += x as f64;
+        centre[k].1 += y as f64;
+        let b = &mut boxes[k];
+        *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
     }
     info.iter()
         .enumerate()
         .filter_map(|(k, &(count, _))| {
             let width_px = 2.0 * widest[k] / f;
             let area_px2 = count as f64 / (f * f);
-            (width_px >= min_width_px && area_px2 >= FEATURE_AREA_PX2).then(|| FeatureIssue {
-                kind: kind.to_owned(),
-                width_px: (width_px * 100.0).round() / 100.0,
-                area_px2: (area_px2 * 10.0).round() / 10.0,
-                at_px: [
-                    x0 as f64 + centre[k].0 / count as f64 / f,
-                    y0 as f64 + centre[k].1 / count as f64 / f,
-                ],
+            let b = boxes[k];
+            let px = |v: usize, o: i64| o + (v as f64 / f).floor() as i64;
+            // A region bordered much by the `edge` kind hugs an edge: the
+            // outline runs beside the ink there (a deviation the distance
+            // gates bound), it does not close a slit or drop a stroke.
+            let (all, edge) = border[k];
+            let hugs = all > 0 && edge as f64 > EDGE_SHARE * all as f64;
+            (width_px >= min_width_px && area_px2 >= FEATURE_AREA_PX2 && !hugs).then(|| {
+                (
+                    FeatureIssue {
+                        kind: kind.to_owned(),
+                        width_px: (width_px * 100.0).round() / 100.0,
+                        area_px2: (area_px2 * 10.0).round() / 10.0,
+                        at_px: [
+                            x0 as f64 + centre[k].0 / count as f64 / f,
+                            y0 as f64 + centre[k].1 / count as f64 / f,
+                        ],
+                    },
+                    (px(b.0, x0), px(b.1, y0), px(b.2, x0) + 1, px(b.3, y0) + 1),
+                )
             })
         })
         .collect()
+}
+
+/// The features of `kind` inside `bounds` (image pixels), measured again at
+/// full fineness on a window around it: a coarse raster's slivers vanish,
+/// real slits and strokes stay.
+fn refine(
+    reference: &[Vec<Point>],
+    outline: &[Vec<Point>],
+    bounds: (i64, i64, i64, i64),
+    min_width_px: f64,
+    kind: &str,
+) -> Result<Vec<FeatureIssue>, TraceError> {
+    let pad = 3;
+    let win = (
+        bounds.0 - pad,
+        bounds.1 - pad,
+        bounds.2 + pad,
+        bounds.3 + pad,
+    );
+    let f = fineness(win);
+    let size = raster_size(win, f);
+    let ink = raster(reference, win, f)?;
+    let out = raster(outline, win, f)?;
+    let (pick, edge): (&dyn Fn(usize) -> bool, &dyn Fn(usize) -> bool) = if kind == "filled" {
+        (&|i| !ink[i] && out[i], &|i| !ink[i] && !out[i])
+    } else {
+        (&|i| ink[i] && !out[i], &|i| ink[i] && out[i])
+    };
+    Ok(features(
+        pick,
+        Some(edge),
+        size,
+        (win.0, win.1),
+        f,
+        min_width_px,
+        kind,
+    )
+    .into_iter()
+    .map(|(issue, _)| issue)
+    .collect())
 }
 
 /// Whether segments `a0-a1` and `b0-b1` cross properly (each strictly
@@ -763,15 +849,40 @@ pub(crate) fn evaluate(
     let origin = (win.0, win.1);
     let size = (w, h);
     let min = allowance.min_feature_px;
-    let mut found = features(&|i| !ink[i] && out[i], size, origin, f, min, "filled");
-    found.extend(features(
-        &|i| ink[i] && !out[i],
-        size,
-        origin,
-        f,
-        min,
-        "lost",
-    ));
+    let mut found = Vec::new();
+    // A slit the outline closes has ink on both sides; a stroke it drops,
+    // background on both sides. Bordered by the other kind, a region only
+    // runs along the edge.
+    let filled = |i: usize| !ink[i] && out[i];
+    let lost = |i: usize| ink[i] && !out[i];
+    let background = |i: usize| !ink[i] && !out[i];
+    let shared = |i: usize| ink[i] && out[i];
+    for (kind, pick, edge) in [
+        (
+            "filled",
+            &filled as &dyn Fn(usize) -> bool,
+            &background as &dyn Fn(usize) -> bool,
+        ),
+        (
+            "lost",
+            &lost as &dyn Fn(usize) -> bool,
+            &shared as &dyn Fn(usize) -> bool,
+        ),
+    ] {
+        for (issue, bounds) in features(pick, Some(edge), size, origin, f, min, kind) {
+            // Below what this raster resolves (a one-sample sliver measures
+            // 2/f pixels), look again at full fineness around it.
+            if f < FINE && issue.width_px < 2.0 / f + RESOLVE_MARGIN_PX {
+                found.extend(refine(reference, &outline, bounds, min, kind)?);
+            } else {
+                found.push(issue);
+            }
+        }
+    }
+    // What the unit grid cannot hold is reported, not failed.
+    let grid_floor = 2.0 * allowance.grid_px;
+    let below_grid = found.iter().filter(|f| f.width_px < grid_floor).count();
+    found.retain(|f| f.width_px >= grid_floor);
     found.sort_by(|a, b| b.area_px2.total_cmp(&a.area_px2));
     found.truncate(MAX_LISTED);
     let round = |v: f64| (v * 1000.0).round() / 1000.0;
@@ -786,6 +897,7 @@ pub(crate) fn evaluate(
         holes: [n_ink_holes, n_out_holes],
         topology_ok,
         features: found,
+        below_grid,
         g1_violations: g1_violations(paths, thresholds.g1_degrees),
         crossings: crossings(&outline),
         nodes_per_1000: (node_density(paths) * 10.0).round() / 10.0,
@@ -860,15 +972,24 @@ pub(crate) fn faint_features(
     let strict = raster(stricter, win, f)?;
     let mut found = features(
         &|i| ink[i] && !strict[i],
+        None,
         (w, h),
         (win.0, win.1),
         f,
         min_width_px,
         "faint",
-    );
+    )
+    .into_iter()
+    .map(|(issue, _)| issue)
+    .collect::<Vec<_>>();
     found.sort_by(|a, b| b.area_px2.total_cmp(&a.area_px2));
     found.truncate(MAX_LISTED);
     Ok(found)
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[cfg(test)]

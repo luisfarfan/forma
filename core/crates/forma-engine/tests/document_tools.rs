@@ -121,6 +121,8 @@ fn registry_order_and_names_match_spec() {
         "preview_sheet",
         "glyph_review",
         "font_from_image",
+        "style_extract",
+        "glyph_synthesize",
     ];
     let names: Vec<&str> = registry().iter().map(|spec| spec.name).collect();
     assert_eq!(names, expected);
@@ -208,6 +210,8 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "glyph_measure",
         "glyph_review",
         "font_from_image",
+        "style_extract",
+        "glyph_synthesize",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");
@@ -282,6 +286,7 @@ fn toolsets_effects_and_outputs_match_rulings() {
             "glyph_review" => Glyphs,
             "preview_sheet" => Preview,
             "font_from_image" => Trace,
+            "style_extract" | "glyph_synthesize" => Synthesis,
             other => panic!("unexpected tool {other}"),
         }
     };
@@ -307,6 +312,7 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "trace_compare",
         "glyph_measure",
         "preview_sheet",
+        "style_extract",
     ];
     // Every tool that can require approval for being destructive (MCP's
     // "may perform destructive updates"); the engine enforces approvals
@@ -328,6 +334,7 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "kerning_auto",
         "image_trace",
         "font_from_image",
+        "glyph_synthesize",
     ];
     let images = [
         "preview_glyph",
@@ -472,7 +479,8 @@ fn capabilities_report_limits() {
             "history",
             "components",
             "kerning",
-            "trace"
+            "trace",
+            "synthesis"
         ])
     );
     assert_eq!(
@@ -580,7 +588,7 @@ fn read_only_mode_allows_closing_documents() {
 fn toolsets_can_be_disabled() {
     let root = TempDir::new().expect("tempdir");
     let all = engine_with(&[root.path()]);
-    assert_eq!(all.enabled_specs().len(), 53);
+    assert_eq!(all.enabled_specs().len(), 55);
     assert_eq!(all.enabled_toolsets(), Toolset::ALL.to_vec());
 
     let mut engine = Engine::new(EngineConfig {

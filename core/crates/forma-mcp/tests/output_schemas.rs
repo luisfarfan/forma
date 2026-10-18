@@ -488,7 +488,19 @@ async fn every_output_validates_against_its_output_schema() {
     c.ok("font_from_image", pipeline.clone()).await;
     let mut real = pipeline;
     real["dry_run"] = json!(false);
-    c.ok("font_from_image", real).await;
+    let frev = rev(&c.planned("font_from_image", real).await);
+    // Style synthesis on what the pipeline traced.
+    c.ok("style_extract", json!({ "doc": fdoc })).await;
+    c.ok(
+        "glyph_synthesize",
+        json!({ "doc": fdoc, "base_rev": frev, "dry_run": true }),
+    )
+    .await;
+    c.ok(
+        "glyph_synthesize",
+        json!({ "doc": fdoc, "base_rev": frev, "glyphs": ["zero"] }),
+    )
+    .await;
 
     // Deletion: refused without a plan, discarded, then committed.
     let error = c
@@ -620,7 +632,7 @@ async fn every_output_validates_against_its_output_schema() {
         Vec::<&&String>::new(),
         "tools never validated"
     );
-    assert_eq!(declared.len(), 47, "{declared:?}");
+    assert_eq!(declared.len(), 49, "{declared:?}");
     let total: usize = c.validated.values().sum();
     assert!(total > 80, "{total} results validated");
     c.client.cancel().await.expect("close");

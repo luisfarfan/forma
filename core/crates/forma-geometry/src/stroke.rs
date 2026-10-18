@@ -105,13 +105,15 @@ pub struct Skeleton {
 
 /// The shape of the open ends of a stroke.
 ///
-/// In JSON: `{"type": "round"}` or `{"type": "bulb", "ratio": 1.4}`.
+/// In JSON: `{"type": "round"}`, `{"type": "flat"}` or `{"type": "bulb", "ratio": 1.4}`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum Cap {
     /// A half circle as wide as the stroke at that end.
     Round,
+    /// Cut straight across the stroke at that end.
+    Flat,
     /// A round cap plus a circle of radius `ratio × width / 2` centred on the
     /// end: a ball terminal.
     Bulb {
@@ -781,9 +783,13 @@ fn corner(out: &mut BezPath, a: &Station, b: &Station, side: Side) {
 /// band edge on the other side, along a half circle of the full half width
 /// (in front of the end for the right-to-left cap, behind it for the
 /// left-to-right one).
-fn cap(out: &mut BezPath, end: &Station, from: Side, to: Side) {
+fn cap(out: &mut BezPath, end: &Station, from: Side, to: Side, flat: bool) {
     out_to_full(out, end, from);
-    arc_to(out, end.at, end.full(from), end.full(to), PI);
+    if flat {
+        out.line_to(end.full(to));
+    } else {
+        arc_to(out, end.at, end.full(from), end.full(to), PI);
+    }
     in_from_full(out, end, to);
 }
 
@@ -826,7 +832,8 @@ fn draw_open(runs: &[Vec<Station>], end_cap: Cap) -> Vec<BezPath> {
             corner(&mut out, &end, next, Side::Right);
         }
     }
-    cap(&mut out, &last, Side::Right, Side::Left);
+    let flat = end_cap == Cap::Flat;
+    cap(&mut out, &last, Side::Right, Side::Left, flat);
     for (i, run) in runs.iter().enumerate().rev() {
         let start = run.first().copied().unwrap_or(first);
         let fitted = fit_side(run, Side::Left, false);
@@ -835,7 +842,7 @@ fn draw_open(runs: &[Vec<Station>], end_cap: Cap) -> Vec<BezPath> {
             corner(&mut out, previous, &start, Side::Left);
         }
     }
-    cap(&mut out, &first, Side::Left, Side::Right);
+    cap(&mut out, &first, Side::Left, Side::Right, flat);
     out.close_path();
 
     let mut contours = vec![out];

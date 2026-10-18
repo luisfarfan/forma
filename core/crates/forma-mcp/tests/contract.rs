@@ -230,7 +230,7 @@ async fn tools_list_snapshot() {
 }
 
 /// The number of tools of the public API (Hito 2.5 so far).
-const TOOL_COUNT: usize = 53;
+const TOOL_COUNT: usize = 55;
 
 #[tokio::test]
 async fn tool_count_matches_the_contract() {

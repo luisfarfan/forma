@@ -4,7 +4,7 @@
 >
 > Los nombres, las descripciones y los schemas son exactamente los que un agente recibe en `tools/list` (en inglés, el idioma de los agentes). Para conectar un cliente, véase [`docs/guides/connect-agents.md`](../guides/connect-agents.md).
 
-Versión de la API: `1.0.0`. 53 herramientas, las mismas por MCP (`forma mcp`), por la CLI (`forma call <herramienta>`) y por la interfaz.
+Versión de la API: `1.0.0`. 55 herramientas, las mismas por MCP (`forma mcp`), por la CLI (`forma call <herramienta>`) y por la interfaz.
 
 ## Convenciones
 
@@ -88,6 +88,8 @@ Versión de la API: `1.0.0`. 53 herramientas, las mismas por MCP (`forma mcp`), 
 | [`preview_sheet`](#preview_sheet) | `preview` | lectura | Preview contact sheet |
 | [`glyph_review`](#glyph_review) | `glyphs` | escritura | Review glyphs |
 | [`font_from_image`](#font_from_image) | `trace` | destructiva | Font from image |
+| [`style_extract`](#style_extract) | `synthesis` | lectura | Extract style |
+| [`glyph_synthesize`](#glyph_synthesize) | `synthesis` | destructiva | Synthesize glyphs |
 
 ## Conjunto `core`
 
@@ -3677,7 +3679,7 @@ Draw the outline of a glyph layer of `doc` (`glyph` must exist, see glyph_create
 {
   "$defs": {
     "Cap": {
-      "description": "The shape of the open ends of a stroke.\n\nIn JSON: `{\"type\": \"round\"}` or `{\"type\": \"bulb\", \"ratio\": 1.4}`.",
+      "description": "The shape of the open ends of a stroke.\n\nIn JSON: `{\"type\": \"round\"}`, `{\"type\": \"flat\"}` or `{\"type\": \"bulb\", \"ratio\": 1.4}`.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -3685,6 +3687,20 @@ Draw the outline of a glyph layer of `doc` (`glyph` must exist, see glyph_create
           "properties": {
             "type": {
               "const": "round",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Cut straight across the stroke at that end.",
+          "properties": {
+            "type": {
+              "const": "flat",
               "type": "string"
             }
           },
@@ -5786,12 +5802,17 @@ Turn the image of an alphabet (PNG/JPEG in an allowed folder) into glyphs of `do
         },
         "kern": {
           "default": true,
-          "description": "Kern them.",
+          "description": "Kern the glyphs the call makes among themselves (pairs of other\nglyphs stay).",
           "type": "boolean"
         },
         "space": {
           "default": true,
-          "description": "Space the glyphs.",
+          "description": "Space the glyphs the call makes (the others keep their metrics).",
+          "type": "boolean"
+        },
+        "synthesize": {
+          "default": true,
+          "description": "Make the profile's glyphs the image lacks (figures, punctuation,\nmarks) in its style, or list them as needing a design (see\nglyph_synthesize).",
           "type": "boolean"
         }
       },
@@ -5928,6 +5949,239 @@ Turn the image of an alphabet (PNG/JPEG in an allowed folder) into glyphs of `do
     "layout"
   ],
   "title": "FontFromImageArgs",
+  "type": "object"
+}
+```
+
+</details>
+
+## Conjunto `synthesis`
+
+Síntesis de estilo: medir el estilo de la fuente y crear en ese estilo los glifos que le faltan, o pedir su diseño.
+
+### `style_extract`
+
+**Extract style**
+
+- Conjunto: `synthesis`
+- Efectos: solo lectura: sí · destructiva: no · idempotente: sí
+- Resultado: JSON
+
+Measure the style of `doc` on its traced glyphs (or on `glyphs`): stroke width and its spread, contrast, ball terminals, joins, the widths of round, straight and diagonal letters, darkness and side bearings, in font units. It is what glyph_synthesize dresses its skeletons with and scores against. Read-only.
+
+<details>
+<summary>Esquema de entrada</summary>
+
+```json
+{
+  "$defs": {
+    "GlyphId": {
+      "description": "Stable identifier of a glyph. Unlike the glyph name, it never changes.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "GlyphRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GlyphId",
+          "description": "The stable identifier of the glyph."
+        },
+        {
+          "description": "The name of the glyph.",
+          "type": "string"
+        }
+      ],
+      "description": "A reference to a glyph, by id or by name.\n\nSerialized as a bare string: text that parses as a UUID is an [`Id`]\n(`GlyphRef::Id`), any other text is a [`Name`] (`GlyphRef::Name`). When no\nglyph has the id, a glyph whose *name* is that same UUID text is used, so a\nglyph that happens to be named like a UUID can still be addressed.\n\n[`Id`]: GlyphRef::Id\n[`Name`]: GlyphRef::Name"
+    },
+    "MasterId": {
+      "description": "Stable identifier of a master.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Arguments of `style_extract`.",
+  "properties": {
+    "doc": {
+      "description": "The document handle.",
+      "type": "string"
+    },
+    "glyphs": {
+      "default": null,
+      "description": "The glyphs to measure, by name or id; every glyph traced from an\nimage and not rejected when omitted. At least 3 must be measurable.",
+      "items": {
+        "$ref": "#/$defs/GlyphRef"
+      },
+      "maxItems": 500,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "master": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MasterId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The master; the default master when omitted."
+    }
+  },
+  "required": [
+    "doc"
+  ],
+  "title": "StyleExtractArgs",
+  "type": "object"
+}
+```
+
+</details>
+
+### `glyph_synthesize`
+
+**Synthesize glyphs**
+
+- Conjunto: `synthesis`
+- Efectos: solo lectura: no · destructiva: sí · idempotente: no
+- Resultado: JSON
+
+_Destructiva significa que la llamada puede exigir un plan aprobado: el servidor lo decide midiendo la llamada, no por esta marca._
+
+Make the glyphs of a character set profile that `doc` lacks (figures, punctuation, symbols, the combining marks of its accents) in the style of its traced glyphs: first derived from glyphs it has (0 from O, ; from . and ,), else drawn from skeletons dressed with the measured stroke, contrast and terminals. Each glyph is scored against the style; one below `min_score` (0.75 by default) or foreign in any respect is not made but listed in `needs_design`, to draw or trace. Glyphs made wait for review (glyph_review); they are never approved automatically. The detail is in `report_path`. Destructive: may require approval depending on the server policy. Pass the latest `rev` you received as `base_rev`; if an entity this call touches changed after it, the call fails with REVISION_CONFLICT: re-read and retry.
+
+<details>
+<summary>Esquema de entrada</summary>
+
+```json
+{
+  "$defs": {
+    "Detail": {
+      "description": "How much a tool lists in its answer.",
+      "oneOf": [
+        {
+          "const": "summary",
+          "description": "Totals and the first few exceptions; the rest is in the report file.",
+          "type": "string"
+        },
+        {
+          "const": "full",
+          "description": "Longer lists (up to 200 entries or 32 KB each).",
+          "type": "string"
+        }
+      ]
+    },
+    "GlyphId": {
+      "description": "Stable identifier of a glyph. Unlike the glyph name, it never changes.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "GlyphRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GlyphId",
+          "description": "The stable identifier of the glyph."
+        },
+        {
+          "description": "The name of the glyph.",
+          "type": "string"
+        }
+      ],
+      "description": "A reference to a glyph, by id or by name.\n\nSerialized as a bare string: text that parses as a UUID is an [`Id`]\n(`GlyphRef::Id`), any other text is a [`Name`] (`GlyphRef::Name`). When no\nglyph has the id, a glyph whose *name* is that same UUID text is used, so a\nglyph that happens to be named like a UUID can still be addressed.\n\n[`Id`]: GlyphRef::Id\n[`Name`]: GlyphRef::Name"
+    },
+    "MasterId": {
+      "description": "Stable identifier of a master.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Arguments of `glyph_synthesize`: the document, the base revision, and optionally the glyphs to make, the profile, the lowest style score, the glyphs to learn the style from and the master.",
+  "properties": {
+    "base_rev": {
+      "description": "The latest `rev` you received for this document.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "detail": {
+      "$ref": "#/$defs/Detail",
+      "default": "summary",
+      "description": "`summary` (default) or `full`; the report holds everything."
+    },
+    "doc": {
+      "description": "Document handle (`doc_...`) returned by document_create or document_open.",
+      "type": "string"
+    },
+    "dry_run": {
+      "default": false,
+      "description": "Only plan the call: change nothing and return `{rev, plan}`, the plan of what the call would do, with a `plan_token` that plan_commit can run once the user confirms.",
+      "type": "boolean"
+    },
+    "glyphs": {
+      "default": null,
+      "description": "The glyphs to make, by name (`zero`, `comma`, `acutecomb`); every\nglyph of the profile's recipes that the document lacks when omitted.",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 500,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "master": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MasterId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The master; the default master when omitted."
+    },
+    "min_score": {
+      "default": null,
+      "description": "The lowest style score a glyph is made at, from 0.75 to 1; 0.75 when\nomitted.",
+      "format": "double",
+      "maximum": 1.0,
+      "minimum": 0.75,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "profile": {
+      "default": null,
+      "description": "The character set profile: `unicase-es` (the default).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sources": {
+      "default": null,
+      "description": "The glyphs to learn the style from, by name or id; every glyph\ntraced from an image and not rejected when omitted.",
+      "items": {
+        "$ref": "#/$defs/GlyphRef"
+      },
+      "maxItems": 500,
+      "type": [
+        "array",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "doc",
+    "base_rev"
+  ],
+  "title": "GlyphSynthesizeArgs",
   "type": "object"
 }
 ```

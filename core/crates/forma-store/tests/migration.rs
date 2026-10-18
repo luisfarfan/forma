@@ -551,6 +551,7 @@ fn non_finite_provenance_is_refused_on_save() {
         ProvenanceDetail::Synthesized {
             recipe: "x".into(),
             recipe_version: 1,
+            strategy: String::new(),
             sources: vec![],
             style_score: f64::NAN,
         },

@@ -61,8 +61,8 @@ async fn scenario(mode: ClientLifecycleMode) {
 
     let done = call(
         &client,
-        "font_from_image",
-        json!({ "doc": doc, "base_rev": rev, "path": image, "layout": layout }),
+        "plan_commit",
+        json!({ "plan_token": planned["plan"]["plan_token"] }),
     )
     .await
     .ok();
@@ -70,6 +70,7 @@ async fn scenario(mode: ClientLifecycleMode) {
     assert_eq!(done["stages"][0]["counts"]["glyphs"], 8, "{done}");
     let rev = done["rev"].as_u64().expect("rev");
 
+    // Everything the engine made waits for review, in one sheet.
     let sheet = call(
         &client,
         "preview_sheet",
@@ -85,12 +86,22 @@ async fn scenario(mode: ClientLifecycleMode) {
         .iter()
         .filter_map(|c| c["name"].as_str().map(str::to_owned))
         .collect();
-    assert_eq!(names.len(), 8, "{summary}");
+    assert!(names.len() > 40, "{summary}");
+    assert!(names.iter().any(|n| n == "zero") && names.iter().any(|n| n == "Aacute"));
 
-    let reviewed = call(
+    // Approving them all is a mass change: one plan, then its commit.
+    let review = call(
         &client,
         "glyph_review",
         json!({ "doc": doc, "base_rev": rev, "glyphs": names, "decision": "approve" }),
+    )
+    .await
+    .error("APPROVAL_REQUIRED");
+    count(&review);
+    let reviewed = call(
+        &client,
+        "plan_commit",
+        json!({ "plan_token": review["details"]["plan"]["plan_token"] }),
     )
     .await
     .ok();
@@ -117,9 +128,9 @@ async fn scenario(mode: ClientLifecycleMode) {
         .iter()
         .filter(|f| f["check"] == "glyph.pending_review")
         .count();
-    assert_eq!(pending, 0, "every traced glyph was approved");
+    assert_eq!(pending, 0, "every glyph made was approved");
 
-    assert_eq!(calls, 7);
+    assert_eq!(calls, 8);
     assert!(text_bytes < 24 * 1024, "{text_bytes} bytes of answers");
     close(client).await;
 }
@@ -172,7 +183,20 @@ fn cli_font_from_image_matches_mcp_shape() {
         assert_eq!(v["stages"][0]["counts"]["glyphs"], 8, "{v}");
         docs.push(doc);
     }
-    let letters = ["A", "B", "C", "H", "O", "F", "M", "R"];
+    let letters = [
+        "A",
+        "B",
+        "C",
+        "H",
+        "O",
+        "F",
+        "M",
+        "R",
+        "zero",
+        "comma",
+        "acutecomb",
+        "Aacute",
+    ];
     assert_eq!(
         outlines(root.path(), &docs[0], &letters),
         outlines(root.path(), &docs[1], &letters)

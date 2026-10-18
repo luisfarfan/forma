@@ -72,6 +72,7 @@ fn out_of_range_scores_are_refused() {
     provenance.detail = ProvenanceDetail::Synthesized {
         recipe: "x".into(),
         recipe_version: 1,
+        strategy: String::new(),
         sources: vec![],
         style_score: 1.5,
     };
@@ -183,4 +184,46 @@ fn a_rejection_stands_after_a_design_change() {
     let (next, _) = apply(&font, &edit).expect("move");
     assert_eq!(review_of(&next, "A"), (Review::Rejected, true));
     assert!(!glyph(&next, "A").is_exported());
+}
+
+#[test]
+fn a_design_change_clears_what_the_engine_asked_to_look_at() {
+    let font = base_font();
+    let mut provenance = approved(&font, "A");
+    provenance.review = Review::Pending;
+    provenance.approved_geometry = None;
+    provenance.attention = vec!["slit or notch closed".into()];
+    let (font, _) = apply(
+        &font,
+        &Command::SetProvenance {
+            glyph: GlyphRef::Name("A".into()),
+            provenance: Some(provenance),
+        },
+    )
+    .expect("set");
+    assert!(
+        glyph(&font, "A")
+            .provenance
+            .as_ref()
+            .is_some_and(Provenance::needs_look)
+    );
+    let (next, _) = apply(
+        &font,
+        &Command::NodesEdit {
+            glyph: GlyphRef::Name("A".into()),
+            master: None,
+            path_id: PathId(0),
+            action: NodeAction::Move {
+                indices: vec![2],
+                dx: 0.0,
+                dy: 15.0,
+            },
+        },
+    )
+    .expect("move");
+    let p = glyph(&next, "A").provenance.as_ref().expect("provenance");
+    assert!(
+        p.attention.is_empty() && p.edited && !p.needs_look(),
+        "{p:?}"
+    );
 }

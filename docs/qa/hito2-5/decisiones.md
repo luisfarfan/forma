@@ -117,3 +117,78 @@ Veredicto: cambios solicitados, con 2 hallazgos críticos, 7 importantes y 11 me
 | O | 6/7 | 0,983 | 0,944 | 35/36 | 2/36 |
 | M | 36/36 | 0,974 | 0,569 | 931/936 | 25/936 |
 | M-hand | 12/12 | 0,984 | 0,906 | 312/312 | 0/312 |
+
+## Bloque D: decisiones no registradas antes (señaladas por la revisión del bloque D)
+
+34. **El layout es obligatorio.** El modo `"auto"` de §5.2 no se implementó: sin layout, la fila no se puede leer sin adivinar.
+35. **La exportación omite los archivos existentes** en lugar de planificar su sobrescritura. Para reemplazarlos se usa `export_font`, que pide plan.
+36. **Los dry runs no escriben reporte.** El reporte se escribe solo con el commit, para no acumular diagnósticos de cambios que nunca se aplicaron.
+37. **El commit vuelve a ejecutar la canalización entera.** `plan_commit` repite la llamada, y la huella del plan garantiza que hace lo mismo, así que el flujo recomendado (dry run → commit) cuesta dos trazados. Se tiene en cuenta en los objetivos de tiempo del benchmark (§8).
+
+## Bloque E: síntesis de estilo (Tasks 14–18)
+
+38. **Crate `forma-synth`:**
+    - kit de estilo medido sobre los glifos trazados no rechazados (al menos 3);
+    - recetas como datos (`recipes/unicase-es.json`, versión 1, obra original de FORMA), con estrategias en orden: primero derivar de glifos de la fuente y después dibujar un esqueleto vestido con el estilo medido;
+    - puntuación de estilo que rechaza en vez de producir glifos mediocres.
+
+    `&`, `@` y `€` piden siempre diseño (`needs_design`).
+39. **Puntuación (umbral 0,75, piso 0,5 por componente; ambos experimentales, se calibran en la Task 18b).** Solo cuentan los componentes que se pueden medir para el glifo. Curvatura e irregularidad no se miden todavía: no participan, en vez de contar como perfectas.
+    - **Trazo (0,30):** contra el ancho que pide la estrategia. Un guion se dibuja algo más ligero que las letras.
+    - **Terminales (0,20):** tamaño de la bola y forma del final.
+    - **Color (0,15):** solo cifras de al menos 0,4 de la altura de mayúsculas, dentro del rango de las letras.
+    - **Proporción (0,10):** solo esqueletos más anchos que 2,5 trazos.
+40. **Forma de los finales** (`terminal_fill`, nuevo en `glyph_measure`, aditivo): proporción de tinta en el rectángulo delante del final del esqueleto. Vale ≈ 1 en los finales planos y ≈ 0,79 (π/4) en los redondos y las bolas. Se mide en un abanico de ±24°, porque la dirección por cuerda falla en las curvas. No cuentan los espolones hacia las esquinas de un corte (finales más delgados que 0,6 del semiancho típico).
+    - Con finales planos (≥ 0,9), los esqueletos se cortan planos: `Cap::Flat` es nuevo en `glyph_stroke`, aditivo, y los extremos se alargan medio ancho.
+    - La puntuación compara la forma del final con el rango de las letras. Motivo: en el specimen todos los glifos sintetizados tenían finales redondos frente a letras de corte plano, una diferencia de estilo que nada detectaba.
+41. **Fuentes de bolas (el alfabeto privado):**
+    - **Sin contraste direccional.** En una fuente de bolas y estrangulamientos, la dispersión de anchos viene de ellos y no de la dirección del trazo; modularla engordaba las astas.
+    - **Bolas proporcionales al trazo**, no al ancho del final.
+    - **Bola solo donde cabe:** en extremos cuyo brazo, hasta la primera esquina de más de 60°, mide al menos 0,9 diámetros. Así un corchete conserva sus brazos.
+    - **Cajas con espacio para recorrer:** al menos 2 alcances de ancho, y los diacríticos 2 trazos por lado.
+42. **Control de estructura (legibilidad):** el glifo debe tener las mismas piezas y contrahuecos que su esqueleto dibujado con un trazo fino (0,15). Si los trazos funden piezas o cierran contrahuecos, se rechaza. No pondera en la media, pero un 0 rechaza siempre. Motivo: con las bolas del alfabeto privado, `=` y `«` se volvían manchas con buena puntuación de estilo. «Un IoU o un estilo altos no deben ocultar defectos visuales.»
+43. **Procedencia de los sintetizados:** `sources` son **nombres** (antes `GlyphId`) y se añade `strategy`. Un glifo creado en la misma operación todavía no tiene un id duradero: el plan nombra los glifos que crea y el commit les da ids nuevos. Es un cambio del formato v3, que solo existe en esta rama: compatible con todo documento publicado.
+44. **Nunca se aprueba automáticamente:** todo glifo sintetizado nace `synthesized/pending`, con cualquier política. Los motivos de la puntuación van a `attention` (`needs_look`), y `min_score` no baja de 0,75. Test: `auto_policy_never_approves_synthesized`.
+45. **`font_from_image` con síntesis:**
+    - **Orden de las etapas:** trace → synthesize → compose (ahora compone Á…Ú con los diacríticos sintetizados) → space → kern.
+    - **Alcance de espaciado y kerning (D-2):** solo los glifos que hace la llamada. Kerning solo entre letras trazadas y compuestas; los sintetizados se kernean tras su revisión (`kerning_auto`). Ni las métricas ni el kerning del usuario se tocan.
+    - **Errores de etapa (D-8):** un error de síntesis, espaciado o kerning marca la etapa `fail` con su motivo, sin perder el trazado.
+    - **Kerning sobre el límite (D-9):** si el kerning supera el límite de 2000 comandos, la etapa se omite y se informa.
+46. **Correcciones de la revisión del bloque D:**
+    - **D-1:** la exportación de la canalización pasa por `Engine::call` (toolsets, perfil, solo lectura, auditoría).
+    - **D-3:** el código de la minúscula de `unicase-es` se omite si otro glifo o el layout lo tienen (`unicase_skipped`).
+    - **D-4:** test del flujo canónico dry run → `plan_commit` en un documento nuevo, con composición.
+    - **D-6:** la exportación espera mientras haya glifos con `needs_look` o sintetizados pendientes (regla de §5.2).
+    - **D-7:** se rechazan los `extra` repetidos y el desbordamiento de `index_from_end`.
+    - **D-10:** la composición se omite fuera del máster por defecto, y se informa.
+    - **D-11:** cada motivo se acota a 2 más «+N».
+    - **D-13:** nombres `uXXXXX` fuera del BMP.
+    - **D-14:** un cambio de diseño limpia `attention`.
+    - **D-15:** aritmética saturada en `mask.rs`.
+47. **D-5, falsos rasgos en glifos grandes:** un rasgo que el ráster grueso encuentra por debajo de lo que resuelve (2/f + 0,25 px) se vuelve a medir a resolución completa en una ventana a su alrededor.
+    - **Bordes:** una región que bordea sobre todo el otro tipo (fondo junto a un relleno, tinta compartida junto a una pérdida) recorre un borde: es desviación de ajuste, acotada por las puertas de distancia, y no una ranura ni un trazo.
+    - **Cuadrícula:** lo que mide menos de 2 × `grid_px` se informa (`below_grid`) y no bloquea.
+    - **Tests:** anillos limpios de 600 px (UPM 1000), 1200 px y 1900 px (este último ignorado en debug) quedan sin `needs_review`.
+    - **Sin pérdida de detección:** `slit_1px_preserved` sigue pasando, y el corpus no empeora (abajo).
+48. **Pendiente de la decisión del responsable: la desviación de ajuste usa el percentil 99** (decisión 24), no el máximo. Se probó el máximo: los intentos fieles fallan por puntos de ruido y la escalera cae al intento exacto, y el número de nodos se dispara (la lambda trazada pasa de 6 a 37 nodos, la A de 18 a 36). El máximo sigue acotado a 2 px por la puerta de Hausdorff. Queda el percentil 99 hasta que el responsable decida.
+49. **Tests más rápidos en CI:** en el perfil `dev`, `forma-geometry`, `forma-trace`, `forma-synth`, `forma-spacing`, `kurbo` y `linesweeper` se compilan con `opt-level = 2`. Las comprobaciones de desbordamiento siguen activas. El escenario MCP del Hito 2.5 pasó de 208 s a 26 s en debug.
+
+### Corpus, modo C tras el bloque E
+
+| Nivel | Pipelines correctos | IoU media contra la verdad | Peor IoU | Huecos | `needs_review` | No detectados |
+|---|---|---|---|---|---|---|
+| S | 1/1 | 0,995 | 0,984 | 8/8 | 0/8 | 0 |
+| L | 9/11 | 0,998 | 0,983 | 35/35 | 0/35 | 0 |
+| O | 6/7 | 0,983 | 0,944 | 35/36 | 2/36 | 0 |
+| M | 36/36 | 0,974 | 0,569 | 931/936 | 24/936 | 2 (decisión 33) |
+| M-hand | 12/12 | 0,984 | 0,906 | 312/312 | 0/312 | 0 |
+
+### Síntesis: specimen y alfabeto privado (solo métricas agregadas)
+
+- **Specimen (8 letras, terminales planos):** se sintetizan 50 glifos y piden diseño 5: `* $ & @ €`. El `$` no puede derivarse porque falta la S, y el `*` tiene una bola falsa medida junto al cruce de sus brazos (límite conocido). Se componen Á y Ó. Todos los sintetizados quedan pendientes. La síntesis tarda 1,3 s (release).
+- **Alfabeto privado (28 letras, bolas 1,58 × trazo, finales redondos):**
+  - se sintetizan 35 glifos y piden diseño 18;
+  - 2 quedan con `needs_review`;
+  - la síntesis tarda 4,4 s.
+
+  Los rechazos son correctos: `= « »` fundidos, `! ?` con el punto pegado, `+ * #` con trazo inflado por las bolas, y `& @ €`. Las cifras 3, 4 y 6 salen más débiles (las bolas presionan el contrahueco): quedan pendientes para revisión humana.

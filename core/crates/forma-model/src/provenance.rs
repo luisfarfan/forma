@@ -10,7 +10,6 @@
 //! `forma_geometry::same_design`); metrics (advance width, side bearings,
 //! kerning) and metadata (name, code points, export flag) do not.
 
-use crate::ids::GlyphId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -82,8 +81,14 @@ pub enum ProvenanceDetail {
         recipe: String,
         /// The version of that recipe.
         recipe_version: u32,
-        /// The glyphs whose shapes or measurements were used.
-        sources: Vec<GlyphId>,
+        /// The strategy of the recipe that made it, such as `derive:O` or
+        /// `skeleton`, when recorded.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        strategy: String,
+        /// The glyphs whose shapes or measurements were used, by their
+        /// names when it was made (a glyph made in the same operation has no
+        /// lasting id yet).
+        sources: Vec<String>,
         /// How consistent the glyph is with the font's style (0 to 1).
         style_score: f64,
     },
@@ -176,7 +181,8 @@ mod tests {
             ProvenanceDetail::Synthesized {
                 recipe: "zero".into(),
                 recipe_version: 1,
-                sources: vec![],
+                strategy: "derive:O".into(),
+                sources: vec!["O".into()],
                 style_score: 0.8,
             },
         );

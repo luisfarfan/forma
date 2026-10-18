@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "glyphs": [
+    { "name": "space", "unicodes": ["U+0020"], "class": "space", "width": 0.33 },
+
+    { "name": "zero", "unicodes": ["U+0030"], "class": "digit", "width": 0.6,
+      "strategies": [
+        { "id": "derive:O", "parts": [{ "glyph": "O", "width": 0.6 }] },
+        { "id": "skeleton", "strokes": [{ "segs": [{ "ellipse": [0.5, 0.5, 0.5, 0.5] }] }] }
+      ] },
+    { "name": "one", "unicodes": ["U+0031"], "class": "digit", "width": 0.3,
+      "strategies": [
+        { "id": "skeleton", "strokes": [{ "segs": [
+          { "line": [0.0, 0.76] }, { "line": [1.0, 1.0] }, { "line": [1.0, 0.0] } ] }] }
+      ] },
+    { "name": "two", "unicodes": ["U+0032"], "class": "digit", "width": 0.56,
+      "strategies": [
+        { "id": "skeleton", "strokes": [{ "segs": [
+          { "arc": [0.5, 0.72, 0.5, 0.28, 160.0, -35.0] },
+          { "line": [0.0, 0.0] }, { "line": [1.0, 0.0] } ] }] }
+      ] },
+    { "name": "three", "unicodes": ["U+0033"], "class": "digit", "width": 0.54,
+      "strategies": [
+        { "id": "skeleton", "strokes": [{ "segs": [
+          { "arc": [0.5, 0.76, 0.44, 0.24, 155.0, -90.0] },
+          { "arc": [0.5, 0.26, 0.5, 0.26, 90.0, -155.0] } ] }] }
+      ] },
+    { "name": "four", "unicodes": ["U+0034"], "class": "digit", "width": 0.62,
+      "strategies": [
+        { "id": "skeleton", "strokes": [{ "segs": [
+          { "line": [0.75, 0.0] }, { "line": [0.75, 1.0] }, { "line": [0.0, 0.3] }, { "line": [1.0, 0.3] } ] }] }
+      ] },
+    { "name": "five", "unicodes": ["U+0035"], "class": "digit", "width": 0.55,
+      "strategies": [
+        { "id": "skeleton", "strokes": [{ "segs": [
+          { "line": [0.92, 1.0] }, { "line": [0.14, 1.0] }, { "line": [0.1, 0.56] },
+          { "arc": [0.5, 0.31, 0.5, 0.31, 130.0, -150.0] } ] }] }
+      ] },
+    { "name": "six", "unicodes": ["U+0036"], "class": "digit", "width": 0.58,
+      "strategies": [
+        { "id": "skeleton", "strokes": [
+          { "segs": [{ "ellipse": [0.5, 0.32, 0.5, 0.32] }] },
+          { "segs": [{ "arc": [0.62, 0.32, 0.62, 0.68, 75.0, 180.0] }] } ] }
+      ] },
+    { "name": "seven", "unicodes": ["U+0037"], "class": "digit", "width": 0.55,
+      "strategies": [
+        { "id": "skeleton", "strokes": [{ "segs": [
+          { "line": [0.0, 1.0] }, { "line": [1.0, 1.0] }, { "line": [0.32, 0.0] } ] }] }
+      ] },
+    { "name": "eight", "unicodes": ["U+0038"], "class": "digit", "width": 0.58,
+      "strategies": [
+        { "id": "skeleton", "strokes": [
+          { "segs": [{ "ellipse": [0.5, 0.76, 0.42, 0.24] }] },
+          { "segs": [{ "ellipse": [0.5, 0.26, 0.5, 0.26] }] } ] }
+      ] },
+    { "name": "nine", "unicodes": ["U+0039"], "class": "digit", "width": 0.58,
+      "strategies": [
+        { "id": "derive:six", "parts": [{ "glyph": "six", "rotate": true }] },
+        { "id": "skeleton", "strokes": [
+          { "segs": [{ "ellipse": [0.5, 0.68, 0.5, 0.32] }] },
+          { "segs": [{ "arc": [0.38, 0.68, 0.62, 0.68, -105.0, 0.0] }] } ] }
+      ] },
+
+    { "name": "period", "unicodes": ["U+002E"], "class": "punct", "width": 0.16, "stroke_check": false,
+      "strategies": [{ "id": "skeleton", "dots": [{ "at": [0.5, 0.0] }] }] },
+    { "name": "comma", "unicodes": ["U+002C"], "class": "punct", "width": 0.2, "stroke_check": false,
+      "strategies": [{ "id": "skeleton",
+        "dots": [{ "at": [0.6, 0.0] }],
+        "strokes": [{ "segs": [{ "line": [0.75, 0.02] }, { "line": [0.2, -0.2] }], "w": 0.7 }] }] },
+    { "name": "colon", "unicodes": ["U+003A"], "class": "punct", "width": 0.16, "stroke_check": false,
+      "strategies": [
+        { "id": "derive:period", "parts": [
+          { "glyph": "period", "center": true },
+          { "glyph": "period", "center": true, "dy": 0.5 } ] },
+        { "id": "skeleton", "dots": [{ "at": [0.5, 0.0] }, { "at": [0.5, 0.55] }] } ] },
+    { "name": "semicolon", "unicodes": ["U+003B"], "class": "punct", "width": 0.2, "stroke_check": false,
+      "strategies": [
+        { "id": "derive:comma,period", "parts": [
+          { "glyph": "comma" },
+          { "glyph": "period", "dx": 0.0, "dy": 0.5 } ] } ] },
+    { "name": "exclam", "unicodes": ["U+0021"], "class": "punct", "width": 0.18,
+      "strategies": [{ "id": "skeleton",
+        "strokes": [{ "segs": [{ "line": [0.5, 1.0] }, { "line": [0.5, 0.36] }] }],
+        "dots": [{ "at": [0.5, 0.0] }] }] },
+    { "name": "exclamdown", "unicodes": ["U+00A1"], "class": "punct", "width": 0.18,
+      "strategies": [{ "id": "derive:exclam", "parts": [{ "glyph": "exclam", "rotate": true, "dy": -0.22 }] }] },
+    { "name": "question", "unicodes": ["U+003F"], "class": "punct", "width": 0.5,
+      "strategies": [{ "id": "skeleton",
+        "strokes": [{ "segs": [
+          { "arc": [0.5, 0.73, 0.5, 0.27, 165.0, -60.0] },
+          { "line": [0.5, 0.42] }, { "line": [0.5, 0.28] } ] }],
+        "dots": [{ "at": [0.5, 0.0] }] }] },
+    { "name": "questiondown", "unicodes": ["U+00BF"], "class": "punct", "width": 0.5,
+      "strategies": [{ "id": "derive:question", "parts": [{ "glyph": "question", "rotate": true, "dy": -0.22 }] }] },
+    { "name": "quotesingle", "unicodes": ["U+0027"], "class": "punct", "width": 0.12,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [{ "line": [0.5, 1.0] }, { "line": [0.5, 0.7] }] }] }] },
+    { "name": "quotedbl", "unicodes": ["U+0022"], "class": "punct", "width": 0.32,
+      "strategies": [{ "id": "skeleton", "strokes": [
+        { "segs": [{ "line": [0.0, 1.0] }, { "line": [0.0, 0.7] }] },
+        { "segs": [{ "line": [1.0, 1.0] }, { "line": [1.0, 0.7] }] } ] }] },
+    { "name": "quoteright", "unicodes": ["U+2019"], "class": "punct", "width": 0.2, "stroke_check": false,
+      "strategies": [{ "id": "derive:comma", "parts": [{ "glyph": "comma", "top": 1.0 }] }] },
+    { "name": "quoteleft", "unicodes": ["U+2018"], "class": "punct", "width": 0.2, "stroke_check": false,
+      "strategies": [{ "id": "derive:comma", "parts": [{ "glyph": "comma", "rotate": true, "top": 1.0 }] }] },
+    { "name": "quotedblright", "unicodes": ["U+201D"], "class": "punct", "width": 0.45, "stroke_check": false,
+      "strategies": [{ "id": "derive:quoteright", "parts": [
+        { "glyph": "quoteright", "top": 1.0 },
+        { "glyph": "quoteright", "top": 1.0, "advance": 1.6 } ] }] },
+    { "name": "quotedblleft", "unicodes": ["U+201C"], "class": "punct", "width": 0.45, "stroke_check": false,
+      "strategies": [{ "id": "derive:quoteleft", "parts": [
+        { "glyph": "quoteleft", "top": 1.0 },
+        { "glyph": "quoteleft", "top": 1.0, "advance": 1.6 } ] }] },
+    { "name": "ellipsis", "unicodes": ["U+2026"], "class": "punct", "width": 0.8, "stroke_check": false,
+      "strategies": [{ "id": "derive:period", "parts": [
+        { "glyph": "period" },
+        { "glyph": "period", "advance": 2.2 },
+        { "glyph": "period", "advance": 4.4 } ] }] },
+    { "name": "periodcentered", "unicodes": ["U+00B7"], "class": "punct", "width": 0.16, "stroke_check": false,
+      "strategies": [{ "id": "derive:period", "parts": [{ "glyph": "period", "dy": 0.42 }] }] },
+    { "name": "hyphen", "unicodes": ["U+002D"], "class": "punct", "width": 0.36,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [{ "line": [0.0, 0.42] }, { "line": [1.0, 0.42] }], "w": 0.9 }] }] },
+    { "name": "endash", "unicodes": ["U+2013"], "class": "punct", "width": 0.55,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [{ "line": [0.0, 0.42] }, { "line": [1.0, 0.42] }], "w": 0.9 }] }] },
+    { "name": "emdash", "unicodes": ["U+2014"], "class": "punct", "width": 1.1,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [{ "line": [0.0, 0.42] }, { "line": [1.0, 0.42] }], "w": 0.9 }] }] },
+    { "name": "underscore", "unicodes": ["U+005F"], "class": "punct", "width": 0.6,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [{ "line": [0.0, -0.15] }, { "line": [1.0, -0.15] }], "w": 0.9 }] }] },
+    { "name": "parenleft", "unicodes": ["U+0028"], "class": "punct", "width": 0.28,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [{ "arc": [2.0, 0.45, 2.0, 0.7, 120.0, 240.0] }] }] }] },
+    { "name": "parenright", "unicodes": ["U+0029"], "class": "punct", "width": 0.28,
+      "strategies": [{ "id": "derive:parenleft", "parts": [{ "glyph": "parenleft", "mirror": true }] }] },
+    { "name": "bracketleft", "unicodes": ["U+005B"], "class": "punct", "width": 0.26,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [
+        { "line": [1.0, 1.1] }, { "line": [0.0, 1.1] }, { "line": [0.0, -0.15] }, { "line": [1.0, -0.15] } ] }] }] },
+    { "name": "bracketright", "unicodes": ["U+005D"], "class": "punct", "width": 0.26,
+      "strategies": [{ "id": "derive:bracketleft", "parts": [{ "glyph": "bracketleft", "mirror": true }] }] },
+    { "name": "braceleft", "unicodes": ["U+007B"], "class": "punct", "width": 0.32,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [
+        { "line": [1.0, 1.1] }, { "line": [0.5, 1.0] }, { "line": [0.5, 0.55] }, { "line": [0.0, 0.47] },
+        { "line": [0.5, 0.39] }, { "line": [0.5, -0.05] }, { "line": [1.0, -0.15] } ] }] }] },
+    { "name": "braceright", "unicodes": ["U+007D"], "class": "punct", "width": 0.32,
+      "strategies": [{ "id": "derive:braceleft", "parts": [{ "glyph": "braceleft", "mirror": true }] }] },
+    { "name": "slash", "unicodes": ["U+002F"], "class": "punct", "width": 0.45,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [{ "line": [0.0, -0.1] }, { "line": [1.0, 1.05] }] }] }] },
+    { "name": "backslash", "unicodes": ["U+005C"], "class": "punct", "width": 0.45,
+      "strategies": [{ "id": "derive:slash", "parts": [{ "glyph": "slash", "mirror": true }] }] },
+    { "name": "guillemotleft", "unicodes": ["U+00AB"], "class": "punct", "width": 0.55,
+      "strategies": [{ "id": "skeleton", "strokes": [
+        { "segs": [{ "line": [0.45, 0.72] }, { "line": [0.0, 0.42] }, { "line": [0.45, 0.12] }], "w": 0.9 },
+        { "segs": [{ "line": [1.0, 0.72] }, { "line": [0.55, 0.42] }, { "line": [1.0, 0.12] }], "w": 0.9 } ] }] },
+    { "name": "guillemotright", "unicodes": ["U+00BB"], "class": "punct", "width": 0.55,
+      "strategies": [{ "id": "derive:guillemotleft", "parts": [{ "glyph": "guillemotleft", "mirror": true }] }] },
+
+    { "name": "plus", "unicodes": ["U+002B"], "class": "symbol", "width": 0.6,
+      "strategies": [{ "id": "skeleton", "strokes": [
+        { "segs": [{ "line": [0.5, 0.12] }, { "line": [0.5, 0.78] }] },
+        { "segs": [{ "line": [0.0, 0.45] }, { "line": [1.0, 0.45] }] } ] }] },
+    { "name": "equal", "unicodes": ["U+003D"], "class": "symbol", "width": 0.6,
+      "strategies": [{ "id": "skeleton", "strokes": [
+        { "segs": [{ "line": [0.0, 0.3] }, { "line": [1.0, 0.3] }] },
+        { "segs": [{ "line": [0.0, 0.62] }, { "line": [1.0, 0.62] }] } ] }] },
+    { "name": "less", "unicodes": ["U+003C"], "class": "symbol", "width": 0.55,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [
+        { "line": [1.0, 0.8] }, { "line": [0.0, 0.46] }, { "line": [1.0, 0.12] } ] }] }] },
+    { "name": "greater", "unicodes": ["U+003E"], "class": "symbol", "width": 0.55,
+      "strategies": [{ "id": "derive:less", "parts": [{ "glyph": "less", "mirror": true }] }] },
+    { "name": "asterisk", "unicodes": ["U+002A"], "class": "symbol", "width": 0.45,
+      "strategies": [{ "id": "skeleton", "strokes": [
+        { "segs": [{ "line": [0.5, 1.0] }, { "line": [0.5, 0.56] }], "w": 0.8 },
+        { "segs": [{ "line": [0.05, 0.89] }, { "line": [0.95, 0.67] }], "w": 0.8 },
+        { "segs": [{ "line": [0.05, 0.67] }, { "line": [0.95, 0.89] }], "w": 0.8 } ] }] },
+    { "name": "numbersign", "unicodes": ["U+0023"], "class": "symbol", "width": 0.66,
+      "strategies": [{ "id": "skeleton", "strokes": [
+        { "segs": [{ "line": [0.2, 0.0] }, { "line": [0.4, 1.0] }], "w": 0.85 },
+        { "segs": [{ "line": [0.6, 0.0] }, { "line": [0.8, 1.0] }], "w": 0.85 },
+        { "segs": [{ "line": [0.0, 0.33] }, { "line": [1.0, 0.33] }], "w": 0.85 },
+        { "segs": [{ "line": [0.0, 0.67] }, { "line": [1.0, 0.67] }], "w": 0.85 } ] }] },
+    { "name": "percent", "unicodes": ["U+0025"], "class": "symbol", "width": 0.82,
+      "strategies": [{ "id": "skeleton", "strokes": [
+        { "segs": [{ "ellipse": [0.19, 0.8, 0.19, 0.2] }], "w": 0.8 },
+        { "segs": [{ "ellipse": [0.81, 0.2, 0.19, 0.2] }], "w": 0.8 },
+        { "segs": [{ "line": [0.88, 1.0] }, { "line": [0.12, 0.0] }], "w": 0.8 } ] }] },
+    { "name": "dollar", "unicodes": ["U+0024"], "class": "symbol", "width": 0.6,
+      "strategies": [{ "id": "derive:S", "parts": [{ "glyph": "S" }],
+        "strokes": [{ "segs": [{ "line": [0.5, -0.12] }, { "line": [0.5, 1.12] }], "w": 0.8 }] }] },
+    { "name": "ampersand", "unicodes": ["U+0026"], "class": "symbol",
+      "needs_design": "the & has no skeleton that keeps a drawing's character: draw it, or trace it from a drawing" },
+    { "name": "at", "unicodes": ["U+0040"], "class": "symbol",
+      "needs_design": "the @ has no skeleton that keeps a drawing's character: draw it, or trace it from a drawing" },
+    { "name": "Euro", "unicodes": ["U+20AC"], "class": "symbol",
+      "needs_design": "the € has no skeleton that keeps a drawing's character: draw it, or trace it from a drawing" },
+
+    { "name": "acutecomb", "unicodes": [], "class": "mark", "width": 0.22, "height": 0.2,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [{ "line": [0.0, 0.0] }, { "line": [1.0, 1.0] }], "w": 0.85 }] }] },
+    { "name": "dieresiscomb", "unicodes": [], "class": "mark", "width": 0.42, "height": 0.14, "stroke_check": false,
+      "strategies": [{ "id": "skeleton", "dots": [{ "at": [0.0, 0.5] }, { "at": [1.0, 0.5] }] }] },
+    { "name": "tildecomb", "unicodes": [], "class": "mark", "width": 0.36, "height": 0.16,
+      "strategies": [{ "id": "skeleton", "strokes": [{ "segs": [
+        { "arc": [0.25, 0.3, 0.25, 0.45, 180.0, 0.0] },
+        { "arc": [0.75, 0.3, 0.25, 0.45, 180.0, 360.0] } ], "w": 0.8 }] }] }
+  ]
+}

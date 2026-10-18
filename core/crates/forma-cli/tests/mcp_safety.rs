@@ -515,7 +515,7 @@ fn garbage_lines_do_not_break_the_session(#[case] mode: ClientLifecycleMode) {
     let tools = run.response(2)["result"]["tools"]
         .as_array()
         .expect("tools/list result");
-    assert_eq!(tools.len(), 53);
+    assert_eq!(tools.len(), 55);
     // Nothing but answers: the garbage got no reply or a JSON-RPC error.
     for message in &run.messages {
         let answered = message["id"] == json!(1) || message["id"] == json!(2);

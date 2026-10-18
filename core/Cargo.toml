@@ -64,3 +64,20 @@ visioncortex = "0.9.3"
 # benchmark corpus and its ground truth. Its read-fonts matches ours. MIT OR
 # Apache-2.0, maintained by Google Fonts (fontations).
 skrifa = "0.46.2"
+
+# The geometry-heavy crates are optimized in test builds too: tracing,
+# synthesis and overlap removal run ten times slower unoptimized, enough to
+# push the end-to-end scenarios past their time limits on CI. Overflow
+# checks and debug assertions stay on.
+[profile.dev.package.forma-geometry]
+opt-level = 2
+[profile.dev.package.forma-trace]
+opt-level = 2
+[profile.dev.package.forma-synth]
+opt-level = 2
+[profile.dev.package.forma-spacing]
+opt-level = 2
+[profile.dev.package.kurbo]
+opt-level = 2
+[profile.dev.package.linesweeper]
+opt-level = 2

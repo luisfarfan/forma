@@ -227,6 +227,9 @@ pub fn mark_design_changes(
         let glyph = glyph_mut(next, *id)?;
         if let Some(provenance) = glyph.provenance.as_mut() {
             provenance.edited = true;
+            // What the engine asked to look at was about the design it made,
+            // which a person has now changed.
+            provenance.attention.clear();
             if provenance.review == Review::Approved {
                 provenance.review = Review::Pending;
                 provenance.approved_geometry = None;

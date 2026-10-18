@@ -14,7 +14,8 @@ use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::tools::{
     capabilities, charset, components, document, edit_batch, export, font, geometry, glyphs,
-    history, kerning, metrics, outlines, pipeline, plans, preview, quality, sheet, stroke, trace,
+    history, kerning, metrics, outlines, pipeline, plans, preview, quality, sheet, stroke, synth,
+    trace,
 };
 
 /// A group of related tools that a facade can enable or disable together.
@@ -46,11 +47,14 @@ pub enum Toolset {
     /// Image tracing: inspecting images, tracing glyphs, comparing and
     /// measuring style.
     Trace,
+    /// Style synthesis: measuring a font's style and making the glyphs it
+    /// lacks in that style.
+    Synthesis,
 }
 
 impl Toolset {
     /// Every toolset, in the order the registry introduces them.
-    pub const ALL: [Toolset; 11] = [
+    pub const ALL: [Toolset; 12] = [
         Self::Core,
         Self::Glyphs,
         Self::Geometry,
@@ -62,6 +66,7 @@ impl Toolset {
         Self::Components,
         Self::Kerning,
         Self::Trace,
+        Self::Synthesis,
     ];
 
     /// The serialized name, such as `"core"`.
@@ -79,6 +84,7 @@ impl Toolset {
             Self::Components => "components",
             Self::Kerning => "kerning",
             Self::Trace => "trace",
+            Self::Synthesis => "synthesis",
         }
     }
 }
@@ -171,7 +177,7 @@ pub struct CommandSpec {
 }
 
 /// Every command, in the exact registration order of the public API.
-static REGISTRY: [CommandSpec; 53] = [
+static REGISTRY: [CommandSpec; 55] = [
     // core
     capabilities::SPEC,
     document::CREATE,
@@ -237,6 +243,9 @@ static REGISTRY: [CommandSpec; 53] = [
     sheet::SHEET,
     glyphs::REVIEW,
     pipeline::FROM_IMAGE,
+    // style synthesis (Hito 2.5)
+    synth::STYLE_EXTRACT,
+    synth::SYNTHESIZE,
 ];
 
 /// The tools of the `image-font` profile, in registry order: what turning

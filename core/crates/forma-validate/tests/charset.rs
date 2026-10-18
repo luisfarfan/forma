@@ -71,3 +71,13 @@ fn charset_reports_missing_and_composites() {
     assert_eq!((full.required, full.covered), (1, 1));
     assert!(full.missing.is_empty());
 }
+
+#[test]
+fn glyph_names_follow_the_agl() {
+    use forma_validate::charset::glyph_name;
+    assert_eq!(glyph_name(u32::from('A')), "A");
+    assert_eq!(glyph_name(0x30), "zero");
+    assert_eq!(glyph_name(0x0301), "acutecomb");
+    assert_eq!(glyph_name(0x0416), "uni0416");
+    assert_eq!(glyph_name(0x1F600), "u1F600");
+}

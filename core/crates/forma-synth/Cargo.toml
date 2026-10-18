@@ -1,0 +1,22 @@
+[package]
+name = "forma-synth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA style synthesis: a style kit measured on traced glyphs, recipes as data, and a style score that refuses rather than producing mediocre glyphs"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+forma-geometry = { path = "../forma-geometry" }
+forma-trace = { path = "../forma-trace" }
+kurbo = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
+# The `probe` example reads documents to inspect what recipes draw.
+forma-store = { path = "../forma-store" }

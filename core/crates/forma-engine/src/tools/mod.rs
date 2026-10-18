@@ -35,6 +35,7 @@ pub mod report;
 pub mod sheet;
 pub(crate) mod steps;
 pub mod stroke;
+pub mod synth;
 pub mod trace;
 
 /// Deserializes the arguments of a tool; a mismatch (missing, mistyped or

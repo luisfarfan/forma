@@ -1158,6 +1158,7 @@ dependencies = [
  "forma-render",
  "forma-spacing",
  "forma-store",
+ "forma-synth",
  "forma-trace",
  "forma-validate",
  "getrandom 0.4.3",
@@ -1266,6 +1267,22 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "forma-synth"
+version = "0.0.1"
+dependencies = [
+ "forma-geometry",
+ "forma-model",
+ "forma-store",
+ "forma-trace",
+ "kurbo",
+ "schemars",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "uuid",
 ]

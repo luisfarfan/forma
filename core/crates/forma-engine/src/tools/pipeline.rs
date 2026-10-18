@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 
 use crate::engine::Engine;
 use crate::errors::{ErrorCode, ToolError, from_spacing_error, from_trace_error};
+use crate::limits::MAX_BATCH_OPS;
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::components::{
     GlyphComposeOpArgs, MarkPlacement, MarkPosition, glyph_compose_commands,
@@ -33,6 +34,7 @@ use crate::tools::mutate::{Edit, Mutation, MutationResult, OpArgs, mutate};
 use crate::tools::plans::OrPlan;
 use crate::tools::report::{Detail, ReportRef, write_report};
 use crate::tools::steps::Steps;
+use crate::tools::synth::synthesize_commands;
 use crate::tools::trace::{
     Assignment, cap_height, read_image_hashed, trace_commands, trace_options,
 };
@@ -116,14 +118,20 @@ const fn yes() -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Stages {
+    /// Make the profile's glyphs the image lacks (figures, punctuation,
+    /// marks) in its style, or list them as needing a design (see
+    /// glyph_synthesize).
+    #[serde(default = "yes")]
+    pub synthesize: bool,
     /// Compose the accented letters of the profile from their base and
     /// mark, when both exist.
     #[serde(default = "yes")]
     pub compose: bool,
-    /// Space the glyphs.
+    /// Space the glyphs the call makes (the others keep their metrics).
     #[serde(default = "yes")]
     pub space: bool,
-    /// Kern them.
+    /// Kern the glyphs the call makes among themselves (pairs of other
+    /// glyphs stay).
     #[serde(default = "yes")]
     pub kern: bool,
     /// Export after the change.
@@ -134,6 +142,7 @@ pub struct Stages {
 impl Default for Stages {
     fn default() -> Self {
         Stages {
+            synthesize: true,
             compose: true,
             space: true,
             kern: true,
@@ -328,7 +337,10 @@ fn match_layout(
             .collect();
         let at = match (extra.index, extra.index_from_end) {
             (Some(i), None) => row.get(i),
-            (None, Some(i)) => row.len().checked_sub(i + 1).and_then(|k| row.get(k)),
+            (None, Some(i)) => i
+                .checked_add(1)
+                .and_then(|n| row.len().checked_sub(n))
+                .and_then(|k| row.get(k)),
             _ => {
                 return Err(ToolError::invalid_argument(
                     "an extra shape needs exactly one of `index` and `index_from_end`",
@@ -342,7 +354,12 @@ fn match_layout(
                 row.len()
             )));
         };
-        taken.insert(index);
+        if !taken.insert(index) {
+            return Err(ToolError::invalid_argument(format!(
+                "two extra shapes name the same shape (row {}): name each shape once",
+                extra.row
+            )));
+        }
         out.push((vec![index], ch));
     }
     let mut rest = analysis.clone();
@@ -440,6 +457,8 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
     }
     let mut names = BTreeSet::new();
     let mut assignments = Vec::with_capacity(matched.len());
+    let primaries: BTreeSet<u32> = matched.iter().map(|(_, ch)| u32::from(*ch)).collect();
+    let mut unicase_skipped = Vec::new();
     for (group, ch) in &matched {
         let cp = u32::from(*ch);
         let name = forma_validate::charset::glyph_name(cp);
@@ -453,14 +472,37 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         } else {
             (None, Some(group.clone()))
         };
+        // The profile's extra code points (a capital's lowercase) are left
+        // off when the layout draws that character too or another glyph of
+        // the document has it.
+        let mut unicodes = Vec::new();
+        for code in forma_validate::charset::glyph_codepoints(&profile, cp) {
+            let taken_elsewhere = font
+                .glyphs
+                .values()
+                .any(|g| g.name != name && g.unicodes.contains(&code));
+            if code != cp && (primaries.contains(&code) || taken_elsewhere) {
+                unicase_skipped.push(format!("{name} without U+{code:04X}"));
+                continue;
+            }
+            unicodes.push(CodePoint(code));
+        }
         assignments.push(Assignment {
             candidate,
             candidates,
             name,
-            unicodes: forma_validate::charset::glyph_codepoints(&profile, cp)
-                .into_iter()
-                .map(CodePoint)
-                .collect(),
+            unicodes,
+        });
+    }
+    if !unicase_skipped.is_empty() {
+        attention.push(AttentionItem {
+            kind: "unicase_skipped".into(),
+            glyph: None,
+            row: None,
+            reason: format!(
+                "code points another glyph already has were left off: {}",
+                unicase_skipped.join(", ")
+            ),
         });
     }
     let groups: Vec<Vec<usize>> = matched.iter().map(|(g, _)| g.clone()).collect();
@@ -478,7 +520,7 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
                 kind: "needs_review".into(),
                 glyph: Some(a.name.clone()),
                 row: None,
-                reason: g.reasons.join("; "),
+                reason: brief(&g.reasons),
             });
         }
         traced_detail.push(json!({
@@ -494,9 +536,114 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         started,
     ));
 
+    // The glyphs the call makes: only they are spaced and kerned.
+    let mut produced: BTreeSet<String> = assignments.iter().map(|a| a.name.clone()).collect();
+    let mut composed_names: BTreeSet<String> = BTreeSet::new();
+    let mut unspaced: BTreeSet<String> = BTreeSet::new();
+    let mut synthesized: BTreeSet<String> = BTreeSet::new();
+    let default_master = op.master.is_none_or(|m| m == font.default_master().id);
+
+    // Synthesize what the image lacks.
+    let started = Instant::now();
+    let mut synth_detail = Value::Null;
+    if op.stages.synthesize {
+        match synthesize_commands(
+            &steps.after,
+            op.master,
+            &profile,
+            None,
+            None,
+            forma_synth::MIN_STYLE_SCORE,
+        ) {
+            Ok(synthesis) => {
+                let made = synthesis.made.len();
+                for m in &synthesis.made {
+                    produced.insert(m.name.clone());
+                    synthesized.insert(m.name.clone());
+                    if matches!(
+                        m.class,
+                        forma_synth::Class::Mark | forma_synth::Class::Space
+                    ) {
+                        unspaced.insert(m.name.clone());
+                    }
+                    if !m.score.reasons.is_empty() {
+                        attention.push(AttentionItem {
+                            kind: "needs_review".into(),
+                            glyph: Some(m.name.clone()),
+                            row: None,
+                            reason: brief(&m.score.reasons),
+                        });
+                    }
+                }
+                if !synthesis.needs_design.is_empty() {
+                    attention.push(AttentionItem {
+                        kind: "needs_design".into(),
+                        glyph: None,
+                        row: None,
+                        reason: format!(
+                            "no glyph in the drawing's style could be made for {}: draw or \
+                             trace them (glyph_synthesize lists why)",
+                            synthesis
+                                .needs_design
+                                .iter()
+                                .map(|n| n.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    });
+                }
+                if !synthesis.skipped.is_empty() {
+                    attention.push(AttentionItem {
+                        kind: "unicase_skipped".into(),
+                        glyph: None,
+                        row: None,
+                        reason: format!(
+                            "code points another glyph already has were left off: {}",
+                            synthesis.skipped.join(", ")
+                        ),
+                    });
+                }
+                let needs_design = synthesis.needs_design.len();
+                synth_detail = json!({
+                    "made": synthesis.made, "needs_design": synthesis.needs_design,
+                });
+                for cmd in synthesis.cmds {
+                    steps.push(cmd)?;
+                }
+                stages.push(stage(
+                    "synthesize",
+                    if needs_design == 0 { "ok" } else { "warn" },
+                    json!({ "made": made, "needs_design": needs_design }),
+                    started,
+                ));
+            }
+            Err(error) => {
+                attention.push(AttentionItem {
+                    kind: "stage_failed".into(),
+                    glyph: None,
+                    row: None,
+                    reason: format!("synthesis: {}", error.message),
+                });
+                stages.push(stage("synthesize", "fail", json!({}), started));
+            }
+        }
+    } else {
+        stages.push(stage("synthesize", "skipped", json!({}), started));
+    }
+
     // Compose the accented letters of the profile.
     let started = Instant::now();
-    if op.stages.compose && profile == "unicase-es" {
+    if op.stages.compose && profile == "unicase-es" && !default_master {
+        attention.push(AttentionItem {
+            kind: "compose_skipped".into(),
+            glyph: None,
+            row: None,
+            reason: "accented letters are composed in the default master only: compose them \
+                     there with glyph_compose"
+                .into(),
+        });
+        stages.push(stage("compose", "skipped", json!({}), started));
+    } else if op.stages.compose && profile == "unicase-es" {
         let mut composed = 0;
         let mut missing_marks = BTreeSet::new();
         for (accented, base, mark) in ACCENTED {
@@ -511,17 +658,23 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
                 missing_marks.insert(mark);
                 continue;
             }
+            let unicodes: Vec<CodePoint> =
+                forma_validate::charset::glyph_codepoints(&profile, u32::from(accented))
+                    .into_iter()
+                    .filter(|code| {
+                        !steps
+                            .after
+                            .glyphs
+                            .values()
+                            .any(|g| g.unicodes.contains(code))
+                    })
+                    .map(CodePoint)
+                    .collect();
             let (_, cmds) = glyph_compose_commands(
                 &steps.after,
                 GlyphComposeOpArgs {
-                    name,
-                    unicodes: forma_validate::charset::glyph_codepoints(
-                        &profile,
-                        u32::from(accented),
-                    )
-                    .into_iter()
-                    .map(CodePoint)
-                    .collect(),
+                    name: name.clone(),
+                    unicodes,
                     base: GlyphRef::Name(base_name),
                     marks: vec![MarkPlacement {
                         glyph: GlyphRef::Name(mark.to_owned()),
@@ -533,6 +686,8 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
             for cmd in cmds {
                 steps.push(cmd)?;
             }
+            produced.insert(name.clone());
+            composed_names.insert(name);
             composed += 1;
         }
         if !missing_marks.is_empty() {
@@ -557,38 +712,59 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         stages.push(stage("compose", "skipped", json!({}), started));
     }
 
-    // Space.
+    // Space the glyphs the call made (composites follow their bases).
     let started = Instant::now();
-    if op.stages.space {
+    let to_space: Vec<GlyphRef> = produced
+        .iter()
+        .filter(|n| !composed_names.contains(*n) && !unspaced.contains(*n))
+        .map(|n| GlyphRef::Name(n.clone()))
+        .collect();
+    if op.stages.space && !to_space.is_empty() {
         let refs_exist = ["H", "O"]
             .iter()
             .all(|n| steps.after.glyph_by_name(n).is_some());
         if refs_exist {
             let before = steps.after.clone();
-            let planned = plan_spacing(
+            let spaced = plan_spacing(
                 &steps.after,
                 SpacingAutoOpArgs {
                     master: op.master,
-                    glyphs: None,
+                    glyphs: Some(to_space),
                     tightness: None,
                     references: None,
                     detail: Detail::Summary,
                 },
-            )?;
-            for cmd in planned.translation.1 {
-                steps.push(cmd)?;
+            )
+            .and_then(|planned| {
+                let scratch = Steps::of(&Arc::new(steps.after.clone()), planned.translation.1)?;
+                let (realign, realigned) =
+                    realign_composites(&before, &scratch.after, planned.master, &planned.spaced)?;
+                let mut cmds = scratch.cmds;
+                cmds.extend(realign);
+                Ok((cmds, planned.spaced.len(), realigned, planned.clamped.len()))
+            });
+            match spaced {
+                Ok((cmds, count, realigned, clamped)) => {
+                    for cmd in cmds {
+                        steps.push(cmd)?;
+                    }
+                    stages.push(stage(
+                        "space",
+                        if clamped == 0 { "ok" } else { "warn" },
+                        json!({ "spaced": count, "realigned": realigned, "clamped": clamped }),
+                        started,
+                    ));
+                }
+                Err(error) => {
+                    attention.push(AttentionItem {
+                        kind: "stage_failed".into(),
+                        glyph: None,
+                        row: None,
+                        reason: format!("spacing: {}", error.message),
+                    });
+                    stages.push(stage("space", "fail", json!({}), started));
+                }
             }
-            let (realign, realigned) =
-                realign_composites(&before, &steps.after, planned.master, &planned.spaced)?;
-            for cmd in realign {
-                steps.push(cmd)?;
-            }
-            stages.push(stage(
-                "space",
-                if planned.clamped.is_empty() { "ok" } else { "warn" },
-                json!({ "spaced": planned.spaced.len(), "realigned": realigned, "clamped": planned.clamped.len() }),
-                started,
-            ));
         } else {
             attention.push(AttentionItem {
                 kind: "references".into(),
@@ -604,14 +780,20 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         stages.push(stage("space", "skipped", json!({}), started));
     }
 
-    // Kern.
+    // Kern the letters the call traced or composed among themselves; the
+    // synthesized glyphs wait for their review (then kerning_auto).
     let started = Instant::now();
-    if op.stages.kern && steps.after.glyph_by_name("H").is_some() {
-        let (_, cmds) = kerning_auto_commands(
+    let to_kern: Vec<GlyphRef> = produced
+        .iter()
+        .filter(|n| !unspaced.contains(*n) && !synthesized.contains(*n))
+        .map(|n| GlyphRef::Name(n.clone()))
+        .collect();
+    if op.stages.kern && steps.after.glyph_by_name("H").is_some() && to_kern.len() > 1 {
+        match kerning_auto_commands(
             &steps.after,
             KerningAutoOpArgs {
                 master: op.master,
-                glyphs: None,
+                glyphs: Some(to_kern),
                 strength: None,
                 min_value: None,
                 max_ratio: None,
@@ -620,12 +802,42 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
                 replace: true,
                 detail: Detail::Summary,
             },
-        )?;
-        let pairs = cmds.len();
-        for cmd in cmds {
-            steps.push(cmd)?;
+        ) {
+            Ok((_, cmds)) if steps.cmds.len() + cmds.len() > MAX_BATCH_OPS => {
+                attention.push(AttentionItem {
+                    kind: "stage_failed".into(),
+                    glyph: None,
+                    row: None,
+                    reason: format!(
+                        "kerning takes {} commands, too many for the same transaction: kern \
+                         with kerning_auto afterwards",
+                        cmds.len()
+                    ),
+                });
+                stages.push(stage(
+                    "kern",
+                    "skipped",
+                    json!({ "commands": cmds.len() }),
+                    started,
+                ));
+            }
+            Ok((_, cmds)) => {
+                let count = cmds.len();
+                for cmd in cmds {
+                    steps.push(cmd)?;
+                }
+                stages.push(stage("kern", "ok", json!({ "commands": count }), started));
+            }
+            Err(error) => {
+                attention.push(AttentionItem {
+                    kind: "stage_failed".into(),
+                    glyph: None,
+                    row: None,
+                    reason: format!("kerning: {}", error.message),
+                });
+                stages.push(stage("kern", "fail", json!({}), started));
+            }
         }
-        stages.push(stage("kern", "ok", json!({ "commands": pairs }), started));
     } else {
         stages.push(stage("kern", "skipped", json!({}), started));
     }
@@ -639,7 +851,8 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         .flat_map(|l| ids.iter().map(move |r| (*l, *r)))
         .collect();
     let min_distance = (f64::from(after.units_per_em) * 0.02).round();
-    let collisions = if pairs.len() <= 250_000 {
+    let checked = pairs.len() <= 250_000;
+    let collisions = if checked {
         forma_spacing::collisions_among(after, master, &ids, &pairs, min_distance)
             .map_err(from_spacing_error)?
             .len()
@@ -658,7 +871,11 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
     }
     stages.push(stage(
         "check_collisions",
-        if collisions > 0 { "warn" } else { "ok" },
+        match (checked, collisions) {
+            (false, _) => "skipped",
+            (true, 0) => "ok",
+            _ => "warn",
+        },
         json!({ "pairs": pairs.len(), "collisions": collisions }),
         started,
     ));
@@ -695,16 +912,16 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
     ));
     let started = Instant::now();
     let validated = forma_validate::validate(after);
+    // The export waits while the engine asks for a look at a glyph or a
+    // synthesized glyph waits for review.
     let pending = after
         .glyphs
         .values()
         .filter(|g| {
             g.provenance.as_ref().is_some_and(|p| {
-                p.review == forma_model::Review::Pending
-                    && matches!(
-                        p.source,
-                        forma_model::Source::Traced | forma_model::Source::Synthesized
-                    )
+                p.needs_look()
+                    || (p.source == forma_model::Source::Synthesized
+                        && p.review == forma_model::Review::Pending)
             })
         })
         .count();
@@ -714,8 +931,20 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         json!({ "errors": validated.errors, "warnings": validated.warnings }),
         started,
     ));
+    if steps.cmds.len() > MAX_BATCH_OPS {
+        return Err(ToolError::new(
+            ErrorCode::LimitExceeded,
+            format!(
+                "the change takes {} commands; the limit of one transaction is {MAX_BATCH_OPS}: \
+                 run the stages in several calls (see `stages`)",
+                steps.cmds.len()
+            ),
+        )
+        .with_details(json!({ "limit": MAX_BATCH_OPS, "actual": steps.cmds.len() })));
+    }
     stable_refs(font, &mut steps)?;
     let detail = json!({
+        "synthesized": synth_detail,
         "traced": traced_detail,
         "attention": attention,
         "validate": validated,
@@ -768,6 +997,21 @@ fn stable_refs(before: &Font, steps: &mut Steps) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// The first two of `reasons`, and how many more there are (the report
+/// holds them all).
+fn brief(reasons: &[String]) -> String {
+    let mut text = reasons
+        .iter()
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
+    if reasons.len() > 2 {
+        text.push_str(&format!("; +{} more in the report", reasons.len() - 2));
+    }
+    text
+}
+
 fn bounded(mut attention: Vec<AttentionItem>) -> (Vec<AttentionItem>, usize, bool) {
     let total = attention.len();
     attention.truncate(MAX_ATTENTION);
@@ -785,8 +1029,8 @@ fn export_after(
     let mut out = ExportOutcome::default();
     if pending > 0 && !export.allow_pending {
         out.skipped = Some(format!(
-            "{pending} glyph(s) wait for review: review them with glyph_review (or pass \
-             `allow_pending`), then export with export_font"
+            "{pending} glyph(s) need a look or, synthesized, wait for review: review them with \
+             glyph_review (or pass `allow_pending`), then export with export_font"
         ));
         return out;
     }
@@ -799,12 +1043,11 @@ fn export_after(
             continue;
         }
         let rev = engine.doc(doc).map(|d| d.rev().0).unwrap_or(0);
-        let Some(spec) = crate::registry::find("export_font") else {
-            continue;
-        };
-        match (spec.handler)(
-            engine,
+        // Through the engine's own entry: the toolsets, the profile,
+        // read-only mode and the audit log apply as to a direct call.
+        match engine.call(
             actor,
+            "export_font",
             json!({ "doc": doc, "base_rev": rev, "format": format, "path": path }),
         ) {
             Ok(_) => out.written.push(path.clone()),

@@ -37,6 +37,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
   - `forma-render`: vello_cpu.
   - `forma-trace`: imagen a contornos (`image`, `visioncortex`; ADR 0009).
   - `forma-spacing`: espaciado, kerning automático y colisiones.
+  - `forma-synth`: síntesis de estilo (kit de estilo, recetas como datos, puntuación que rechaza).
   - `forma-synth`: kit de estilo y síntesis de glifos por recetas (Hito 2.5).
   - `forma-bench` (solo desarrollo): corpus y benchmark del pipeline imagen → fuente.
   - `forma-mcp`: rmcp.

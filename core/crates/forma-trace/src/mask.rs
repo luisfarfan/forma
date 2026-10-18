@@ -189,8 +189,10 @@ impl InkCoverage {
                 let (tx, ty) = ((x - fx) as f32, (y - fy) as f32);
                 let (ix, iy) = (fx as i64, fy as i64);
                 let c = &self.coverage;
-                let top = c.at(ix, iy) * (1.0 - tx) + c.at(ix + 1, iy) * tx;
-                let bottom = c.at(ix, iy + 1) * (1.0 - tx) + c.at(ix + 1, iy + 1) * tx;
+                // Saturating: a hand-edited provenance can hold huge boxes.
+                let (nx, ny) = (ix.saturating_add(1), iy.saturating_add(1));
+                let top = c.at(ix, iy) * (1.0 - tx) + c.at(nx, iy) * tx;
+                let bottom = c.at(ix, ny) * (1.0 - tx) + c.at(nx, ny) * tx;
                 let v = top * (1.0 - ty) + bottom * ty;
                 out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
             }

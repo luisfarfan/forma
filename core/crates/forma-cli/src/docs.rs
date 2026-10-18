@@ -192,6 +192,10 @@ const fn toolset_summary(toolset: Toolset) -> &'static str {
         Toolset::Trace => {
             "Imagen a fuente: inspeccionar imágenes, trazar glifos, compararlos y medir el estilo."
         }
+        Toolset::Synthesis => {
+            "Síntesis de estilo: medir el estilo de la fuente y crear en ese estilo los glifos \
+             que le faltan, o pedir su diseño."
+        }
         // `Toolset` is `#[non_exhaustive]`: a new one shows up without text
         // until it is written here.
         _ => "",

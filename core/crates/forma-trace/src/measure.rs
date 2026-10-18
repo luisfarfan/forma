@@ -17,7 +17,8 @@
 //! * the terminal radius is the largest distance at an end of the skeleton
 //!   (a pixel with one neighbour run): the ball of a ball terminal, half the
 //!   stroke for a round or square end (the branches to the corners of a
-//!   square end are pruned);
+//!   square end are pruned, and ends thinner than 0.6 of the typical half
+//!   width, spurs into a corner, do not count);
 //! * the narrowest join is the smallest distance at a branch point (three or
 //!   more neighbour runs).
 
@@ -66,6 +67,13 @@ pub struct StyleMeasure {
     /// The radius of the smallest disc at a join of strokes; `None` without
     /// joins.
     pub join_min: Option<f64>,
+    /// How square the ends of the strokes are: the share of ink in the
+    /// rectangle ahead of each end of the skeleton (as long as the stroke's
+    /// half width, as wide as the stroke), median over the ends. About 1
+    /// for flat ends, about 0.79 (π/4) for round ends and balls; `None`
+    /// without measurable ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_fill: Option<f64>,
 }
 
 /// The squared distance transform of one line: `f` holds the costs (0 on
@@ -231,6 +239,97 @@ fn ends_and_branches(grid: &Grid, set: &[bool]) -> (Vec<usize>, Vec<usize>) {
     }
     (ends, branches)
 }
+
+/// The share of ink in the rectangle ahead of the skeleton end `end`: as
+/// long as the radius there and twice as wide, across the direction the
+/// skeleton arrives from (walked back about one radius). `None` when the
+/// end is too small or its direction unclear.
+fn end_fill(
+    grid: &Grid,
+    skeleton: &[bool],
+    inside: &[bool],
+    root: &[f64],
+    end: usize,
+) -> Option<f64> {
+    let r = root[end];
+    if r < 2.0 {
+        return None;
+    }
+    let at = |i: usize| ((i % grid.width) as f64, (i / grid.width) as f64);
+    let (px, py) = at(end);
+    // Walk back along the skeleton, breadth first, about one radius.
+    let mut seen = std::collections::BTreeSet::from([end]);
+    let mut frontier = vec![end];
+    let mut far = end;
+    for _ in 0..(r.ceil() as usize) {
+        let mut next = Vec::new();
+        for &i in &frontier {
+            let (x, y) = ((i % grid.width) as i64, (i / grid.width) as i64);
+            for &(dx, dy) in &RING {
+                if let Some(j) = grid.index(x + dx, y + dy).filter(|&j| skeleton[j])
+                    && seen.insert(j)
+                {
+                    next.push(j);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        if next.len() > 2 {
+            // A branch close to the end: no single direction.
+            return None;
+        }
+        far = next[0];
+        frontier = next;
+    }
+    let (qx, qy) = at(far);
+    let (dx, dy) = (px - qx, py - qy);
+    let len = dx.hypot(dy);
+    if len < 1.5 {
+        return None;
+    }
+    let reach = (r * 1.5).ceil() as i64;
+    let (cx, cy) = (px as i64, py as i64);
+    // The walk gives the direction only roughly (on a curve, a chord): the
+    // fill is the best over a fan of directions around it. A round end
+    // fills the same in every direction; a flat one only when square on.
+    let base = dy.atan2(dx);
+    let mut best: Option<f64> = None;
+    for step in -END_FAN_STEPS..=END_FAN_STEPS {
+        let angle = base + f64::from(step) * END_FAN_STEP;
+        let (ux, uy) = (angle.cos(), angle.sin());
+        let (mut ink, mut all) = (0usize, 0usize);
+        for y in cy - reach..=cy + reach {
+            for x in cx - reach..=cx + reach {
+                let (vx, vy) = (x as f64 - px, y as f64 - py);
+                let along = vx * ux + vy * uy;
+                let across = (vx * uy - vy * ux).abs();
+                if along <= 0.0 || along > r || across > r {
+                    continue;
+                }
+                all += 1;
+                if grid.get(inside, x, y) {
+                    ink += 1;
+                }
+            }
+        }
+        if all >= 8 {
+            let fill = ink as f64 / all as f64;
+            best = Some(best.map_or(fill, |b: f64| b.max(fill)));
+        }
+    }
+    best
+}
+
+/// Ends thinner than this share of the typical half width are not
+/// terminals.
+const TERMINAL_MIN_RATIO: f64 = 0.6;
+
+/// The directions tried around an end's: this many steps of
+/// [`END_FAN_STEP`] radians to each side (±24°).
+const END_FAN_STEPS: i32 = 4;
+const END_FAN_STEP: f64 = std::f64::consts::PI / 30.0;
 
 /// Removes the spurs: branches from an end to a branch point shorter than
 /// [`SPUR_RATIO`] times the distance at the branch point.
@@ -399,13 +498,28 @@ pub fn measure(font: &Font, glyph: GlyphId, master: MasterId) -> Result<StyleMea
     }
     thickness.sort_by(f64::total_cmp);
     let (ends, branches) = ends_and_branches(&grid, &skeleton);
-    let terminal_radius = ends.iter().map(|&i| dist[i] / ppu).reduce(f64::max);
+    // An end much thinner than the stroke is a spur into the corner of a
+    // cut end, not a terminal: it says nothing of the end's size or shape.
+    let half_px = percentile(&thickness, 0.5) * ppu / 2.0;
+    let terminals: Vec<usize> = ends
+        .iter()
+        .copied()
+        .filter(|&i| root[i] >= TERMINAL_MIN_RATIO * half_px)
+        .collect();
+    let terminal_radius = terminals.iter().map(|&i| dist[i] / ppu).reduce(f64::max);
     let join_min = branches.iter().map(|&i| dist[i] / ppu).reduce(f64::min);
+    let mut fills: Vec<f64> = terminals
+        .iter()
+        .filter_map(|&i| end_fill(&grid, &skeleton, &inside, &root, i))
+        .collect();
+    fills.sort_by(f64::total_cmp);
+    let terminal_fill = (!fills.is_empty()).then(|| percentile(&fills, 0.5));
     Ok(StyleMeasure {
         stroke_median: percentile(&thickness, 0.5),
         stroke_p10: percentile(&thickness, 0.1),
         stroke_p90: percentile(&thickness, 0.9),
         terminal_radius,
         join_min,
+        terminal_fill,
     })
 }

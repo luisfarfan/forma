@@ -14,6 +14,8 @@ forma-geometry = { path = "../forma-geometry" }
 forma-spacing = { path = "../forma-spacing" }
 # image_inspect, image_trace, trace_compare and glyph_measure.
 forma-trace = { path = "../forma-trace" }
+# style_extract and glyph_synthesize (and the synthesis stage of font_from_image).
+forma-synth = { path = "../forma-synth" }
 # Only the RgbImage type that forma-trace decodes to (already in the tree).
 image = { workspace = true }
 forma-store = { path = "../forma-store" }
