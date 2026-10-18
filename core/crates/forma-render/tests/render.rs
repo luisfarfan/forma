@@ -936,6 +936,73 @@ fn coverage_mask_of_square() {
 }
 
 #[test]
+fn coverage_of_a_curve_adds_up_to_its_area() {
+    // A disc of four cubics (radius 20 px, centre off the pixel grid): its
+    // coverage must add up to its area. The rasterizer flattens curves to
+    // within a quarter of a pixel, which left out 14 px² (1.1 %) of this
+    // disc: chords inside the arcs, up to 0.26 of a pixel's coverage along
+    // them.
+    let (cx, cy, r) = (25.3, -25.7, 20.0);
+    let k = 0.552_284_749_830_793_4 * r;
+    let corners = [(r, 0.0), (0.0, r), (-r, 0.0), (0.0, -r)];
+    let mut nodes = Vec::new();
+    let mut cubics = Vec::new();
+    for i in 0..4 {
+        let (ax, ay) = corners[i];
+        let (bx, by) = corners[(i + 1) % 4];
+        // Handles along the tangents: perpendicular to the radius.
+        let p0 = (cx + ax, cy + ay);
+        let p1 = (cx + ax - ay / r * k, cy + ay + ax / r * k);
+        let p2 = (cx + bx + by / r * k, cy + by - bx / r * k);
+        let p3 = (cx + bx, cy + by);
+        if i == 0 {
+            nodes.push(node(p0.0, p0.1, NodeKind::Curve));
+        }
+        nodes.push(node(p1.0, p1.1, NodeKind::OffCurve));
+        nodes.push(node(p2.0, p2.1, NodeKind::OffCurve));
+        if i < 3 {
+            nodes.push(node(p3.0, p3.1, NodeKind::Curve));
+        }
+        cubics.push([p0, p1, p2, p3]);
+    }
+    let disc = Path {
+        id: PathId(0),
+        closed: true,
+        nodes,
+    };
+    // The exact area of the four cubics (shoelace over a fine sampling).
+    let mut points = Vec::new();
+    for [p0, p1, p2, p3] in cubics {
+        for j in 0..2000 {
+            let t = f64::from(j) / 2000.0;
+            let u = 1.0 - t;
+            let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+            points.push((
+                a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0,
+                a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1,
+            ));
+        }
+    }
+    let n = points.len();
+    let area = (0..n)
+        .map(|i| {
+            let ((x0, y0), (x1, y1)) = (points[i], points[(i + 1) % n]);
+            x0 * y1 - x1 * y0
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let mask = coverage_mask(&[disc], &identity_scale(), 52, 52).expect("mask");
+    let covered: f64 = mask.data.iter().map(|&v| f64::from(v) / 255.0).sum();
+    // Within a hundredth of a pixel along the edge (the flattening's chords).
+    let perimeter = std::f64::consts::TAU * r;
+    assert!(
+        (covered - area).abs() <= 0.01 * perimeter,
+        "coverage {covered} vs area {area}"
+    );
+}
+
+#[test]
 fn coverage_mask_limits() {
     let t = identity_scale();
     assert!(matches!(

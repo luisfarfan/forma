@@ -66,9 +66,11 @@ pub struct Row {
     pub index: usize,
     /// Topmost pixel of any candidate in the row.
     pub top: f64,
-    /// Typical top edge (median), in pixels: the cap line.
+    /// Typical top edge (median), in pixels: the cap line. Measured on the
+    /// ink mask, so it has its sub-pixel precision.
     pub cap_px: f64,
-    /// Typical bottom edge (median), in pixels: the baseline.
+    /// Typical bottom edge (median), in pixels: the baseline. Measured on the
+    /// ink mask, so it has its sub-pixel precision.
     pub baseline_px: f64,
     /// Bottommost pixel of any candidate in the row.
     pub bottom: f64,
@@ -115,6 +117,10 @@ struct Piece {
     y0: u32,
     x1: u32,
     y1: u32,
+    /// The top and bottom edges of its ink at the mask resolution, in
+    /// original pixels (the box rounds them out to whole pixels).
+    top: f64,
+    bottom: f64,
     area: u64,
 }
 
@@ -170,6 +176,8 @@ fn components(mask: &forma_render::Mask, u: u32) -> Result<Vec<Piece>, TraceErro
             y0: (miny / u) as u32,
             x1: (maxx / u + 1) as u32,
             y1: (maxy / u + 1) as u32,
+            top: miny as f64 / u as f64,
+            bottom: (maxy + 1) as f64 / u as f64,
             area,
         });
     }
@@ -215,6 +223,8 @@ fn merge_row(mut pieces: Vec<Piece>) -> Vec<Piece> {
                 y0: m.y0.min(p.y0),
                 x1: m.x1.max(p.x1),
                 y1: m.y1.max(p.y1),
+                top: m.top.min(p.top),
+                bottom: m.bottom.max(p.bottom),
                 area: m.area + p.area,
             },
         });
@@ -367,14 +377,11 @@ pub fn analyze(image: &RgbImage, opts: &TraceOptions) -> Result<Analysis, TraceE
     }
     let uu = u64::from(u) * u64::from(u);
     for (ri, (orig, cands)) in kept.into_iter().enumerate() {
-        let mut tops: Vec<f64> = large_per_row[orig]
-            .iter()
-            .map(|p| f64::from(p.y0))
-            .collect();
-        let mut bottoms: Vec<f64> = large_per_row[orig]
-            .iter()
-            .map(|p| f64::from(p.y1))
-            .collect();
+        // The cap line and baseline at the mask's resolution: whole-pixel
+        // boxes would round every top up and every bottom down, making the
+        // cap height up to two pixels too tall.
+        let mut tops: Vec<f64> = large_per_row[orig].iter().map(|p| p.top).collect();
+        let mut bottoms: Vec<f64> = large_per_row[orig].iter().map(|p| p.bottom).collect();
         analysis.rows.push(Row {
             index: ri,
             top: cands

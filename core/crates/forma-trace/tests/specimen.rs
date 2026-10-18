@@ -97,26 +97,14 @@ fn outline_ious() -> Vec<(&'static str, f64)> {
     ious
 }
 
-/// Criterion 1 (outline): at least 0.97 for every letter. KNOWN SHORTFALL:
-/// A, C and H measure 0.967 to 0.969 (see the task 11 report), so this runs
-/// only on request (`--ignored`) until the tracer improves.
+/// Criterion 1 (outline): at least 0.97 for every letter.
 #[test]
-#[ignore = "A, C and H reach 0.967-0.969 < 0.97 at 0.16 px/unit"]
 fn specimen_traces_match_truth_outlines() {
     let misses: Vec<_> = outline_ious()
         .into_iter()
         .filter(|(_, iou)| *iou < MIN_IOU)
         .collect();
     assert!(misses.is_empty(), "{misses:?}");
-}
-
-/// Regression guard (not the criterion): no letter drops below 0.96.
-#[test]
-fn specimen_outline_iou_floor() {
-    for (name, iou) in outline_ious() {
-        eprintln!("outline iou {name}: {iou:.4}");
-        assert!(iou >= 0.96, "{name}: outline iou {iou}");
-    }
 }
 
 #[test]

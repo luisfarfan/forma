@@ -1,17 +1,17 @@
-//! Cleanup of traced contours: from `visioncortex` cubics to clean font
-//! contours.
+//! Cleanup of traced contours: from the midline of a pixel walk (see
+//! [`crate::vectorize`]) to clean font contours.
 //!
-//! Traced splines are noisy in ways a designer's contour is not: straight
-//! edges come as cubics with collinear handles; a smooth curve comes as many
-//! short cubics with small kinks between them; the steps of hard-edged
-//! pixels survive the 4x mask as wiggles a pixel high; sharp corners come
-//! slightly rounded; and the start point is wherever the pixel walk began.
+//! Traced outlines are noisy in ways a designer's contour is not: a smooth
+//! curve comes as a polygon with small kinks at the steps of the mask; the
+//! steps of hard-edged pixels survive the 4x mask as wiggles a pixel high;
+//! sharp corners come rounded by the anti-aliasing and the upsampling; and
+//! the start point is wherever the pixel walk began.
 //! Each contour is therefore
 //!
 //! 1. sampled densely ([`SAMPLES_PER_PIXEL`] samples per original pixel);
 //! 2. cut at its corners, found at the scale of a few pixels so that pixel
 //!    steps are not corners, and placed where the edges on both sides meet,
-//!    read beyond the rounding the vectorizer gives them (which grows as the
+//!    read beyond the rounding the mask gives them (which grows as the
 //!    angle gets acute) ([`corners`], [`place`]);
 //! 3. smoothed between corners without shrinking ([`smooth`]) and refitted
 //!    with [`fit_cubics`] (a line where the stretch is straight), with a
@@ -313,7 +313,7 @@ struct Corner {
 ///   (a curve turns half as much over half the arc), or
 /// * seen from twice as far it turns at most [`CORNER_SATURATION`] times
 ///   that (a curve turns twice as much over twice the arc; a corner, even
-///   one the vectorizer rounded, has already turned all it turns).
+///   one the mask rounded, has already turned all it turns).
 ///
 /// Pixel steps do not turn at that scale at all. See [`place`] for where
 /// the corner goes.
@@ -360,7 +360,7 @@ fn corners(samples: &Samples, reach: f64) -> Vec<Corner> {
 }
 
 /// Where the corner at sample `i` goes: where the edges on both sides meet,
-/// since the vectorizer rounds sharp corners (and blunts acute ones: the
+/// since the mask rounds sharp corners (and blunts acute ones: the
 /// rounding of an angle `θ` reaches about `r / tan(θ/2)` along the edges
 /// and `r / sin(θ/2)` short of the apex). The edges are read beyond the
 /// rounding, from `d` to `2d` away, with `d = reach / tan(θ/2)` (at least
@@ -650,8 +650,8 @@ fn refit(segs: &[Seg], px: f64, floor: f64) -> (Vec<Seg>, Vec<bool>) {
     out.into_iter().unzip()
 }
 
-/// The contour of a `visioncortex` spline (`1 + 3n` control points, the last
-/// equal to the first) in font units, refitted and simplified, or `None` if
+/// The contour of a traced boundary (a closed polygon, see
+/// [`crate::vectorize`]) in font units, refitted and simplified, or `None` if
 /// it encloses nothing. `px` is the size of an original pixel in font units
 /// and `upsample` the mask's upsampling factor.
 pub(crate) fn contour(
@@ -660,27 +660,16 @@ pub(crate) fn contour(
     upsample: u32,
 ) -> Result<Option<Path>, TraceError> {
     let floor = error_floor(px, upsample);
-    let mut segs: Vec<Seg> = Vec::new();
-    for k in 0..points.len().saturating_sub(1) / 3 {
-        let c = CubicBez::new(
-            points[3 * k],
-            points[3 * k + 1],
-            points[3 * k + 2],
-            points[3 * k + 3],
-        );
-        let extent = [c.p1, c.p2, c.p3]
-            .iter()
-            .map(|p| p.distance(c.p0))
-            .fold(0.0, f64::max);
-        if extent > EPSILON {
-            segs.push(straighten(c));
-        }
-    }
-    let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
+    let mut segs: Vec<Seg> = points
+        .windows(2)
+        .filter(|pair| pair[0].distance(pair[1]) > EPSILON)
+        .map(|pair| Seg::Line(pair[0], pair[1]))
+        .collect();
+    let (Some(start), Some(end)) = (segs.first().map(Seg::start), segs.last().map(Seg::end)) else {
         return Ok(None);
     };
-    if last.end().distance(first.start()) > EPSILON {
-        segs.push(Seg::Line(last.end(), first.start()));
+    if end.distance(start) > EPSILON {
+        segs.push(Seg::Line(end, start));
     }
     let (mut segs, smooth) = refit(&segs, px, floor);
     if segs.len() < 2 {
@@ -873,24 +862,17 @@ pub(crate) fn finish(paths: Vec<Path>) -> Vec<Path> {
 mod tests {
     use super::*;
 
-    /// The control points of a closed spline of straight cubics through
-    /// `corners`, each edge cut in two, starting halfway along the first
-    /// edge (as a pixel walk may).
-    fn straight_spline(corners: &[Point]) -> Vec<Point> {
+    /// A closed polygon through `corners`, each edge cut in two, starting
+    /// halfway along the first edge (as a pixel walk may).
+    fn mid_edge_polygon(corners: &[Point]) -> Vec<Point> {
         let n = corners.len();
-        let mut stops = Vec::new();
+        let mut points = Vec::new();
         for k in 0..n {
             let (a, b) = (corners[k], corners[(k + 1) % n]);
-            stops.push(a.midpoint(b));
-            stops.push(b);
+            points.push(a.midpoint(b));
+            points.push(b);
         }
-        // stops: mid 0, corner 1, mid 1, ..., corner 0; walk from mid 0 back
-        // to it.
-        let mut points = vec![stops[0]];
-        for &p in stops[1..].iter().chain([&stops[0]]) {
-            let a = points[points.len() - 1];
-            points.extend([a.lerp(p, 1.0 / 3.0), a.lerp(p, 2.0 / 3.0), p]);
-        }
+        points.push(points[0]);
         points
     }
 
@@ -902,7 +884,7 @@ mod tests {
             Point::new(300.0, 700.0),
             Point::new(0.0, 700.0),
         ];
-        let points = straight_spline(&corners);
+        let points = mid_edge_polygon(&corners);
         assert_ne!(points[0], corners[0], "starts mid-edge");
         let path = contour(&points, 5.0, 4).unwrap().unwrap();
         assert_eq!(path.nodes.len(), 4, "{:?}", path.nodes);

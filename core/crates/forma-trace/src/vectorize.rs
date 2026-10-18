@@ -2,21 +2,31 @@
 //! units.
 //!
 //! The binary mask (at the upsampled resolution, see [`binary_mask`]) is cut
-//! out around the candidate, its pixels are handed to `visioncortex` (spline
-//! mode), and the splines are mapped to font units and cleaned up
-//! ([`crate::cleanup`]).
+//! out around the candidate, `visioncortex` walks the pixel edges of each of
+//! its pieces, each walk is reduced to its midline (the polygon through the
+//! middle of its runs, see [`midline`]), and the midlines are mapped to font
+//! units and cleaned up ([`crate::cleanup`]).
+//!
+//! Why the walk and not `visioncortex`'s own curves: its simplification
+//! keeps the outer corners of the staircase's steps (outer with respect to
+//! each contour, so counters grow as well as outer contours) and its
+//! smoothing interpolates them, so its curves lie outside the mask's edge,
+//! by about a tenth of an original pixel on average and up to a quarter at
+//! the ends of a straight edge (measured on the specimen: +0.01 to +0.14 px
+//! per letter, the least for letters with counters). The midline lies on
+//! the mask's 50 % edge, with no bias.
 //!
 //! Coordinates: a mask pixel `(mx, my)` covers the original-pixel square
 //! `[mx/u, (mx+1)/u) x [my/u, (my+1)/u)`, `u` being the upsampling factor
-//! actually used. `visioncortex` traces pixel edges, so its points are mask
+//! actually used. The walk runs along pixel edges, so its points are mask
 //! pixel corners; dividing by `u` gives original pixels.
 //!
 //! `visioncortex` (0.9.3) returns, per 4-connected cluster, the outer
-//! boundary first and then one spline per hole (holes that touch the cut-out's
+//! boundary first and then one walk per hole (holes that touch the cut-out's
 //! border are ignored, hence the margin). Outer boundaries run clockwise on
 //! screen (y down) and holes counter-clockwise; with y flipped to font units
 //! that is the wrong way round, which [`crate::cleanup::finish`] fixes with
-//! `normalize_direction`. Its angle parameters are in radians.
+//! `normalize_direction`.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -27,7 +37,7 @@ use image::RgbImage;
 use kurbo::Point;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use visioncortex::{BinaryImage, CompoundPathElement, PathSimplifyMode, PointF64};
+use visioncortex::{BinaryImage, CompoundPathElement, PathSimplifyMode};
 
 use crate::candidates::{Analysis, PxRect, TraceOptions, analyze};
 use crate::mask::{binary_mask, effective_upsample};
@@ -36,13 +46,6 @@ use crate::{TraceError, cleanup, fidelity};
 /// Mask pixels of padding around the cut-out, so that counters never touch
 /// its border (`visioncortex` ignores holes that do).
 const MARGIN: usize = 2;
-
-/// `visioncortex` spline parameters (spec §6.1): corner threshold, minimum
-/// segment length in mask pixels, smoothing iterations and splice threshold.
-const CORNER_DEGREES: f64 = 60.0;
-const SEGMENT_LENGTH: f64 = 4.0;
-const MAX_ITERATIONS: usize = 10;
-const SPLICE_DEGREES: f64 = 45.0;
 
 /// Pieces of a candidate smaller than this fraction of its largest piece are
 /// specks (the same fraction as the micro-noise of [`analyze`]).
@@ -300,10 +303,11 @@ pub(crate) fn candidate_ink(
     })
 }
 
-/// The `visioncortex` splines of the candidate's ink, as lists of cubic
-/// control points (`1 + 3n` points, the last equal to the first) in mask
-/// pixels relative to the cut-out.
-fn splines(ink: &CandidateInk) -> Result<Vec<Vec<PointF64>>, TraceError> {
+/// The boundaries of the candidate's ink, as closed polygons (the last point
+/// equal to the first) in mask pixels relative to the cut-out: the
+/// `visioncortex` walk of each 4-connected cluster's pixel edges (outer
+/// boundary, then its holes), reduced to its midline (see [`midline`]).
+fn boundaries(ink: &CandidateInk) -> Result<Vec<Vec<Point>>, TraceError> {
     let mut image = BinaryImage::new_w_h(ink.width, ink.height);
     for y in 0..ink.height {
         for x in 0..ink.width {
@@ -321,27 +325,27 @@ fn splines(ink: &CandidateInk) -> Result<Vec<Vec<PointF64>>, TraceError> {
             if cluster.size() < speck {
                 continue;
             }
-            let compound = cluster.to_compound_path(
-                PathSimplifyMode::Spline,
-                CORNER_DEGREES.to_radians(),
-                SEGMENT_LENGTH,
-                MAX_ITERATIONS,
-                SPLICE_DEGREES.to_radians(),
-            );
+            // The walk alone: the curve parameters only apply to the
+            // simplifying modes.
+            let compound = cluster.to_compound_path(PathSimplifyMode::None, 0.0, 0.0, 1, 0.0);
             for element in compound.iter() {
-                match element {
-                    CompoundPathElement::Spline(spline) => out.push(spline.points.clone()),
-                    // Not produced in spline mode; drawn as straight cubics
-                    // just in case.
-                    CompoundPathElement::PathI32(path) => {
-                        out.push(polygon_as_cubics(path.path.iter().map(|p| PointF64 {
-                            x: f64::from(p.x),
-                            y: f64::from(p.y),
-                        })));
-                    }
+                let walk: Vec<Point> = match element {
+                    CompoundPathElement::PathI32(path) => path
+                        .path
+                        .iter()
+                        .map(|p| Point::new(f64::from(p.x), f64::from(p.y)))
+                        .collect(),
                     CompoundPathElement::PathF64(path) => {
-                        out.push(polygon_as_cubics(path.path.iter().copied()));
+                        path.path.iter().map(|p| Point::new(p.x, p.y)).collect()
                     }
+                    // Not produced without simplification.
+                    CompoundPathElement::Spline(spline) => {
+                        spline.points.iter().map(|p| Point::new(p.x, p.y)).collect()
+                    }
+                };
+                let line = midline(&walk);
+                if line.len() >= 4 {
+                    out.push(line);
                 }
             }
         }
@@ -350,14 +354,36 @@ fn splines(ink: &CandidateInk) -> Result<Vec<Vec<PointF64>>, TraceError> {
     traced.map_err(|_| TraceError::Vectorize("the vectorizer failed on this shape".into()))
 }
 
-fn polygon_as_cubics(points: impl Iterator<Item = PointF64>) -> Vec<PointF64> {
-    let mut out: Vec<PointF64> = Vec::new();
-    for p in points {
-        if let Some(&last) = out.last() {
-            out.push(last);
-            out.push(p);
+/// The midline of a pixel-edge walk (a closed polygon of axis-aligned runs,
+/// the last point equal to the first): the closed polygon through the
+/// middle of each run, and through the vertex between two runs longer than
+/// one mask pixel (a corner of the ink rather than a step of the staircase).
+///
+/// The ink's true edge crosses the steps of the mask's staircase halfway, so
+/// the middles of the runs lie on it: a straight edge at any slope comes out
+/// straight, at its true position. The walk itself, and a polygon through
+/// the outer corners of its steps (which is what `visioncortex`'s own
+/// simplification keeps before smoothing), lie outside the ink by up to a
+/// mask pixel. Corners come out cut by a fraction of a mask pixel;
+/// [`crate::cleanup`] puts them back where the edges meet.
+fn midline(walk: &[Point]) -> Vec<Point> {
+    let runs: Vec<(Point, Point)> = walk
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .filter(|(a, b)| a.distance(*b) > 0.0)
+        .collect();
+    let n = runs.len();
+    let mut out = Vec::with_capacity(2 * n + 1);
+    for k in 0..n {
+        let (a, b) = runs[k];
+        let (pa, pb) = runs[(k + n - 1) % n];
+        if a.distance(b) > 1.0 && pa.distance(pb) > 1.0 {
+            out.push(a);
         }
-        out.push(p);
+        out.push(a.midpoint(b));
+    }
+    if let Some(&first) = out.first() {
+        out.push(first);
     }
     out
 }
@@ -365,7 +391,7 @@ fn polygon_as_cubics(points: impl Iterator<Item = PointF64>) -> Vec<PointF64> {
 /// Vectorizes the candidate's ink into clean contours in font units.
 fn vectorize(ink: &CandidateInk, lsb: f64) -> Result<Vec<Path>, TraceError> {
     let u = f64::from(ink.upsample);
-    let to_units = |p: &PointF64| -> Point {
+    let to_units = |p: &Point| -> Point {
         let px = (ink.x0 as f64 + p.x) / u;
         let py = (ink.y0 as f64 + p.y) / u;
         Point::new(
@@ -374,8 +400,8 @@ fn vectorize(ink: &CandidateInk, lsb: f64) -> Result<Vec<Path>, TraceError> {
         )
     };
     let mut contours = Vec::new();
-    for spline in splines(ink)? {
-        let points: Vec<Point> = spline.iter().map(to_units).collect();
+    for boundary in boundaries(ink)? {
+        let points: Vec<Point> = boundary.iter().map(to_units).collect();
         if let Some(path) = cleanup::contour(&points, ink.scale, ink.upsample)? {
             contours.push(path);
         }
@@ -388,10 +414,10 @@ fn vectorize(ink: &CandidateInk, lsb: f64) -> Result<Vec<Path>, TraceError> {
 ///
 /// For each candidate: the scale is `cap_height_units` over the cap height of
 /// its row in pixels; the binary mask is cut out around its box (keeping only
-/// its own pieces) with a 2-pixel margin at the mask resolution; the pieces
-/// are traced with `visioncortex` in spline mode (corner threshold 60°,
-/// segment length 4, 10 iterations, splice threshold 45°) and mapped to font
-/// units with y up: `x = (px - x0) * scale + lsb`, `y = (baseline_px - py) *
+/// its own pieces) with a 2-pixel margin at the mask resolution; the pixel
+/// edges of the pieces are walked with `visioncortex`, each walk is reduced
+/// to its midline (the polygon through the middle of its runs, which lies on
+/// the mask's 50 % edge) and mapped to font units with y up: `x = (px - x0) * scale + lsb`, `y = (baseline_px - py) *
 /// scale`, where `x0` is the left edge of the ink and
 /// `lsb = round(0.05 * units_per_em)`. The contours are then cleaned up:
 /// cut at their corners, smoothed and refitted between them so that pixel

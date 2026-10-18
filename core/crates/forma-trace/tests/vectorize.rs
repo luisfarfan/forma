@@ -1,7 +1,8 @@
 //! Vectorization, cleanup and fidelity of traced candidates.
 
 use forma_geometry::{
-    Cap, Skeleton, SkeletonNode, StrokeStyle, bbox, check_paths, signed_area, stroke,
+    Cap, CoordinateSystem, Skeleton, SkeletonNode, StrokeStyle, bbox, check_paths, paths_from_svg,
+    signed_area, stroke,
 };
 use forma_model::{NodeKind, Path, Transform};
 use forma_trace::{TraceError, TraceOptions, TracedGlyph, analyze, compare, trace};
@@ -497,8 +498,16 @@ fn mitred_apex_of_a_stroked_lambda_stays_sharp() {
         (600.0, 0.0),
         (300.0, 700.0),
     ]);
-    let img = render(&[lambda], 110.0);
-    let g = trace_one(&img);
+    // Three flat-topped bars set the row, as in a real alphabet: the 50 %
+    // mask of an apex this acute stops about a pixel short of its tip (where
+    // it is narrower than a pixel, no pixel is half covered), so the Λ alone
+    // would set a cap line a pixel low and the scale 1 % off.
+    let bar = |x0: f64| poly(&[(x0, 0.0), (x0 + 90.0, 0.0), (x0 + 90.0, 700.0), (x0, 700.0)]);
+    let img = render(&[bar(-450.0), bar(-300.0), bar(-150.0), lambda], 110.0);
+    let opts = TraceOptions::default();
+    assert_eq!(analyze(&img, &opts).unwrap().candidates.len(), 4);
+    let g = trace(&img, &opts, &[3], CAP, UPM).unwrap().remove(0);
+    assert_side_bearings(&g, 50.0);
     let nodes = &g.paths[0].nodes;
     assert_eq!(g.paths.len(), 1);
     assert_eq!(nodes.len(), 6, "{nodes:?}");
@@ -556,4 +565,129 @@ fn side_bearings_follow_the_em() {
     assert_side_bearings(&g, 102.0);
     let b = bbox(&g.paths).unwrap();
     assert!((b.height() - 1434.0).abs() <= 1.0, "{b:?}");
+}
+
+/// Paints `paths`, given in image pixels (y down), anti-aliased in orange on
+/// black: each pixel mixes the colours by its exact coverage.
+fn paint(w: u32, h: u32, paths: &[Path]) -> RgbImage {
+    let identity = Transform {
+        xx: 1.0,
+        xy: 0.0,
+        yx: 0.0,
+        yy: 1.0,
+        dx: 0.0,
+        dy: 0.0,
+    };
+    let m = forma_render::coverage_mask(paths, &identity, w, h).unwrap();
+    let mut img = canvas(w, h);
+    for (i, v) in m.data.iter().enumerate() {
+        let c = f64::from(*v) / 255.0;
+        let blend = |v: u8| (f64::from(v) * c).round() as u8;
+        img.put_pixel(i as u32 % w, i as u32 / w, Rgb(ORANGE.map(blend)));
+    }
+    img
+}
+
+/// Traces the only shape of `img` at 58 units per pixel or so (so the 1-unit
+/// grid is finer than a twentieth of a pixel) and maps it back to image
+/// pixels: its bounding box `(x0, y0, x1, y1)` and its area.
+fn traced_in_pixels(img: &RgbImage) -> ([f64; 4], f64) {
+    let opts = TraceOptions::default();
+    assert_eq!(analyze(img, &opts).unwrap().candidates.len(), 1);
+    let g = trace(img, &opts, &[0], 10.0 * CAP, 10 * UPM)
+        .unwrap()
+        .remove(0);
+    let p = &g.placement;
+    let b = bbox(&g.paths).unwrap();
+    let x = |u: f64| p.origin_px.0 + (u - p.lsb) / p.scale;
+    let y = |u: f64| p.origin_px.1 - u / p.scale;
+    let area: f64 = g.paths.iter().map(signed_area).sum::<f64>().abs() / (p.scale * p.scale);
+    ([x(b.x0), y(b.y1), x(b.x1), y(b.y0)], area)
+}
+
+#[test]
+fn traced_edges_are_not_biased() {
+    // Rectangles whose edges fall at every quarter of a pixel and between:
+    // the traced edges must sit on the true ones on average (no growth or
+    // shrinkage), each within the mask's resolution. The tracer used to grow
+    // every shape: a pixel 72 % covered counted as full ink, and the
+    // vectorizer's curves ran outside the mask's staircase (+0.1 to +0.2 px).
+    let mut outward = Vec::new();
+    let mut area_offset = Vec::new();
+    for k in 0..8 {
+        let f = f64::from(k) / 8.0 + 0.04;
+        let (x0, y0, x1, y1) = (30.0 + f, 20.0 + 0.7 * f, 81.37 + 0.6 * f, 141.9 - f);
+        let d = format!("M{x0} {y0} L{x1} {y0} L{x1} {y1} L{x0} {y1} Z");
+        let rect = paths_from_svg(&d, CoordinateSystem::Font).unwrap();
+        let (b, area) = traced_in_pixels(&paint(120, 170, &rect));
+        let sides = [x0 - b[0], y0 - b[1], b[2] - x1, b[3] - y1];
+        for s in sides {
+            assert!(s.abs() <= 0.25, "phase {f}: sides off by {sides:?} px");
+        }
+        outward.extend(sides);
+        let (w, h) = (x1 - x0, y1 - y0);
+        area_offset.push((area - w * h) / (2.0 * (w + h)));
+    }
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+    assert!(
+        mean(&outward).abs() <= 0.03,
+        "edges moved out by {} px",
+        mean(&outward)
+    );
+    assert!(
+        mean(&area_offset).abs() <= 0.03,
+        "area off by {} px of perimeter",
+        mean(&area_offset)
+    );
+}
+
+#[test]
+fn traced_discs_keep_their_radius() {
+    // The same for discs (curves at every slope) at eight sub-pixel centres.
+    let r = 25.3;
+    let mut radius_error = Vec::new();
+    for k in 0..8 {
+        let f = f64::from(k) / 8.0 + 0.02;
+        let (cx, cy) = (40.0 + f, 40.0 + 0.6 * f);
+        let kr = 0.552_284_749_830_793_4 * r;
+        let d = format!(
+            "M{} {cy} C{} {} {} {} {cx} {} C{} {} {} {} {} {cy} C{} {} {} {} {cx} {} C{} {} {} {} {} {cy} Z",
+            cx + r,
+            cx + r,
+            cy + kr,
+            cx + kr,
+            cy + r,
+            cy + r,
+            cx - kr,
+            cy + r,
+            cx - r,
+            cy + kr,
+            cx - r,
+            cx - r,
+            cy - kr,
+            cx - kr,
+            cy - r,
+            cy - r,
+            cx + kr,
+            cy - r,
+            cx + r,
+            cy - kr,
+            cx + r,
+        );
+        let disc = paths_from_svg(&d, CoordinateSystem::Font).unwrap();
+        let (b, area) = traced_in_pixels(&paint(85, 85, &disc));
+        let sides = [cx - r - b[0], cy - r - b[1], b[2] - cx - r, b[3] - cy - r];
+        for s in sides {
+            assert!(
+                s.abs() <= 0.25,
+                "centre {cx}, {cy}: extrema off by {sides:?} px"
+            );
+        }
+        radius_error.push((area / std::f64::consts::PI).sqrt() - r);
+    }
+    let mean = radius_error.iter().sum::<f64>() / radius_error.len() as f64;
+    assert!(
+        mean.abs() <= 0.03,
+        "radius off by {mean} px: {radius_error:?}"
+    );
 }

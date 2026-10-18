@@ -201,6 +201,36 @@ fn fit_circle_uses_few_segments() {
 }
 
 #[test]
+fn a_loose_fit_of_a_circle_is_not_pulled_inward() {
+    // At a tolerance of 1 % of the radius four cubics suffice. The fit must
+    // be the refined one, which strays about as far out as in; the first
+    // fit within the tolerance (chord-length parameters) went 0.62 of the
+    // tolerance inward and only 0.25 outward, shrinking every traced curve.
+    let radius = 100.0;
+    let points: Vec<Point> = (0..400)
+        .map(|i| {
+            let angle = std::f64::consts::TAU * (i as f64) / 400.0 + 0.3;
+            pt(radius * angle.cos(), radius * angle.sin())
+        })
+        .collect();
+    let tolerance = 1.0;
+    let fitted = fit_cubics(&points, tolerance, true);
+    assert_eq!(fitted.len(), 4);
+    let (mut inward, mut outward) = (0.0f64, 0.0f64);
+    for c in &fitted {
+        for k in 0..=100 {
+            let off = c.eval(f64::from(k) / 100.0).to_vec2().hypot() - radius;
+            inward = inward.max(-off);
+            outward = outward.max(off);
+        }
+    }
+    assert!(
+        inward <= 0.4 * tolerance && outward <= 0.4 * tolerance,
+        "strays {inward} in, {outward} out"
+    );
+}
+
+#[test]
 fn closed_fit_joins_with_a_continuous_tangent() {
     let points = circle_points(360, 300.0);
     let fitted = fit_cubics(&points, 0.5, true);

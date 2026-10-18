@@ -2,7 +2,7 @@
 //! images.
 
 use forma_model::{Path, Transform};
-use vello_cpu::kurbo::{Affine, BezPath};
+use vello_cpu::kurbo::{Affine, BezPath, PathEl, Point};
 
 use crate::RenderError;
 use crate::draw::{Canvas, outline};
@@ -13,6 +13,18 @@ pub const MAX_MASK_PIXELS: u64 = 50_000_000;
 /// The widest or tallest mask, in pixels (the renderer addresses pixels with
 /// 16 bits).
 const MAX_MASK_SIDE: u32 = u16::MAX as u32;
+
+/// Curves are flattened to within this many pixels before they are filled.
+///
+/// The rasterizer flattens curves itself to within a quarter of a pixel,
+/// which is fine for a preview but not for a measurement: a chord a quarter
+/// of a pixel inside an arc takes up to a quarter of the coverage of the
+/// pixels along it (measured on round letters at 112 px: off by up to 0.26,
+/// 0.1 on average, against 0.02 on straight edges).
+const FLATTEN_TOLERANCE_PX: f64 = 0.01;
+
+/// The most chords per curve (a curve thousands of pixels long).
+const MAX_CHORDS: f64 = 65_536.0;
 
 /// The coverage of an outline on a pixel grid.
 ///
@@ -44,6 +56,76 @@ fn check_dimensions(width: u32, height: u32) -> Result<(u16, u16), RenderError> 
     Ok((narrow(width)?, narrow(height)?))
 }
 
+/// The length of `p` taken as a vector, with IEEE-exact operations only.
+fn length(p: Point) -> f64 {
+    (p.x * p.x + p.y * p.y).sqrt()
+}
+
+/// `shape` with its curves replaced by chords within `tolerance` of them.
+///
+/// Each curve is cut into `n` equal steps of its parameter: a curve whose
+/// second derivative is at most `m` long strays at most `m / (8 n²)` from
+/// such chords, so `n = ceil(sqrt(m / (8 tolerance)))`. Only IEEE-exact
+/// operations are used (no `hypot` or other library maths, whose last bit
+/// varies between platforms), so the chords, and the coverage, are the same
+/// on every platform.
+fn flatten(shape: &BezPath, tolerance: f64) -> BezPath {
+    let chords = |m: f64| (m / (8.0 * tolerance)).sqrt().ceil().clamp(1.0, MAX_CHORDS) as usize;
+    let mut flat = BezPath::new();
+    let mut at = Point::ZERO;
+    let mut start = Point::ZERO;
+    for element in shape.elements() {
+        match *element {
+            PathEl::MoveTo(p) => {
+                flat.move_to(p);
+                (at, start) = (p, p);
+            }
+            PathEl::LineTo(p) => {
+                flat.line_to(p);
+                at = p;
+            }
+            PathEl::QuadTo(p1, p2) => {
+                let p0 = at;
+                let bend = (p0.to_vec2() - 2.0 * p1.to_vec2() + p2.to_vec2()).to_point();
+                let n = chords(2.0 * length(bend));
+                for k in 1..n {
+                    let t = k as f64 / n as f64;
+                    let u = 1.0 - t;
+                    let (a, b, c) = (u * u, 2.0 * u * t, t * t);
+                    flat.line_to(Point::new(
+                        a * p0.x + b * p1.x + c * p2.x,
+                        a * p0.y + b * p1.y + c * p2.y,
+                    ));
+                }
+                flat.line_to(p2);
+                at = p2;
+            }
+            PathEl::CurveTo(p1, p2, p3) => {
+                let p0 = at;
+                let bend0 = (p0.to_vec2() - 2.0 * p1.to_vec2() + p2.to_vec2()).to_point();
+                let bend1 = (p1.to_vec2() - 2.0 * p2.to_vec2() + p3.to_vec2()).to_point();
+                let n = chords(6.0 * length(bend0).max(length(bend1)));
+                for k in 1..n {
+                    let t = k as f64 / n as f64;
+                    let u = 1.0 - t;
+                    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                    flat.line_to(Point::new(
+                        a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+                        a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+                    ));
+                }
+                flat.line_to(p3);
+                at = p3;
+            }
+            PathEl::ClosePath => {
+                flat.close_path();
+                at = start;
+            }
+        }
+    }
+    flat
+}
+
 /// Rasterizes `paths` (font units, y up) into a [`Mask`] of
 /// `width` x `height` pixels.
 ///
@@ -53,7 +135,9 @@ fn check_dimensions(width: u32, height: u32) -> Result<(u16, u16), RenderError> 
 /// `(i + 0.5, j + 0.5)`; row 0 is the top. Contours are filled together with
 /// the non-zero rule, using the same single-threaded, baseline-SIMD
 /// `vello_cpu` rasterizer as the PNG previews, so equal inputs give equal
-/// values on any call. Cubic curves are never converted to quadratics.
+/// values on any call. Curves are first flattened in pixel space to within
+/// a hundredth of a pixel, so the coverage of a curved edge is as exact as
+/// that of a straight one; they are never converted to quadratics.
 ///
 /// # Errors
 ///
@@ -81,9 +165,10 @@ pub fn coverage_mask(
             "the pixel transform is not finite".to_owned(),
         ));
     }
-    let shape: BezPath = outline("mask", paths)?;
+    let shape: BezPath = Affine::new(coeffs) * outline("mask", paths)?;
+    let flat = flatten(&shape, FLATTEN_TOLERANCE_PX);
     let mut canvas = Canvas::new(w, h);
-    canvas.fill(&shape, Affine::new(coeffs), crate::draw::BLACK);
+    canvas.fill(&flat, Affine::IDENTITY, crate::draw::BLACK);
     let data = canvas.finish_alpha();
     Ok(Mask {
         width,

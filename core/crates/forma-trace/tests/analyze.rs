@@ -138,6 +138,38 @@ fn rows_and_order() {
     assert!((a.rows[1].cap_px - 110.0).abs() <= 1.0);
 }
 
+#[test]
+fn row_metrics_keep_sub_pixel_edges() {
+    // Bars whose top edge is at y = 20.75 and bottom edge at y = 130.25: the
+    // edge rows are a quarter covered. The cap line and the baseline are
+    // measured on the mask, not rounded out to the whole pixels of the boxes
+    // (20 and 131, which made the cap height 1.5 px too tall here).
+    let mut img = canvas(200, 160);
+    let part = |c: f64| Rgb(ORANGE.map(|v| (f64::from(v) * c).round() as u8));
+    for k in 0..3u32 {
+        let x0 = 15 + k * 60;
+        rect(&mut img, x0, 21, x0 + 30, 130, ORANGE);
+        for x in x0..x0 + 30 {
+            img.put_pixel(x, 20, part(0.25));
+            img.put_pixel(x, 130, part(0.25));
+        }
+    }
+    let a = analyze(&img, &TraceOptions::default()).unwrap();
+    assert_eq!(a.rows.len(), 1);
+    let row = &a.rows[0];
+    // Within the mask's resolution (a quarter of a pixel).
+    assert!(
+        (row.cap_px - 20.75).abs() <= 0.25,
+        "cap line {}",
+        row.cap_px
+    );
+    assert!(
+        (row.baseline_px - 130.25).abs() <= 0.25,
+        "baseline {}",
+        row.baseline_px
+    );
+}
+
 /// Three tall bars give the row context (the dot of an "i" overlaps the tall
 /// bar's vertical band).
 fn with_context(img: &mut RgbImage) {

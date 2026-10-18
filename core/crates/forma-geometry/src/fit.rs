@@ -19,7 +19,7 @@ use crate::convert::{Segment, outline, point};
 /// Points closer than this are the same point.
 const DUPLICATE_EPSILON: f64 = 1e-9;
 
-/// How many times the parameters are refined before a fit is split.
+/// How many times the parameters of a stretch are refined (Newton-Raphson).
 const MAX_REPARAMETERIZATIONS: usize = 4;
 
 /// The tangent angle above which a node counts as a corner, in degrees.
@@ -200,18 +200,19 @@ fn fit_job(pts: &[Point], job: &Job, tol_sq: f64) -> Outcome {
     let mut u = chord_parameters(seg);
     let mut bez = generate_bezier(seg, &u, job.t1, job.t2);
     let (mut worst, mut split) = max_error(seg, &u, &bez);
-    if worst <= tol_sq {
-        return Outcome::Fitted(bez);
-    }
+    let mut fitted = (worst <= tol_sq).then_some(bez);
     for _ in 0..MAX_REPARAMETERIZATIONS {
         u = reparameterize(seg, &u, &bez);
         bez = generate_bezier(seg, &u, job.t1, job.t2);
         (worst, split) = max_error(seg, &u, &bez);
         if worst <= tol_sq {
-            return Outcome::Fitted(bez);
+            fitted = Some(bez);
         }
     }
-    Outcome::Split(job.first + split)
+    match fitted {
+        Some(bez) => Outcome::Fitted(bez),
+        None => Outcome::Split(job.first + split),
+    }
 }
 
 /// The first of `walk` that is at least `reach` from `origin`, or the last one
@@ -395,8 +396,12 @@ fn fit_run(
 /// at the first point and the last one ends at the last point; the chain is
 /// continuous and, where the algorithm had to split, also tangent-continuous.
 /// The end tangents come from the neighbouring points. Each stretch is
-/// parameterised by chord length, refined up to four times by Newton-Raphson,
-/// and split at the point of largest error if it still does not fit.
+/// parameterised by chord length and refined four times by Newton-Raphson;
+/// the most refined fit within `max_error` is kept, and the stretch is split
+/// at the point of largest error if none is. (Stopping at the first fit
+/// within a loose `max_error` would keep the chord-length fit, which lies
+/// on the inside of an arc: a quarter circle fitted to within a hundredth of
+/// its radius strays 0.6 % inward but only 0.25 % outward.)
 ///
 /// With `closed`, the points are a loop: the last cubic ends where the first
 /// begins, with the same tangent direction there. A repeated first point at the

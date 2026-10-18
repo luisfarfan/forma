@@ -1,9 +1,10 @@
-//! The ink mask: soft membership, upsampling and a 50 % threshold.
+//! The ink mask: soft membership (the ink coverage of each pixel),
+//! upsampling and a 50 % threshold.
 
 use forma_render::{MAX_MASK_PIXELS, Mask};
 use image::RgbImage;
 
-use crate::palette::{dist2, lab};
+use crate::palette::{dist2, lab, to_f};
 
 /// The largest mask side accepted by the renderer.
 const MAX_SIDE: u64 = 65_535;
@@ -25,20 +26,49 @@ pub(crate) fn effective_upsample(width: u32, height: u32, requested: u32) -> u32
     u
 }
 
-/// How much of `ink` a pixel holds, 0 to 1: full inside the tolerance of the
-/// ink; for other pixels near the background-to-ink segment (an anti-aliased
-/// edge) the distance to the background over the sum of both distances; zero
-/// for any other color.
-fn soft(p: [f64; 3], bg: [f64; 3], ink: [f64; 3], span: f64, tolerance: f64) -> f32 {
-    let d_ink = dist2(p, ink).sqrt();
-    if d_ink <= tolerance {
-        return 1.0;
+/// The background and ink colours a pixel is weighed against: encoded sRGB
+/// (where anti-aliasing mixes them) and Lab (where the tolerance is measured).
+struct Mix {
+    bg: [f64; 3],
+    ink: [f64; 3],
+    bg_lab: [f64; 3],
+    ink_lab: [f64; 3],
+    /// The Lab distance from the background to the ink.
+    span: f64,
+    tolerance: f64,
+}
+
+impl Mix {
+    /// How much of `ink` a pixel holds, 0 to 1.
+    ///
+    /// Which colours count is decided in Lab: the ink within the tolerance,
+    /// and any colour near the background-to-ink segment (an anti-aliased
+    /// edge); any other colour is not ink (0). How much ink a counted pixel
+    /// holds is its coverage: anti-aliasing mixes the ink into the background
+    /// linearly in the encoded sRGB values, so the coverage is where the
+    /// pixel projects onto the background-to-ink segment there, clamped to
+    /// 0..1. Any other measure is biased at the 50 % threshold: a ratio of
+    /// Lab distances puts it at about 45 % coverage, and counting every
+    /// pixel within the tolerance as full ink puts 72 % coverage at 100 %,
+    /// both of which move edges outwards.
+    fn soft(&self, p: [u8; 3]) -> f32 {
+        let p_lab = lab(p);
+        let d_ink = dist2(p_lab, self.ink_lab).sqrt();
+        let d_bg = dist2(p_lab, self.bg_lab).sqrt();
+        if d_ink > self.tolerance && d_bg + d_ink > self.span + self.tolerance {
+            return 0.0;
+        }
+        let (mut along, mut length2) = (0.0, 0.0);
+        for ((c, bg), ink) in to_f(p).iter().zip(self.bg).zip(self.ink) {
+            let v = ink - bg;
+            along += (c - bg) * v;
+            length2 += v * v;
+        }
+        if length2 <= 0.0 {
+            return 1.0;
+        }
+        (along / length2).clamp(0.0, 1.0) as f32
     }
-    let d_bg = dist2(p, bg).sqrt();
-    if d_bg + d_ink > span + tolerance {
-        return 0.0;
-    }
-    (d_bg / (d_bg + d_ink)) as f32
 }
 
 /// Binary ink mask (0 or 255) at `upsample` times the image size (reduced if
@@ -53,11 +83,16 @@ pub(crate) fn binary_mask(
 ) -> Mask {
     let (w, h) = image.dimensions();
     let u = effective_upsample(w, h, upsample);
-    let bg = lab(background);
-    let ink_lab = lab(ink);
-    let span = dist2(bg, ink_lab).sqrt();
+    let mix = Mix {
+        bg: to_f(background),
+        ink: to_f(ink),
+        bg_lab: lab(background),
+        ink_lab: lab(ink),
+        span: dist2(lab(background), lab(ink)).sqrt(),
+        tolerance,
+    };
     let (mw, mh) = (w * u, h * u);
-    if span <= tolerance || w == 0 || h == 0 {
+    if mix.span <= tolerance || w == 0 || h == 0 {
         return Mask {
             width: mw,
             height: mh,
@@ -66,7 +101,7 @@ pub(crate) fn binary_mask(
     }
     let mut s = vec![0f32; w as usize * h as usize];
     for (i, px) in image.pixels().enumerate() {
-        s[i] = soft(lab(px.0), bg, ink_lab, span, tolerance);
+        s[i] = mix.soft(px.0);
     }
     let at = |x: i64, y: i64| -> f32 {
         let xi = x.clamp(0, i64::from(w) - 1) as usize;
