@@ -100,22 +100,23 @@
 - Sobremuestreo ×4, bilineal.
 - Ruido: área < 2 % de la mediana.
 - Fusión de piezas: solapamiento horizontal ≥ 50 % del ancho del más estrecho.
-- visioncortex: `PathSimplifyMode::Spline`, umbral de esquina 60°, longitud 4.0, 10 iteraciones, empalme 45°.
+- visioncortex: `PathSimplifyMode::Spline`, umbral de esquina 60°, longitud 4.0, 10 iteraciones, empalme 45°. **[Enmendado: solo recorre los bordes (`PathSimplifyMode::None`); el valor suave es la cobertura sRGB y ΔE solo decide qué píxeles son tinta; véase la sección de enmiendas de la especificación.]**
 - Simplificación con error ≤ 1,5 unidades. Una tangente es suave si difiere ≤ 3°. Grilla de 1.
 - Margen inicial: `lsb = rsb = round(0.05 × UPM)`.
 
 *Espaciado*
-- 64 líneas de muestreo.
-- Overshoot 2 % del UPM.
-- Una zona propia si hay menos de 8 líneas con tinta.
-- Profundidad 15 % del UPM.
+- **[Enmendado tras la Tarea 12]** 64 líneas de muestreo sobre la altura de tinta propia de cada glifo (las líneas sin tinta se saltan; sin cambio a 8 líneas).
+- Profundidad 0,4 × ancho de trazo de `H`, medido desde la caja del glifo (no 15 % del UPM).
+- Peso de línea `0,25 + 0,75 · sin(π·t)` (`edge_weight` 0,25).
+- Márgenes negativos recortados a 0, con indicadores `clamped`.
 - `tightness` 0,6; referencias `H` y `O`.
 - Bisección con tolerancia de 0,5.
 
 *Kerning*
 - `strength` 0,8; máximo 25 % del UPM; mínimo 10 unidades.
-- Distancia mínima 2 % del UPM.
-- Agrupación con L1 ≤ 3 % del UPM por línea; excepción si difiere más de 10 unidades.
+- **[Enmendado tras la Tarea 13]** Hueco óptico por línea = máximo entre el blanco propio recortado como en el espaciado y el hueco recortado 0,4 × ancho de trazo de `H` más allá del punto más cercano, con `edge_weight` 0,25.
+- Distancia mínima 2 % del UPM por defecto (configurable, admite negativo), sobre la misma rejilla que `kerning_check`.
+- Agrupación con perfiles medidos desde el borde del avance, L1 ≤ 3 % del UPM por línea; excepción si difiere más de 10 unidades.
 - Colisión: distancia < 0.
 
 *Trazo*

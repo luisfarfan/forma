@@ -21,7 +21,7 @@
 
 **Por qué se descarta SwiftUI/AppKit como UI principal:** limita el producto a macOS. La propuesta anterior ya ponía toda la lógica en Rust, así que el cambio de UI **no** afecta al núcleo. Esa fue la razón para separar núcleo y shell desde el principio.
 
-## 2. Ecosistema tipográfico (sin cambios respecto a la revisión 1)
+## 2. Ecosistema tipográfico (revisión 1, con `linesweeper` añadido en el Hito 2)
 
 | Componente | Versión · fecha | Licencia | Relevancia |
 |---|---|---|---|

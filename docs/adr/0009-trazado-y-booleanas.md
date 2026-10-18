@@ -15,16 +15,17 @@ Las restricciones vienen de `CLAUDE.md`: licencia compatible con `MIT OR Apache-
 
 ## Decisión
 
-Se incorporan tres dependencias directas. Los datos de versión, licencia y actividad se verificaron el 2026-10-17 [V].
+Se incorporan tres dependencias directas. Los datos de versión, licencia y actividad se verificaron el 2026-10-17 [V]. La columna de licencia es la **del crate** (la de su `Cargo.toml`, la que cuenta para `cargo-deny`); la del repositorio, si difiere, se indica en la columna de mantenimiento.
 
 | Crate | Versión | Licencia | Para qué sirve | Mantenimiento |
 |---|---|---|---|---|
 | `image` | 0.25.10 | MIT OR Apache-2.0 | Decodificar PNG y JPEG. | Crate de referencia del ecosistema (image-rs). |
-| `visioncortex` | 0.9.3 | MIT OR Apache-2.0 | Vectorizar la máscara binaria de cada candidato en curvas. | `github.com/visioncortex/visioncortex` (Apache-2.0), unas 124 estrellas, último push 2026-08. Es el núcleo de `vtracer` (`visioncortex/vtracer`, MIT, unas 7,3 k estrellas, activo: último push 2026-10-12). |
+| `visioncortex` | 0.9.3 | MIT OR Apache-2.0 (crate) | Recorrer los bordes de la máscara binaria de cada candidato. | `github.com/visioncortex/visioncortex` (licencia del repositorio: Apache-2.0), unas 124 estrellas, último push 2026-08. Es el núcleo de `vtracer` (`visioncortex/vtracer`, MIT, unas 7,3 k estrellas, activo: último push 2026-10-12). |
 | `linesweeper` | 0.5.0 | MIT OR Apache-2.0 | Unión de contornos con relleno no-cero (`remove_overlap`). | `jneem/linesweeper`, unas 45 estrellas, último push 2026-01-25. Usa `kurbo` 0.13.1, la misma versión del workspace. |
 
 - **`image`:** con `default-features = false` y solo las características `png` y `jpeg`, para reducir la superficie de ataque y de dependencias. FORMA impone sus propios límites antes de decodificar: ≤ 64 MiB de archivo y ≤ 50 megapíxeles (`LIMIT_EXCEEDED`). El lector de imágenes entra en el fuzzing nocturno como objetivo nuevo `image_decode`.
-- **`visioncortex`:** FORMA hace su propia paleta, su máscara suave sobremuestreada ×4 y sus candidatos (spec §6.1); solo delega el paso de máscara binaria a curvas (modo `Spline`). Sus contornos pueden traer nodos de más, así que el reajuste de cúbicas (`fit`, implementación propia en `forma-geometry`) y los chequeos de geometría limpian el resultado.
+- **`visioncortex`:** FORMA hace su propia paleta, su máscara suave sobremuestreada ×4 y sus candidatos (spec §6.1); solo delega el recorrido de los bordes de la máscara binaria. Sus contornos pueden traer nodos de más, así que el reajuste de cúbicas (`fit`, implementación propia en `forma-geometry`) y los chequeos de geometría limpian el resultado.
+- **Desviación del trazado (Tarea 11b, 2026-10-17):** el diseño original usaba el modo `Spline` de visioncortex para obtener las curvas. La medición mostró que su eliminación de escalones sesgaba el contorno, así que visioncortex se usa solo para recorrer los bordes (`PathSimplifyMode::None`) y las curvas salen del `fit` propio. El detalle está en las enmiendas de la especificación (§6.1).
 - **`linesweeper`:** queda detrás del trait `PathOps` de `forma-geometry`. Si falla devuelve `INVALID_GEOMETRY`. Opera sobre trazados de `kurbo` y se espera que conserve las curvas [H: lo confirma el corpus de solapamientos con el que se valida al empezar la implementación, antes de apoyar nada más en ella]. Si el corpus falla, se pasa al plan B sin tocar a los llamadores.
 - **Plan B: Skia PathOps** (robusta y muy usada en herramientas de fuentes), detrás del mismo trait `PathOps`. Se activa solo si `linesweeper` no supera el corpus; entonces se registra un ADR nuevo, porque supone una dependencia de C++.
 
@@ -46,4 +47,4 @@ Las tres son Rust y deben compilar en los tres sistemas operativos [H: lo confir
 - **`visioncortex` tiene pocas estrellas** pero lo usa un proyecto muy usado y activo (`vtracer`), y su licencia permite mantener un fork si se abandonara.
 - **Fidelidad limitada por la resolución:** con letras de unos 110 px el vectorizador no puede recuperar detalle que la imagen no tiene (T20). El sobremuestreo, el IoU por glifo y la corrección con `nodes_edit` lo acotan; no lo eliminan.
 - El decodificador de imágenes es una superficie de ataque nueva: límites de tamaño, lectura solo dentro de las raíces permitidas y fuzzing nocturno (`image_decode`).
-- `docs/03-architecture.md` (booleanas con Skia PathOps en la fase 4) queda desactualizado: ahora la primera opción es `linesweeper` y Skia PathOps es el plan B. Las booleanas generales (intersección, diferencia) quedan para el Hito 6.
+- `docs/03-architecture.md` ya refleja que la primera opción para las booleanas es `linesweeper` y que Skia PathOps es el plan B. Las booleanas generales (intersección, diferencia) quedan para el Hito 6.

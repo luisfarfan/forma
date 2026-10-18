@@ -4,7 +4,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 
 **FORMA es open source, sin fines comerciales, bajo `MIT OR Apache-2.0`.**
 
-**Estado: Hito 1 completado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`): CI en verde en macOS, Windows y Ubuntu (PR #1, 2026-10-17) y fuzzing nocturno en verde (los dos objetivos). **Hito 2 aprobado y en curso** (rama `hito2`): de una imagen de un alfabeto a una fuente completa; diseño vinculante en `docs/superpowers/specs/2026-10-17-hito2-imagen-a-fuente-design.md`. **La interfaz gráfica va al final del roadmap** (Hito 8; ADR 0008): motor primero, hitos guiados por fuentes demo. Repositorio público: `github.com/luisfarfan/forma`.
+**Estado: Hito 1 completado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`): CI en verde en macOS, Windows y Ubuntu (PR #1, 2026-10-17) y fuzzing nocturno en verde (los dos objetivos). **Hito 2 implementado en la rama `hito2`** (pendiente de la CI en los 3 SO y de las demos con agentes reales): de una imagen de un alfabeto a una fuente completa (50 herramientas); diseño vinculante en `docs/superpowers/specs/2026-10-17-hito2-imagen-a-fuente-design.md`. **La interfaz gráfica va al final del roadmap** (Hito 8; ADR 0008): motor primero, hitos guiados por fuentes demo. Repositorio público: `github.com/luisfarfan/forma`.
 - **Aprobado:** Rust como núcleo, licencia MIT OR Apache-2.0, Hitos 1 y 2, instalación justificada de sus dependencias.
 - **No aprobado aún:** el toolkit de UI. No construyas el editor gráfico ni instales Qt o Slint hasta aprobar el Hito 8 (spike de UI).
 
@@ -27,9 +27,11 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 ## Stack (resumen; detalle en 02)
 - **Núcleo:** Rust, workspace en `core/`. Crates principales:
   - `forma-model`: modelo de datos.
+  - `forma-geometry`: geometría de contornos, SVG, chequeos y correcciones, ajuste de cúbicas, trazo, booleanas (`PathOps`).
   - `forma-edit`: comandos, transacciones, historial, revisiones.
   - `forma-engine`: registro de comandos, `DocumentHost`, planes.
   - `forma-store`: `.forma` y `.formapackage`.
+  - `forma-interop`: exportación UFO.
   - `forma-compile`: fontc.
   - `forma-validate`.
   - `forma-render`: vello_cpu.
@@ -74,7 +76,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
   - Schemas MCP generados con `schemars`, nunca escritos a mano.
 - **Definición de terminado** (ver `docs/04-roadmap.md`): comando del registro + tests + exposición MCP y CLI + escenario MCP + CI verde en los 3 SO (+ UI desde el Hito 8, el de la interfaz).
 - Fixtures de fuentes: solo propias u OFL, con su licencia en `tests/fixtures/<nombre>/`. **Nunca** fuentes comerciales: tampoco se usan, importan ni reconstruyen en local; solo sirven como referencia visual (mirarlas). Las demos usan dibujos con derechos claros, muestras de dominio público y fuentes OFL (ADR 0008).
-- **Las imágenes de terceros nunca se versionan.** Dibujos, fotos y escaneos ajenos (como el alfabeto de la demo del Hito 2) se quedan en local, fuera del repositorio. Solo se publican si la autora lo autoriza, con su nombre y la licencia que elija. Los tests usan imágenes propias generadas por código.
+- **Las imágenes de terceros nunca se versionan.** Dibujos, fotos y escaneos ajenos (como el alfabeto de la demo del Hito 2) se quedan en local, fuera del repositorio. Ningún agente las versiona; solo el responsable, con autorización de la autora, su nombre y la licencia que elija. Los tests usan imágenes propias generadas por código.
 - **Licencia:** cada crate declara `license = "MIT OR Apache-2.0"`. Archivos `LICENSE-MIT` y `LICENSE-APACHE` en la raíz.
 - **Dependencias:** justificar cada una (qué resuelve, licencia, mantenimiento).
   - Licencias permitidas: MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, Unicode, FTL, OFL (solo fixtures). Qt bajo LGPLv3 con enlace dinámico, si se aprueba Qt.

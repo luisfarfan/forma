@@ -111,7 +111,7 @@ Dependencias: `image` 0.25 (solo PNG y JPEG, sin features por defecto), `visionc
    - El fondo es el color predominante en el borde de la imagen.
    - La paleta se obtiene con k-means (k ≤ 8) sobre una muestra.
    - Por defecto, la tinta es el grupo de colores no-fondo con más píxeles. También se acepta `color` explícito en hex.
-3. **Máscara suave.** Cada píxel se valora según su distancia en Lab a la tinta frente al fondo, con tolerancia ΔE configurable (por defecto 25).
+3. **Máscara suave.** *(Enmendado, véase "Enmiendas tras la implementación".)* La tolerancia ΔE en Lab (configurable, por defecto 25) decide qué píxeles cuentan como tinta; el valor suave de cada uno es su cobertura sRGB a lo largo del segmento fondo → tinta.
    - La máscara se **sobremuestrea ×4** (bilineal) antes de binarizarla al 50 %. Así se recupera precisión subpíxel en letras pequeñas.
    - Los colores que no son ni tinta ni fondo (las figuras azules) quedan fuera.
 4. **Candidatos.**
@@ -120,8 +120,8 @@ Dependencias: `image` 0.25 (solo PNG y JPEG, sin features por defecto), `visionc
    - Se **fusionan** las piezas de un mismo glifo, es decir, solapamiento horizontal ≥ 50 % del más estrecho dentro de la fila (puntos, diéresis, ¡).
    - Cada candidato tiene índice, fila, caja en píxeles y área.
 5. **Métricas por fila.** La línea base es la mediana de los bordes inferiores y la altura de mayúsculas la mediana de los superiores. Escala = `cap_height` del master en unidades ÷ altura de mayúsculas en píxeles de la fila.
-6. **Vectorizar** cada candidato con visioncortex.
-   - Parámetros: `PathSimplifyMode::Spline`, umbral de esquina 60°, longitud mínima 4, 10 iteraciones, empalme 45°.
+6. **Vectorizar** cada candidato con visioncortex. *(Enmendado.)*
+   - visioncortex solo recorre los bordes de la máscara (`PathSimplifyMode::None`); las curvas salen del reajuste propio de FORMA (`fit`). El modo `Spline` con sus parámetros originales (60°, 4, 10, 45°) se descartó porque su eliminación de escalones sesga el contorno.
    - Coordenadas de fuente con y hacia arriba: `x = (px − caja.min_x) · escala`, `y = (base_px − py) · escala`.
 7. **Limpieza** (forma-geometry):
    - simplificación por reajuste de cúbicas con error ≤ 1,5 unidades (§6.3);
@@ -133,22 +133,24 @@ Dependencias: `image` 0.25 (solo PNG y JPEG, sin features por defecto), `visionc
 ### 6.2 `forma-spacing` (nueva): espaciado, kerning y colisiones
 Usa algoritmos propios a partir de principios publicados. No se copia código de herramientas GPL.
 
-- **Perfiles.**
-  - Se toman 64 líneas horizontales en la **zona de medida**: de `−overshoot` a `cap_height + overshoot`, con overshoot = 2 % del UPM.
+- **Perfiles.** *(Enmendado con los valores implementados.)*
+  - Se toman 64 líneas horizontales sobre la altura de tinta propia de cada glifo (el perfil público `profile()` conserva la regla de 8 líneas, pero el espaciado no la usa). Las líneas sin tinta se saltan.
   - Para cada línea se registra la x mínima y máxima de tinta (relleno no-cero, componentes incluidos).
-  - Si un glifo tiene tinta en menos de 8 líneas (punto, comillas), su zona es su propia altura de tinta.
-  - Profundidad: el perfil se recorta a `depth` = 15 % del UPM desde el extremo del glifo.
+  - Profundidad: el perfil se recorta a `depth` = 0,4 × el ancho de trazo de `H`, medido desde la caja del glifo (no 15 % del UPM).
 - **Espaciado.**
-  - El blanco de un lado es el área entre el perfil recortado y el borde (margen), dividida por la altura de la zona.
-  - Referencias: `H` y `O`. El margen de `H` es `tightness × ancho_de_trazo(H)`, con `tightness` 0,6 por defecto, apropiado para display. Ese margen fija el blanco objetivo.
-  - Cada lado de cada glifo se resuelve por **bisección** hasta igualar el blanco objetivo, con tolerancia de 0,5 unidades.
-  - Propiedad: un glifo simétrico recibe márgenes simétricos.
+  - Cada línea pesa `0,25 + 0,75 · sin(π·t)` (`edge_weight` = 0,25), con `t` la posición relativa en la zona de medida. El blanco de un lado es la media ponderada de la distancia recortada entre la caja y la tinta.
+  - Referencias: `H` y `O`. El margen de `H` es `tightness × ancho_de_trazo(H)`, con `tightness` 0,6 por defecto. Ese margen fija el blanco objetivo.
+  - El ancho de trazo de `H` es la mediana del ancho de las pasadas de tinta en la mitad media de la altura de mayúsculas.
+  - Cada lado de cada glifo se resuelve por **bisección** hasta igualar el blanco objetivo, con tolerancia de 0,5 unidades. Los márgenes negativos se recortan a 0 y el resultado lo marca con indicadores `clamped`.
+  - Propiedad: un glifo simétrico recibe márgenes simétricos. Valores con la fuente de prueba: `H` 48/48, `O` 29/29, `A` 18/18.
 - **Kerning automático.**
-  - Para el par (L, R) el hueco por línea es `g(y) = (avance_L − der_L(y)) + izq_R(y)`, con perfiles recortados, y el **hueco óptico** es la media de `g` en las líneas con tinta en ambos.
+  - *(Enmendado con lo implementado.)* Para el par (L, R) el hueco por línea es `g(y) = (avance_L − der_L(y)) + izq_R(y)` en las líneas de la rejilla donde ambos tienen tinta.
+  - El **hueco óptico** por línea es el máximo de dos medidas: el blanco propio de cada glifo recortado como en el espaciado, y `g(y)` recortado a 0,4 × el ancho de trazo de `H` más allá del punto más cercano del par. La media se pondera con el mismo `edge_weight` (0,25) que el espaciado. Con solo el recorte del espaciado, todos los pares darían ≈ 0 (incluido AV), porque el espaciado ya igualó esos blancos; con el máximo, un par con un lado recto mide como en el espaciado y un canal que el par nunca cierra (AV, To, AT) cuenta entero.
   - La referencia es el hueco de `HH`. El kern es `clamp((ref − hueco) × fuerza, −max, +max)`, con `fuerza` 0,8, `max` = 25 % del UPM y `min` = 10 unidades (por debajo, no hay par).
-  - **Guardia de colisión:** si `min_y g(y) + kern < distancia_mínima` (2 % del UPM), el kern se sube hasta cumplirla.
-  - **Agrupación:** se unen los glifos cuyos perfiles normalizados difieren menos que un umbral (L1 ≤ 3 % del UPM por línea). El kern de clase es la mediana de los miembros, y se crean excepciones donde un miembro difiere más de 10 unidades.
-  - El resultado es determinista: orden por nombre.
+  - **Guardia de colisión:** sobre la misma rejilla que usa `kerning_check` (calculada con el mismo conjunto de glifos, `.notdef` incluido en la rejilla y excluido del kerning), si la distancia mínima con el kern es menor que `min_distance` (por defecto 2 % del UPM, configurable; se admite negativo para diseños que se tocan), el kern se sube hasta cumplirla. Se aplica a todos los pares, también a los de kern 0, así que puede abrir un par más cerrado que `min_distance`.
+  - **Agrupación:** los lados derechos y los izquierdos se agrupan por separado. Los perfiles se miden desde el borde del avance (blanco recortado a ±25 % del UPM; una línea sin tinta cuenta como 25 %). Distancia: media de |Δ| en las líneas donde alguno tiene tinta; umbral 3 % del UPM. Agrupación voraz por orden de nombre; el nombre del grupo es el del primer miembro; un glifo está como máximo en un grupo por lado y no se crean grupos de uno.
+  - **Reglas de clase y excepciones:** el kern de clase (primera × segunda) es la mediana de los objetivos de sus miembros (con cantidad par, de las dos centrales la más cercana a 0) y se descarta si |v| < `min`. Un miembro recibe una excepción glifo-glifo si su objetivo difiere del de clase en más de 10 unidades, o si el valor de clase rompería la guardia para él. Como el modelo no admite pares de valor 0, una excepción de 0 guarda su kern sin filtrar o +1. Las excepciones ganan sobre las clases en `Kerning::effective`.
+  - El resultado es determinista (orden por nombre, independiente del orden de entrada y de los duplicados). Los valores son enteros, no nulos y ≤ 2 × UPM; máximo 500 glifos por llamada.
 - **Colisiones.** Para todos los pares (o un subconjunto), se calcula la distancia mínima entre contornos con avance y kerning aplicados. Hay colisión si es menor que 0 (toque o solapamiento).
 
 ### 6.3 `forma-geometry` (ampliada)
@@ -279,7 +281,7 @@ image_inspect → (el agente mira la imagen anotada y asigna A…Z) → image_tr
 | linesweeper es joven (0.5) | Se valida al principio (test de corpus de solapamientos); trait `PathOps` para cambiar a Skia PathOps |
 | visioncortex devuelve contornos con nodos de más | Simplificación propia con `fit` + chequeos de geometría |
 | La estética de los glifos nuevos es subjetiva | Hoja de prueba aprobada por el responsable (y la autora) |
-| `tools/list` crece (49 herramientas) | Conjuntos para cargar solo lo necesario; seguimiento del tamaño en el snapshot |
+| `tools/list` crece (50 herramientas) | Conjuntos para cargar solo lo necesario; seguimiento del tamaño en el snapshot |
 | Espaciado y kerning automáticos poco "ópticos" | Parámetros expuestos, y `kerning_set` para ajustes finos del agente o la persona |
 
 ## 13. Fuera de alcance del Hito 2
@@ -288,3 +290,15 @@ image_inspect → (el agente mira la imagen anotada y asigna A…Z) → image_tr
 - Importación de fuentes existentes (Hito 4).
 - Multi-master, variables, CFF y hinting (hitos posteriores).
 - La interfaz gráfica (al final).
+
+## Enmiendas tras la implementación (2026-10-17)
+
+El cuerpo del documento se corrigió donde ya no coincidía con el código. Aquí queda el registro de qué cambió y por qué; las decisiones del controlador están en `docs/qa/hito2/decisiones.md`.
+
+1. **§6.1, máscara suave (Tarea 11b).** La tolerancia ΔE en Lab (por defecto 25) solo decide qué píxeles son tinta. El valor suave de cada píxel es su cobertura: la proyección sobre el segmento fondo → tinta en sRGB codificado, acotada a 0..1. No es un cociente de distancias Lab: ese cociente, con saturación, engrosaba cada borde entre +0,03 y +0,09 px.
+2. **§6.1, vectorización (Tarea 11b).** visioncortex solo recorre los bordes de la máscara (`PathSimplifyMode::None`). Las curvas salen del reajuste propio de FORMA, porque el modo `Spline` y su eliminación de escalones era una fuente de sesgo. Otras causas raíz corregidas: el aplanado del generador de la imagen de prueba, el primer ajuste de `fit_cubics` (encogía ~0,06 px; ahora siempre hay cuatro pasadas de Newton) y las métricas de fila, que ahora son fraccionarias.
+   - **Límite conocido del modelo:** la imagen de prueba propia y el trazador comparten el mismo modelo de mezcla (sRGB codificado). Con escaneos o fotos mezclados en luz lineal queda un sesgo residual cuyo signo depende de la luminancia de tinta y fondo; no está medido.
+3. **§6.2, espaciado (Tarea 12).** La profundidad del 15 % del UPM era incorrecta (dejaba `O` en −5/−5 y `A` en −55/−55). Se recalibró con criterios de resultado: profundidad 0,4 × ancho de trazo de `H` medido desde la caja, peso de línea `0,25 + 0,75 · sin(π·t)`, blanco medido sobre la altura de tinta propia de cada glifo, sin el cambio a 8 líneas, márgenes negativos recortados a 0 con indicadores `clamped`, `tightness` 0,6 y referencias `H`/`O`.
+4. **§6.2, kerning (Tarea 13).** Hueco óptico como máximo de dos recortes, guardia sobre la rejilla común con `kerning_check`, `min_distance` configurable y reglas de agrupación, clase y excepción tal como se describen en el cuerpo.
+5. **§12.** El conteo es 50 herramientas (35 + 15), no 49.
+6. **Formato y contrato.** `Layer.components`, `Font.kerning`, los indicadores de `FontDiff`/`GlyphDiff`, el patrón de `EntityKey` y los componentes de `glyph_get` crecen de forma aditiva en el snapshot de `tools/list` (véase `docs/qa/hito2/decisiones.md`).

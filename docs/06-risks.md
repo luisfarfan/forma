@@ -67,5 +67,5 @@
 | MCP con dos eras del protocolo | Más superficie de pruebas | Solo 2026-07-28 (rompe Codex hoy) [V] |
 | Concurrencia optimista por entidad | Más complejidad que un bloqueo | Bloqueo exclusivo agente/usuario (peor experiencia de colaboración) |
 | fontc como compilador principal | Sin CFF hasta el Hito 6 | fontmake desde el inicio (Python embebido desde el Hito 1) |
-| Agente integrado en el Hito 8, con la UI | Diferenciador tardío dentro de la app | Adelantar un agente sin interfaz sobre `forma-agent` (el registro ya lo permite; no cuesta UI) |
+| Agente integrado en el Hito 8, con la UI (ADR 0008) | Diferenciador tardío dentro de la app | Adelantar un agente sin interfaz sobre `forma-agent` (el registro ya lo permite; no cuesta UI) |
 | Nombre FORMA | Conflictos de marca (L7) | Marca compuesta o alternativa tras la búsqueda legal |
