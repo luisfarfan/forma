@@ -17,6 +17,9 @@
 # fontspector is optional: cargo install fontspector --locked
 # With FORMA_REQUIRE_FONTSPECTOR=1 (CI sets it) a missing fontspector is a
 # failure instead of a SKIPPED line, so a broken install cannot pass unnoticed.
+# FORMA_REQUIRE_CHROME=1 (CI on Ubuntu): a missing Chrome is a failure.
+# FORMA_SKIP_CHROME=1 (CI on macOS and Windows, no display): skip the Chrome
+# load with a SKIPPED line. If both are set, REQUIRE wins.
 #
 # Artefacts go to out/acceptance/, which is recreated on every run.
 set -euo pipefail

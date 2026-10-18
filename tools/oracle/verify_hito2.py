@@ -26,6 +26,10 @@ Checks:
    with `@font-face` loads the WOFF2 and `document.fonts.check` says true.
    Otherwise this check prints SKIPPED, unless the environment variable
    FORMA_REQUIRE_CHROME is set (CI on Ubuntu): then it FAILS.
+   FORMA_SKIP_CHROME=1 skips the check with a SKIPPED line (CI on macOS and
+   Windows, whose runners have no display; criterion 6 runs on Linux). If both
+   variables are set, FORMA_REQUIRE_CHROME wins: the check runs and fails on
+   problems.
 
 Exits 0 only if every check passes, 1 if one fails, 2 on a usage error or a
 missing package.
@@ -330,7 +334,10 @@ def main() -> int:
     check_fonttools(tools, font, expected)
     ok &= tools.report()
     chrome = Check("Chrome @font-face and document.fonts.check")
-    if check_chrome(chrome, args.woff2):
+    if os.environ.get("FORMA_SKIP_CHROME") and not os.environ.get("FORMA_REQUIRE_CHROME"):
+        print("[SKIPPED] Chrome @font-face and document.fonts.check "
+              "(FORMA_SKIP_CHROME: no display on this CI runner)")
+    elif check_chrome(chrome, args.woff2):
         ok &= chrome.report()
     else:
         if os.environ.get("FORMA_REQUIRE_CHROME"):

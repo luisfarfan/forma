@@ -150,11 +150,15 @@ jobs:
         env:
           FORMA_REQUIRE_FONTSPECTOR: ${{ runner.os == 'Linux' && '1' || '' }}
           FORMA_REQUIRE_CHROME: ${{ runner.os == 'Linux' && '1' || '' }}
+          # No display on the macOS runner; criterion 6 runs on Linux.
+          FORMA_SKIP_CHROME: ${{ runner.os == 'macOS' && '1' || '' }}
         run: bash ../scripts/acceptance.sh
 
       - name: Acceptance (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          FORMA_SKIP_CHROME: "1"
         run: pwsh -NoProfile -File ../scripts/acceptance.ps1
 
       - name: Keep the acceptance artefacts
