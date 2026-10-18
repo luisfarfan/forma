@@ -160,6 +160,9 @@ pub struct StrokeStyle {
 ///   two on-curve nodes, no length, a coordinate that is not finite or nodes
 ///   that break the contour convention, or the skeletons are too long
 ///   (more than a million samples). The message names the skeleton.
+/// * [`GeometryError::TooComplex`] if the strokes are beyond the work
+///   budget of overlap removal (see [`Linesweeper`](crate::Linesweeper)):
+///   too many segments, or too many that cross.
 /// * [`GeometryError::Degenerate`] if removing the overlaps fails.
 pub fn stroke(skeletons: &[Skeleton], style: &StrokeStyle) -> Result<Vec<Path>, GeometryError> {
     check_positive(style.width, "the stroke width")?;
@@ -173,6 +176,7 @@ pub fn stroke(skeletons: &[Skeleton], style: &StrokeStyle) -> Result<Vec<Path>, 
             GeometryError::InvalidPath(message) | GeometryError::Degenerate(message) => {
                 GeometryError::InvalidPath(format!("skeleton {index}: {message}"))
             }
+            other => other,
         })?;
         for contour in draw(&shape, style.cap) {
             let id = u32::try_from(paths.len())

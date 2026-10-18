@@ -48,7 +48,7 @@ mod stroke;
 mod svg;
 mod transform;
 
-pub use boolean::{Linesweeper, PathOps, remove_overlap};
+pub use boolean::{Linesweeper, MAX_UNION_PAIRS, MAX_UNION_SEGMENTS, PathOps, remove_overlap};
 pub use checks::{GeometryIssue, IssueKind, check_paths, fix_paths};
 pub use components::{flatten_layer, layer_bbox};
 pub use convert::{bbox, from_bezpath, to_bezpath};
@@ -64,6 +64,7 @@ pub(crate) const FLATTEN_TOLERANCE: f64 = 0.25;
 
 /// An error raised while converting or measuring contours.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum GeometryError {
     /// The contour or the SVG data is malformed: an off-curve sequence that is
     /// not terminated by a suitable on-curve node, a segment with the wrong
@@ -73,4 +74,20 @@ pub enum GeometryError {
     /// The contour is well formed but has too few points to enclose anything.
     #[error("degenerate path: {0}")]
     Degenerate(String),
+    /// The contours are too complex to unite within the work budget of
+    /// overlap removal (see [`remove_overlap`]): `actual` of `what` against a
+    /// `limit`.
+    #[error(
+        "the contours are too complex to unite: {actual} {what}, the limit is {limit}; \
+         simplify the outline or split it"
+    )]
+    TooComplex {
+        /// What was counted: segments, or pairs of segments whose bounding
+        /// boxes overlap.
+        what: &'static str,
+        /// The budget.
+        limit: u64,
+        /// How many there are.
+        actual: u64,
+    },
 }

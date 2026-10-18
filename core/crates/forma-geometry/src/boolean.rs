@@ -9,7 +9,7 @@ use std::any::Any;
 use std::panic;
 
 use forma_model::{Path, PathId};
-use kurbo::{BezPath, PathEl, Point, Shape};
+use kurbo::{BezPath, PathEl, Point, Rect, Shape};
 use linesweeper::topology::Topology;
 
 use crate::{GeometryError, IssueKind, fix_paths, from_bezpath, to_bezpath};
@@ -35,6 +35,17 @@ const MAX_SWEEPS: usize = 3;
 /// anything this small disappears when coordinates are rounded to the font's
 /// integer grid.
 const ARTEFACT_SIZE: f64 = 0.1;
+
+/// The most segments (lines and curves, closed contours only) that
+/// [`Linesweeper`] unites in one call.
+pub const MAX_UNION_SEGMENTS: u64 = 50_000;
+
+/// The most pairs of segments whose bounding boxes overlap that
+/// [`Linesweeper`] unites in one call: an upper bound on the crossings the
+/// sweep must resolve, whose memory grows with them (about 2 KB each). The
+/// glyphs of a font have a few hundred; 1 000 strokes that all cross each
+/// other have millions.
+pub const MAX_UNION_PAIRS: u64 = 100_000;
 
 /// A Boolean-operations engine for contours.
 pub trait PathOps {
@@ -69,6 +80,8 @@ pub trait PathOps {
     ///
     /// * [`GeometryError::InvalidPath`] or [`GeometryError::Degenerate`] if a
     ///   contour cannot be converted (see [`to_bezpath`]).
+    /// * [`GeometryError::TooComplex`] if the input is beyond the engine's
+    ///   work budget.
     /// * [`GeometryError::Degenerate`] if the engine fails on the input.
     fn union(&self, paths: &[Path]) -> Result<Vec<Path>, GeometryError>;
 }
@@ -92,6 +105,13 @@ pub trait PathOps {
 /// self-intersecting curves) the result can still, rarely, keep a sliver
 /// whose sides cross; and in testing, `linesweeper` itself once left out a
 /// piece of the filled area (one random stroke in some 200 000).
+///
+/// Before sweeping, the closed contours are measured against a work budget:
+/// at most [`MAX_UNION_SEGMENTS`] segments and [`MAX_UNION_PAIRS`] pairs of
+/// segments whose bounding boxes overlap (counted exactly in `O(n log n)`),
+/// since the sweep's memory grows with the crossings it finds. Beyond either
+/// the union fails with [`GeometryError::TooComplex`] instead of exhausting
+/// the memory.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Linesweeper;
 
@@ -110,6 +130,7 @@ impl PathOps for Linesweeper {
         if all.elements().is_empty() {
             return Ok(paths.to_vec());
         }
+        check_budget(&all)?;
 
         // A panic inside the engine must not take the caller (an editor, a
         // server) down with it; it becomes an error like any other failure.
@@ -152,10 +173,141 @@ impl PathOps for Linesweeper {
 ///
 /// # Errors
 ///
-/// As [`PathOps::union`]: a contour that cannot be converted, or
-/// [`GeometryError::Degenerate`] if `linesweeper` fails.
+/// As [`PathOps::union`]: a contour that cannot be converted,
+/// [`GeometryError::TooComplex`] beyond the work budget of [`Linesweeper`],
+/// or [`GeometryError::Degenerate`] if `linesweeper` fails.
 pub fn remove_overlap(paths: &[Path]) -> Result<Vec<Path>, GeometryError> {
     Linesweeper.union(paths)
+}
+
+/// Checks `all` against the work budget of [`Linesweeper`]: its segments
+/// and the pairs of them whose bounding boxes overlap.
+fn check_budget(all: &BezPath) -> Result<(), GeometryError> {
+    let boxes: Vec<Rect> = all
+        .segments()
+        .map(|segment| segment.bounding_box())
+        .collect();
+    let segments = u64::try_from(boxes.len()).unwrap_or(u64::MAX);
+    if segments > MAX_UNION_SEGMENTS {
+        return Err(GeometryError::TooComplex {
+            what: "segments",
+            limit: MAX_UNION_SEGMENTS,
+            actual: segments,
+        });
+    }
+    let pairs = overlapping_pairs(&boxes);
+    if pairs > MAX_UNION_PAIRS {
+        return Err(GeometryError::TooComplex {
+            what: "pairs of segments with overlapping bounding boxes",
+            limit: MAX_UNION_PAIRS,
+            actual: pairs,
+        });
+    }
+    Ok(())
+}
+
+/// How many pairs of `boxes` overlap (closed boxes: touching counts),
+/// counted in `O(n log n)`: a sweep in x keeps the boxes that span the
+/// current x, and two Fenwick trees over their bottoms and tops count those
+/// that also overlap in y.
+pub(crate) fn overlapping_pairs(boxes: &[Rect]) -> u64 {
+    // The y values, sorted, so that a bottom or a top is an index.
+    let mut ys: Vec<f64> = boxes.iter().flat_map(|b| [b.y0, b.y1]).collect();
+    ys.sort_by(f64::total_cmp);
+    ys.dedup();
+    let index = |y: f64| ys.partition_point(|v| v.total_cmp(&y).is_lt());
+    let mut bottoms = Fenwick::new(ys.len());
+    let mut tops = Fenwick::new(ys.len());
+
+    let mut order: Vec<usize> = (0..boxes.len()).collect();
+    order.sort_by(|&a, &b| boxes[a].x0.total_cmp(&boxes[b].x0));
+    // The active boxes by their right edge, the soonest to end first.
+    let mut ends: std::collections::BinaryHeap<std::cmp::Reverse<(OrdF64, usize)>> =
+        std::collections::BinaryHeap::new();
+    let mut pairs = 0u64;
+    for &i in &order {
+        let current = boxes[i];
+        while let Some(std::cmp::Reverse((OrdF64(x1), j))) = ends.peek().copied() {
+            if x1 >= current.x0 {
+                break;
+            }
+            ends.pop();
+            bottoms.add(index(boxes[j].y0), -1);
+            tops.add(index(boxes[j].y1), -1);
+        }
+        // Active boxes overlapping in y: bottom at or under the current top,
+        // minus those whose top is under the current bottom (whose bottom is
+        // too).
+        let below_top = bottoms.prefix(index(current.y1));
+        let under_bottom = if index(current.y0) == 0 {
+            0
+        } else {
+            tops.prefix(index(current.y0) - 1)
+        };
+        pairs = pairs.saturating_add(u64::try_from(below_top - under_bottom).unwrap_or(0));
+        bottoms.add(index(current.y0), 1);
+        tops.add(index(current.y1), 1);
+        ends.push(std::cmp::Reverse((OrdF64(current.x1), i)));
+    }
+    pairs
+}
+
+/// An `f64` ordered by [`f64::total_cmp`], for the heap of
+/// [`overlapping_pairs`].
+#[derive(Clone, Copy, Debug)]
+struct OrdF64(f64);
+
+impl PartialEq for OrdF64 {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.total_cmp(&other.0).is_eq()
+    }
+}
+
+impl Eq for OrdF64 {}
+
+impl PartialOrd for OrdF64 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrdF64 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+/// A Fenwick (binary indexed) tree of counts.
+struct Fenwick {
+    tree: Vec<i64>,
+}
+
+impl Fenwick {
+    fn new(len: usize) -> Fenwick {
+        Fenwick {
+            tree: vec![0; len + 1],
+        }
+    }
+
+    /// Adds `delta` at `index`.
+    fn add(&mut self, index: usize, delta: i64) {
+        let mut i = index + 1;
+        while i < self.tree.len() {
+            self.tree[i] += delta;
+            i += i.isolate_lowest_one();
+        }
+    }
+
+    /// The sum of the counts at `0..=index`.
+    fn prefix(&self, index: usize) -> i64 {
+        let mut i = (index + 1).min(self.tree.len() - 1);
+        let mut sum = 0;
+        while i > 0 {
+            sum += self.tree[i];
+            i -= i.isolate_lowest_one();
+        }
+        sum
+    }
 }
 
 /// Sweeps the closed contours in `all` and returns the contours of their
@@ -311,6 +463,47 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pairs of `boxes` that overlap, one by one.
+    fn brute_force_pairs(boxes: &[Rect]) -> u64 {
+        let mut pairs = 0;
+        for (i, a) in boxes.iter().enumerate() {
+            for b in &boxes[i + 1..] {
+                let x = a.x0 <= b.x1 && b.x0 <= a.x1;
+                let y = a.y0 <= b.y1 && b.y0 <= a.y1;
+                pairs += u64::from(x && y);
+            }
+        }
+        pairs
+    }
+
+    #[test]
+    fn overlapping_pairs_match_brute_force() {
+        // A fixed linear congruential sequence: deterministic boxes, with
+        // shared edges (coordinates on a coarse grid) and repeated boxes.
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = |range: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            f64::from(u32::try_from((state >> 33) % range).expect("fits"))
+        };
+        for round in 0..50 {
+            let count = 1 + round * 4;
+            let boxes: Vec<Rect> = (0..count)
+                .map(|_| {
+                    let (x, y) = (next(40), next(40));
+                    Rect::new(x, y, x + next(12), y + next(12))
+                })
+                .collect();
+            assert_eq!(
+                overlapping_pairs(&boxes),
+                brute_force_pairs(&boxes),
+                "round {round}"
+            );
+        }
+        assert_eq!(overlapping_pairs(&[]), 0);
+    }
 
     #[test]
     fn tolerance_follows_the_size_of_the_input() {

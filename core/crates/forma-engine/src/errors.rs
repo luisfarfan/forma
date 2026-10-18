@@ -172,6 +172,12 @@ pub fn from_edit_error(error: EditError) -> ToolError {
             ToolError::invalid_argument(message)
         }
         EditError::InvalidGeometry(message) => ToolError::new(ErrorCode::InvalidGeometry, message),
+        EditError::LimitExceeded {
+            message,
+            limit,
+            actual,
+        } => ToolError::new(ErrorCode::LimitExceeded, message)
+            .with_details(json!({ "limit": limit, "actual": actual })),
         EditError::Conflict(ref info) => {
             let details = conflict_details(info);
             ToolError::new(ErrorCode::RevisionConflict, error.to_string()).with_details(details)
@@ -181,14 +187,18 @@ pub fn from_edit_error(error: EditError) -> ToolError {
 
 /// Maps a [`GeometryError`] of `stroke` onto a [`ToolError`]: a skeleton or
 /// style that cannot be stroked (`InvalidPath`) is `INVALID_ARGUMENT`; strokes
-/// that cannot be united (`Degenerate`) are `INVALID_GEOMETRY`.
+/// beyond the work budget of overlap removal (`TooComplex`) are
+/// `LIMIT_EXCEEDED` with `details = { limit, actual }`; strokes that cannot be
+/// united (`Degenerate`, or anything else) are `INVALID_GEOMETRY`.
 #[must_use]
 pub fn from_stroke_error(error: GeometryError) -> ToolError {
     match error {
         GeometryError::InvalidPath(_) => ToolError::invalid_argument(error.to_string()),
-        GeometryError::Degenerate(_) => {
-            ToolError::new(ErrorCode::InvalidGeometry, error.to_string())
+        GeometryError::TooComplex { limit, actual, .. } => {
+            ToolError::new(ErrorCode::LimitExceeded, error.to_string())
+                .with_details(json!({ "limit": limit, "actual": actual }))
         }
+        _ => ToolError::new(ErrorCode::InvalidGeometry, error.to_string()),
     }
 }
 

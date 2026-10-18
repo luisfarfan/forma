@@ -6,8 +6,9 @@ use std::f64::consts::PI;
 
 use common::*;
 use forma_geometry::{
-    CoordinateSystem, GeometryError, IssueKind, Linesweeper, PathOps, check_paths, fix_paths,
-    paths_from_svg, remove_overlap, to_bezpath,
+    Cap, CoordinateSystem, GeometryError, IssueKind, Linesweeper, MAX_UNION_PAIRS,
+    MAX_UNION_SEGMENTS, PathOps, Skeleton, SkeletonNode, StrokeStyle, check_paths, fix_paths,
+    paths_from_svg, remove_overlap, stroke, to_bezpath,
 };
 use forma_model::{NodeKind, Path, PathId};
 use kurbo::Point;
@@ -360,6 +361,79 @@ fn shape() -> impl Strategy<Value = Shape> {
         (-300.0f64..300.0, -300.0f64..300.0, 10.0f64..200.0)
             .prop_map(|(x, y, r)| Shape::Circle(x, y, r)),
     ]
+}
+
+/// `count` straight strokes from the bottom edge to the top edge of a
+/// 1000-unit square, each crossing all the others.
+fn crossing_strokes(count: usize) -> Vec<Skeleton> {
+    let node = |x: f64, y: f64| SkeletonNode {
+        x,
+        y,
+        kind: NodeKind::Line,
+        width: None,
+    };
+    (0..count)
+        .map(|i| {
+            let t = i as f64 / count as f64;
+            Skeleton {
+                nodes: vec![node(t * 1000.0, 0.0), node(1000.0 - t * 1000.0, 1000.0)],
+                closed: false,
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn union_budget_refuses_a_thousand_crossing_strokes_quickly() {
+    let style = StrokeStyle {
+        width: 20.0,
+        cap: Cap::Round,
+    };
+    let started = std::time::Instant::now();
+    let result = stroke(&crossing_strokes(1000), &style);
+    let elapsed = started.elapsed();
+    match result {
+        Err(GeometryError::TooComplex { limit, actual, .. }) => {
+            assert_eq!(limit, MAX_UNION_PAIRS);
+            assert!(actual > limit, "{actual}");
+        }
+        other => panic!("expected TooComplex, got {other:?}"),
+    }
+    // Refused before the sweep: no time (or memory) spent on the crossings.
+    assert!(elapsed.as_secs_f64() < 2.0, "{elapsed:?}");
+
+    // Under the budget the same strokes unite as before.
+    let few = stroke(&crossing_strokes(20), &style).expect("20 strokes");
+    assert_eq!(few.len(), 1);
+}
+
+#[test]
+fn union_budget_counts_segments() {
+    // Squares side by side, touching nothing: 4 segments each.
+    let count = usize::try_from(MAX_UNION_SEGMENTS / 4 + 1).expect("fits");
+    let paths: Vec<Path> = (0..count)
+        .map(|i| {
+            let x = i as f64 * 20.0;
+            let mut path = paths_from_svg(
+                &format!("M{x} 0 L{} 0 L{} 10 L{x} 10 Z", x + 10.0, x + 10.0),
+                CoordinateSystem::Font,
+            )
+            .expect("svg")
+            .remove(0);
+            path.id = PathId(u32::try_from(i).expect("fits"));
+            path
+        })
+        .collect();
+    match remove_overlap(&paths) {
+        Err(GeometryError::TooComplex { limit, actual, .. }) => {
+            assert_eq!(limit, MAX_UNION_SEGMENTS);
+            assert!(actual > limit);
+        }
+        other => panic!("expected TooComplex, got {:?}", other.map(|p| p.len())),
+    }
+    // A glyph-sized set is unaffected.
+    let small = &paths[..100];
+    assert_eq!(remove_overlap(small).expect("union"), small);
 }
 
 proptest! {

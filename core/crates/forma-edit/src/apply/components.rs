@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use forma_geometry::{flatten_layer, remove_overlap, to_bezpath};
+use forma_geometry::{GeometryError, flatten_layer, remove_overlap, to_bezpath};
 use forma_model::{Component, EntityKey, Font, GlyphId, Layer, MasterId, Path, PathId};
 
 use super::{
@@ -142,9 +142,15 @@ pub(super) fn remove_overlaps(
     for id in ids {
         let (name, layer) = named_layer(font, id, master)?;
         let united = remove_overlap(&layer.paths).map_err(|error| {
-            EditError::InvalidGeometry(format!(
-                "cannot remove the overlaps of glyph '{name}': {error}"
-            ))
+            let message = format!("cannot remove the overlaps of glyph '{name}': {error}");
+            match error {
+                GeometryError::TooComplex { limit, actual, .. } => EditError::LimitExceeded {
+                    message,
+                    limit,
+                    actual,
+                },
+                _ => EditError::InvalidGeometry(message),
+            }
         })?;
         // The union returns clean contours unchanged.
         if united == layer.paths {

@@ -544,3 +544,83 @@ fn tools_with_empty_arguments_fail_cleanly() {
         assert_eq!(error.code, ErrorCode::InvalidArgument, "{tool}");
     }
 }
+
+#[test]
+fn stroking_a_thousand_crossing_strokes_is_limit_exceeded_quickly() {
+    let mut engine = engine();
+    let doc = font_with_marks(&mut engine);
+    empty_glyph(&mut engine, &doc, "hatch");
+    // 1000 two-node strokes from the bottom to the top of a square, each
+    // crossing all the others.
+    let skeletons: Vec<Value> = (0..1000)
+        .map(|i| {
+            let x = f64::from(i);
+            json!({ "nodes": [
+                { "x": x, "y": 0, "kind": "line" },
+                { "x": 1000.0 - x, "y": 1000, "kind": "line" }
+            ] })
+        })
+        .collect();
+    let rev = rev_of(&mut engine, &doc);
+    let started = std::time::Instant::now();
+    let error = err(
+        &mut engine,
+        "glyph_stroke",
+        json!({ "doc": doc, "base_rev": rev, "glyph": "hatch", "width": 20,
+            "cap": { "type": "round" }, "skeletons": skeletons }),
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(error.code, ErrorCode::LimitExceeded, "{error:?}");
+    let limit = error.details["limit"].as_u64().expect("limit");
+    assert!(
+        error.details["actual"].as_u64().expect("actual") > limit,
+        "{error:?}"
+    );
+    assert!(elapsed.as_secs_f64() < 2.0, "{elapsed:?}");
+    // Nothing changed.
+    assert_eq!(rev_of(&mut engine, &doc), rev);
+}
+
+#[test]
+fn removing_the_overlaps_of_too_many_crossings_is_limit_exceeded() {
+    let mut engine = engine();
+    let doc = font_with_marks(&mut engine);
+    // 400 thin bars from the bottom to the top, all crossing each other.
+    let svg: String = (0..400)
+        .map(|i| {
+            let (x0, x1) = (f64::from(i) * 2.5, 1000.0 - f64::from(i) * 2.5);
+            format!("M{x0} 0 L{} 0 L{} 1000 L{x1} 1000 Z ", x0 + 4.0, x1 + 4.0)
+        })
+        .collect();
+    let rev = rev_of(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": rev, "name": "hatch", "advance_width": 1000,
+            "svg_path": svg }),
+    );
+    let rev = rev_of(&mut engine, &doc);
+    let error = err(
+        &mut engine,
+        "remove_overlap",
+        json!({ "doc": doc, "base_rev": rev, "glyphs": ["hatch"] }),
+    );
+    assert_eq!(error.code, ErrorCode::LimitExceeded, "{error:?}");
+    assert!(error.message.contains("hatch"), "{error:?}");
+    let limit = error.details["limit"].as_u64().expect("limit");
+    assert!(
+        error.details["actual"].as_u64().expect("actual") > limit,
+        "{error:?}"
+    );
+    // The description states the budget.
+    let spec = forma_engine::registry()
+        .iter()
+        .find(|spec| spec.name == "remove_overlap")
+        .expect("remove_overlap");
+    for limit in [
+        forma_geometry::MAX_UNION_SEGMENTS,
+        forma_geometry::MAX_UNION_PAIRS,
+    ] {
+        assert!(spec.description.contains(&limit.to_string()), "{limit}");
+    }
+}
