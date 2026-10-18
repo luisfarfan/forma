@@ -32,6 +32,7 @@ pub mod preview;
 pub mod quality;
 pub(crate) mod steps;
 pub mod stroke;
+pub mod trace;
 
 /// Deserializes the arguments of a tool; a mismatch (missing, mistyped or
 /// unknown field) is `INVALID_ARGUMENT` with serde's message.

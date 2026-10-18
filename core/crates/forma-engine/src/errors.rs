@@ -11,6 +11,7 @@ use forma_model::{EntityKey, Font, GlyphId, KernRef, KerningGroupId, Rev};
 use forma_render::RenderError;
 use forma_spacing::SpacingError;
 use forma_store::StoreError;
+use forma_trace::TraceError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -189,6 +190,47 @@ pub fn from_stroke_error(error: GeometryError) -> ToolError {
             ToolError::new(ErrorCode::InvalidGeometry, error.to_string())
         }
     }
+}
+
+/// Maps a [`TraceError`] of the image tools onto a [`ToolError`]:
+///
+/// | `TraceError`                                      | code               |
+/// |---------------------------------------------------|--------------------|
+/// | `TooLarge`, `TooManyCandidates`                   | `LIMIT_EXCEEDED`   |
+/// | `Decode`, `CandidateOutOfRange`, `Vectorize`,     | `INVALID_ARGUMENT` |
+/// | `InvalidArgument`                                 |                    |
+/// | `Render`, `Geometry`                              | `INVALID_GEOMETRY` |
+#[must_use]
+pub fn from_trace_error(error: TraceError) -> ToolError {
+    match error {
+        TraceError::TooLarge { bytes, pixels } => ToolError::new(
+            ErrorCode::LimitExceeded,
+            format!(
+                "the image is too large ({bytes} bytes, {pixels} pixels); the limits are {} \
+                 bytes and {} pixels: scale it down",
+                forma_trace::MAX_IMAGE_BYTES,
+                forma_trace::MAX_IMAGE_PIXELS
+            ),
+        ),
+        TraceError::TooManyCandidates(count) => limit_error(
+            format!(
+                "the image has {count} candidates; the limit is {}: use a cleaner image or \
+                 a stricter `tolerance`",
+                forma_trace::MAX_CANDIDATES
+            ),
+            forma_trace::MAX_CANDIDATES,
+            count,
+        ),
+        TraceError::Render(_) | TraceError::Geometry(_) => {
+            ToolError::new(ErrorCode::InvalidGeometry, error.to_string())
+        }
+        _ => ToolError::invalid_argument(error.to_string()),
+    }
+}
+
+fn limit_error(message: String, limit: usize, actual: usize) -> ToolError {
+    ToolError::new(ErrorCode::LimitExceeded, message)
+        .with_details(json!({ "limit": limit, "actual": actual }))
 }
 
 /// Maps a [`SpacingError`] of the spacing and kerning functions onto a

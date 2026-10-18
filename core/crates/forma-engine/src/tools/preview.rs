@@ -227,7 +227,10 @@ pub struct ComparePreviewSummary {
 // ---------------------------------------------------------------- handlers
 
 /// A PNG and its summary as a tool output.
-fn image_output<S: Serialize>(png: Vec<u8>, summary: &S) -> Result<ToolOutput, ToolError> {
+pub(crate) fn image_output<S: Serialize>(
+    png: Vec<u8>,
+    summary: &S,
+) -> Result<ToolOutput, ToolError> {
     let summary = serde_json::to_value(summary).map_err(|error| {
         ToolError::invalid_argument(format!(
             "internal error: cannot encode the summary: {error}"

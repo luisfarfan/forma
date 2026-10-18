@@ -438,6 +438,38 @@ async fn every_output_validates_against_its_output_schema() {
     )
     .await;
 
+    // Image tools: the specimen is copied under the allowed root. The
+    // inspection and comparison answer with images (no output schema).
+    let image = root.path().join("specimen.png");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/hito2/specimen.png"),
+        &image,
+    )
+    .expect("specimen");
+    let inspected = c.raw("image_inspect", json!({ "path": image })).await;
+    assert_ne!(inspected.is_error, Some(true), "{inspected:?}");
+    let trace = json!({ "path": image, "assignments": [
+        { "candidate": 3, "name": "tracedH", "unicodes": ["U+0048"] }] });
+    let mut args = trace.clone();
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(r);
+    let r = rev(&c.ok("image_trace", args).await);
+    // Tracing over the glyph it just made destroys it: a plan to confirm.
+    let mut args = trace;
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(r);
+    let r = rev(&c.planned("image_trace", args).await);
+    let compared = c
+        .raw(
+            "trace_compare",
+            json!({ "doc": doc, "path": image, "glyph": "tracedH", "candidate": 3 }),
+        )
+        .await;
+    assert_ne!(compared.is_error, Some(true), "{compared:?}");
+    c.ok("glyph_measure", json!({ "doc": doc, "glyph": "tracedH" }))
+        .await;
+
     // Deletion: refused without a plan, discarded, then committed.
     let error = c
         .fails(
@@ -568,7 +600,7 @@ async fn every_output_validates_against_its_output_schema() {
         Vec::<&&String>::new(),
         "tools never validated"
     );
-    assert_eq!(declared.len(), 43, "{declared:?}");
+    assert_eq!(declared.len(), 45, "{declared:?}");
     let total: usize = c.validated.values().sum();
     assert!(total > 80, "{total} results validated");
     c.client.cancel().await.expect("close");

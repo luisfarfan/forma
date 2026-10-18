@@ -186,6 +186,52 @@ fn spacing_auto_sets_symmetric_h() {
 }
 
 #[test]
+fn spacing_auto_leaves_a_composite_untouched_and_unlisted() {
+    let mut engine = engine();
+    let doc = fixture_doc(&mut engine);
+    let rev = rev_of(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": rev, "name": "acutecomb", "advance_width": 0,
+            "svg_path": "M0 760 L100 760 L100 860 L0 860 Z" }),
+    );
+    let rev = rev_of(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "glyph_compose",
+        json!({ "doc": doc, "base_rev": rev, "name": "Hacute", "base": "H",
+            "marks": [{ "glyph": "acutecomb", "position": "above" }] }),
+    );
+    let composite = |engine: &mut Engine| {
+        ok(
+            engine,
+            "glyph_get",
+            json!({ "doc": doc, "glyph": "Hacute" }),
+        )["glyph"]
+            .clone()
+    };
+    let before = composite(&mut engine);
+    // Make H lopsided, so that spacing it changes the document.
+    let rev = rev_of(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "metrics_set",
+        json!({ "doc": doc, "base_rev": rev, "items": [{ "glyph": "H", "lsb": 20 }] }),
+    );
+    let rev = rev_of(&mut engine, &doc);
+    let done = ok(
+        &mut engine,
+        "spacing_auto",
+        json!({ "doc": doc, "base_rev": rev, "glyphs": ["H", "Hacute"] }),
+    );
+    // Only H is spaced: the composite is neither changed nor counted.
+    assert_eq!(done["spaced"], json!(1), "{done}");
+    assert_eq!(done["touched_count"], json!(1), "{done}");
+    assert_eq!(composite(&mut engine), before);
+}
+
+#[test]
 fn spacing_auto_reports_clamped_sides() {
     let mut engine = engine();
     let doc = fixture_doc(&mut engine);
@@ -615,7 +661,7 @@ fn kerning_auto_replace_existing_is_destructive() {
             "pairs": [{ "first": { "glyph": "B" }, "second": { "glyph": "b" }, "value": 33 }] }),
     );
 
-    // The plan to replace: destructive (it deletes a pair and a group).
+    // The plan to replace: destructive (it deletes a group).
     let rev = rev_of(&mut engine, &doc);
     let args = json!({ "doc": doc, "base_rev": rev, "glyphs": ["A", "V", "H", "O", "C"] });
     let refused = err(&mut engine, "kerning_auto", args.clone());
@@ -630,9 +676,10 @@ fn kerning_auto_replace_existing_is_destructive() {
     let token = refused.details["plan"]["plan_token"].clone();
     ok(&mut engine, "plan_commit", json!({ "plan_token": token }));
     let after = ok(&mut engine, "kerning_get", json!({ "doc": doc }));
-    // The old pair is gone (replace deletes every pair of the master), and
-    // the old group "round" (a member among the glyphs) with it.
-    assert_eq!(pair_value(&after, "B", "b"), None, "{after}");
+    // With a `glyphs` subset only the pairs that involve those glyphs go:
+    // the pair of B and b stays, and the old group "round" (a member among
+    // the glyphs) is gone.
+    assert_eq!(pair_value(&after, "B", "b"), Some(33.0), "{after}");
     assert!(
         after["groups"]
             .as_array()
@@ -776,6 +823,41 @@ fn descriptions_carry_the_new_rules() {
             spec(name).description.len()
         );
     }
+}
+
+#[test]
+fn kerning_auto_replace_with_a_subset_keeps_the_other_pairs() {
+    let mut engine = engine();
+    let doc = fixture_doc(&mut engine);
+    let rev = rev_of(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "kerning_set",
+        json!({ "doc": doc, "base_rev": rev, "pairs": [
+            { "first": { "glyph": "H" }, "second": { "glyph": "O" }, "value": -33 },
+            { "first": { "glyph": "V" }, "second": { "glyph": "A" }, "value": -44 }
+        ] }),
+    );
+    // Only V and A are recomputed: the old V/A pair goes, H/O stays.
+    let rev = rev_of(&mut engine, &doc);
+    approved(
+        &mut engine,
+        "kerning_auto",
+        json!({ "doc": doc, "base_rev": rev, "glyphs": ["V", "A"] }),
+    );
+    let got = ok(&mut engine, "kerning_get", json!({ "doc": doc }));
+    assert_eq!(pair_value(&got, "H", "O"), Some(-33.0), "{got}");
+    assert_ne!(pair_value(&got, "V", "A"), Some(-44.0), "{got}");
+
+    // Without a subset every pair of the master is replaced.
+    let rev = rev_of(&mut engine, &doc);
+    approved(
+        &mut engine,
+        "kerning_auto",
+        json!({ "doc": doc, "base_rev": rev }),
+    );
+    let got = ok(&mut engine, "kerning_get", json!({ "doc": doc }));
+    assert_ne!(pair_value(&got, "H", "O"), Some(-33.0), "{got}");
 }
 
 // ----------------------------------------------------------------- performance

@@ -377,13 +377,14 @@ mod tests {
     /// injection would silently stop.
     #[test]
     fn registry_schemas_declare_doc_and_base_rev_as_the_tools_take_them() {
-        const NO_DOC: [&str; 6] = [
+        const NO_DOC: [&str; 7] = [
             "forma_capabilities",
             "document_create",
             "document_open",
             "document_list",
             "plan_commit",
             "plan_discard",
+            "image_inspect",
         ];
         for spec in registry() {
             let schema = (spec.input_schema)();

@@ -35,12 +35,13 @@ pub(crate) const SPEC: CommandSpec = CommandSpec {
     name: "edit_batch",
     title: "Edit in batch",
     description: concat!(
-        "Apply several operations to `doc` atomically, as one undoable transaction with one \
-         new `rev`. Each item of `ops` is {\"tool\", \"args\"}: `tool` is font_set_info, font_set_vertical_metrics, \
+        "Apply several operations to `doc`: all apply or none does, as one undoable \
+         transaction with one new `rev`. Each item of `ops` is {\"tool\", \"args\"}: `tool` is \
+         font_set_info, font_set_vertical_metrics, \
          glyph_create, glyph_update, glyph_delete, glyph_set_outline, contour_edit, \
          nodes_edit, metrics_set, geometry_fix, component_set, glyph_compose, glyph_decompose, \
          glyph_stroke, remove_overlap or kerning_set, and `args` are that tool's arguments without \
-         `doc` and `base_rev`. Operations run in order, each on the previous result. A \
+         `doc` and `base_rev`. Operations run in order. A \
          failing one is named by `details.op_index`. At most 2000 operations. \
          A batch that destroys data (as glyph_delete does) or touches more than 20 entities \
          (glyphs, kerning pairs or groups) may require approval depending on the server policy \

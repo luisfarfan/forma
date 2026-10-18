@@ -14,7 +14,7 @@ use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::tools::{
     capabilities, charset, components, document, edit_batch, export, font, geometry, glyphs,
-    history, kerning, metrics, outlines, plans, preview, quality, stroke,
+    history, kerning, metrics, outlines, plans, preview, quality, stroke, trace,
 };
 
 /// A group of related tools that a facade can enable or disable together.
@@ -43,11 +43,14 @@ pub enum Toolset {
     Components,
     /// Kerning: reading, setting, computing and checking groups and pairs.
     Kerning,
+    /// Image tracing: inspecting images, tracing glyphs, comparing and
+    /// measuring style.
+    Trace,
 }
 
 impl Toolset {
     /// Every toolset, in the order the registry introduces them.
-    pub const ALL: [Toolset; 10] = [
+    pub const ALL: [Toolset; 11] = [
         Self::Core,
         Self::Glyphs,
         Self::Geometry,
@@ -58,6 +61,7 @@ impl Toolset {
         Self::History,
         Self::Components,
         Self::Kerning,
+        Self::Trace,
     ];
 
     /// The serialized name, such as `"core"`.
@@ -74,6 +78,7 @@ impl Toolset {
             Self::History => "history",
             Self::Components => "components",
             Self::Kerning => "kerning",
+            Self::Trace => "trace",
         }
     }
 }
@@ -166,7 +171,7 @@ pub struct CommandSpec {
 }
 
 /// Every command, in the exact registration order of the public API.
-static REGISTRY: [CommandSpec; 46] = [
+static REGISTRY: [CommandSpec; 50] = [
     // core
     capabilities::SPEC,
     document::CREATE,
@@ -223,6 +228,11 @@ static REGISTRY: [CommandSpec; 46] = [
     kerning::AUTO,
     kerning::CHECK,
     charset::CHECK,
+    // image tracing and style measurement (Hito 2)
+    trace::INSPECT,
+    trace::TRACE,
+    trace::COMPARE,
+    trace::MEASURE,
 ];
 
 /// Every command, in the exact registration order of the public API.

@@ -12,6 +12,10 @@ forma-edit = { path = "../forma-edit" }
 forma-geometry = { path = "../forma-geometry" }
 # spacing_auto, kerning_auto and kerning_check.
 forma-spacing = { path = "../forma-spacing" }
+# image_inspect, image_trace, trace_compare and glyph_measure.
+forma-trace = { path = "../forma-trace" }
+# Only the RgbImage type that forma-trace decodes to (already in the tree).
+image = { workspace = true }
 forma-store = { path = "../forma-store" }
 # validate, export_font and the previews.
 forma-validate = { path = "../forma-validate" }

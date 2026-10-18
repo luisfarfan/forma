@@ -189,6 +189,9 @@ const fn toolset_summary(toolset: Toolset) -> &'static str {
         Toolset::Kerning => {
             "Kerning: leer, fijar, calcular automáticamente y comprobar grupos y pares."
         }
+        Toolset::Trace => {
+            "Imagen a fuente: inspeccionar imágenes, trazar glifos, compararlos y medir el estilo."
+        }
         // `Toolset` is `#[non_exhaustive]`: a new one shows up without text
         // until it is written here.
         _ => "",

@@ -114,6 +114,10 @@ fn registry_order_and_names_match_spec() {
         "kerning_auto",
         "kerning_check",
         "charset_check",
+        "image_inspect",
+        "image_trace",
+        "trace_compare",
+        "glyph_measure",
     ];
     let names: Vec<&str> = registry().iter().map(|spec| spec.name).collect();
     assert_eq!(names, expected);
@@ -197,6 +201,8 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "kerning_auto",
         "kerning_check",
         "charset_check",
+        "image_trace",
+        "glyph_measure",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");
@@ -213,13 +219,19 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         assert!(output.get("$schema").is_none(), "{name}: $schema kept");
     }
     // Image tools declare their arguments too, and no result schema.
-    for name in ["preview_glyph", "preview_text", "preview_compare"] {
+    for name in [
+        "preview_glyph",
+        "preview_text",
+        "preview_compare",
+        "image_inspect",
+        "trace_compare",
+    ] {
         let spec = forma_engine::find(name).expect("registered");
         let input = (spec.input_schema)();
         assert_eq!(input["additionalProperties"], json!(false), "{name}");
         assert!(spec.output_schema.is_none(), "{name}");
     }
-    assert_eq!(implemented.len() + 3, registry().len());
+    assert_eq!(implemented.len() + 5, registry().len());
     let create = (forma_engine::find("document_create")
         .expect("registered")
         .input_schema)();
@@ -259,6 +271,8 @@ fn toolsets_effects_and_outputs_match_rulings() {
             "spacing_auto" => Spacing,
             "kerning_get" | "kerning_set" | "kerning_auto" | "kerning_check" => Kerning,
             "charset_check" => Quality,
+            "image_inspect" | "image_trace" | "trace_compare" => Trace,
+            "glyph_measure" => Geometry,
             other => panic!("unexpected tool {other}"),
         }
     };
@@ -280,6 +294,9 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "kerning_get",
         "kerning_check",
         "charset_check",
+        "image_inspect",
+        "trace_compare",
+        "glyph_measure",
     ];
     // Every tool that can require approval for being destructive (MCP's
     // "may perform destructive updates"); the engine enforces approvals
@@ -299,8 +316,15 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "glyph_stroke",
         "kerning_set",
         "kerning_auto",
+        "image_trace",
     ];
-    let images = ["preview_glyph", "preview_text", "preview_compare"];
+    let images = [
+        "preview_glyph",
+        "preview_text",
+        "preview_compare",
+        "image_inspect",
+        "trace_compare",
+    ];
     for spec in registry() {
         let name = spec.name;
         assert_eq!(spec.toolset, expected_toolset(name), "{name}: toolset");
@@ -435,7 +459,8 @@ fn capabilities_report_limits() {
             "preview",
             "history",
             "components",
-            "kerning"
+            "kerning",
+            "trace"
         ])
     );
     assert_eq!(
@@ -445,7 +470,12 @@ fn capabilities_report_limits() {
             "max_nodes": 100000,
             "max_text_bytes": 4194304,
             "mass_threshold": 20,
-            "plan_ttl_secs": 300
+            "plan_ttl_secs": 300,
+            "max_image_bytes": 67108864,
+            "max_image_pixels": 50000000,
+            "max_candidates": 500,
+            "max_assignments": 200,
+            "max_kerning_check_pairs": 250000
         })
     );
     assert_eq!(caps["formats"], json!(["forma", "formapackage"]));
@@ -538,7 +568,7 @@ fn read_only_mode_allows_closing_documents() {
 fn toolsets_can_be_disabled() {
     let root = TempDir::new().expect("tempdir");
     let all = engine_with(&[root.path()]);
-    assert_eq!(all.enabled_specs().len(), 46);
+    assert_eq!(all.enabled_specs().len(), 50);
     assert_eq!(all.enabled_toolsets(), Toolset::ALL.to_vec());
 
     let mut engine = Engine::new(EngineConfig {
