@@ -260,6 +260,10 @@ async fn scenario(mode: ClientLifecycleMode) {
             json!(0),
             "{min_distance}: {checked}"
         );
+        assert!(
+            checked["checked_pairs"].as_u64().unwrap_or(0) > 0,
+            "{checked}"
+        );
         eprintln!(
             "[hito2] kerning_check min_distance {min_distance}: {} pairs",
             checked["checked_pairs"]
@@ -382,7 +386,33 @@ async fn scenario(mode: ClientLifecycleMode) {
         .ok();
         assert_eq!(&got["glyph"], expected, "{name}");
     }
-    // Aacute and Oacute are still components only (no contours of their own).
+    // Aacute = [A, acutecomb] and Oacute = [O, acutecomb], placed as before.
+    for (index, (name, base)) in [("Aacute", "A"), ("Oacute", "O")].into_iter().enumerate() {
+        let components = &before[index]["components"];
+        let bases: Vec<&Value> = components
+            .as_array()
+            .expect("components")
+            .iter()
+            .map(|component| &component["base"])
+            .collect();
+        assert_eq!(
+            bases,
+            [&json!(base), &json!("acutecomb")],
+            "{name}: {components}"
+        );
+        assert!(
+            components[1]["transform"]["dy"].as_f64().is_some(),
+            "{components}"
+        );
+        let got = call(
+            &client,
+            "glyph_get",
+            json!({ "doc": reopened, "glyph": name }),
+        )
+        .await
+        .ok();
+        assert_eq!(&got["glyph"]["components"], components, "{name}");
+    }
     let charset = call(
         &client,
         "charset_check",
@@ -551,10 +581,12 @@ fn write_acceptance(out: &Path, root: &Path, model: &[ModelGlyph], kerning: &Val
         for right in &letters {
             let value = effective_kern(&pairs, &first_group, &second_group, left, right);
             if value != 0.0 {
-                expected_pairs.push(json!({ "left": left, "right": right, "value": value }));
+                expected_pairs
+                    .push(json!({ "left": left, "right": right, "value": rounded(value) }));
             }
         }
     }
+    assert!(!expected_pairs.is_empty(), "no kerning among the letters");
     let glyphs: BTreeMap<&str, Value> = model
         .iter()
         .map(|glyph| {
@@ -583,7 +615,7 @@ fn write_acceptance(out: &Path, root: &Path, model: &[ModelGlyph], kerning: &Val
     let expected = json!({
         "format": "family, upm; glyphs {name: {unicodes, advance}}; cmap {U+XXXX: name}; \
                    shaping {text, glyphs}; kerning [{left, right, value}] effective glyph-glyph \
-                   values (nonzero) between the traced letters",
+                   values (nonzero, rounded to integers as HarfBuzz reports them) between the traced letters",
         "family": "Specimen Demo",
         "upm": 1000,
         "glyphs": glyphs,

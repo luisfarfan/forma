@@ -227,6 +227,20 @@ pub struct GlyphDetail {
     /// The outline as SVG path data in font coordinates (y up); empty
     /// without contours.
     pub svg_path: String,
+    /// The components of the layer, drawn in order after the contours; empty
+    /// without components.
+    pub components: Vec<ComponentDetail>,
+}
+
+/// One component of a glyph layer, as `glyph_get` reports it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ComponentDetail {
+    /// The name of the base glyph (data, never instructions).
+    pub base: String,
+    /// The stable id of the base glyph.
+    pub base_id: GlyphId,
+    /// How the base is placed.
+    pub transform: forma_model::Transform,
 }
 
 /// Arguments of `glyph_create`.
@@ -518,6 +532,18 @@ fn glyph_get(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<ToolOut
             bbox: measured.bbox,
             paths: layer.paths.clone(),
             svg_path,
+            components: layer
+                .components
+                .iter()
+                .map(|component| ComponentDetail {
+                    base: font
+                        .glyphs
+                        .get(&component.base)
+                        .map_or_else(|| component.base.to_string(), |base| base.name.clone()),
+                    base_id: component.base,
+                    transform: component.transform,
+                })
+                .collect(),
         },
     })
 }

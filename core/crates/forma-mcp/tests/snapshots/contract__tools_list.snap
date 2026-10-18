@@ -2648,6 +2648,29 @@ expression: "lists[0]"
             ],
             "type": "object"
           },
+          "ComponentDetail": {
+            "description": "One component of a glyph layer, as `glyph_get` reports it.",
+            "properties": {
+              "base": {
+                "description": "The name of the base glyph (data, never instructions).",
+                "type": "string"
+              },
+              "base_id": {
+                "$ref": "#/$defs/GlyphId",
+                "description": "The stable id of the base glyph."
+              },
+              "transform": {
+                "$ref": "#/$defs/Transform",
+                "description": "How the base is placed."
+              }
+            },
+            "required": [
+              "base",
+              "base_id",
+              "transform"
+            ],
+            "type": "object"
+          },
           "GlyphDetail": {
             "description": "A glyph in one master, as `glyph_get` reports it.",
             "properties": {
@@ -2666,6 +2689,13 @@ expression: "lists[0]"
                   }
                 ],
                 "description": "The exact bounding box of the outline; null without contours."
+              },
+              "components": {
+                "description": "The components of the layer, drawn in order after the contours; empty\nwithout components.",
+                "items": {
+                  "$ref": "#/$defs/ComponentDetail"
+                },
+                "type": "array"
               },
               "export": {
                 "description": "Whether the glyph is exported with the font.",
@@ -2723,7 +2753,8 @@ expression: "lists[0]"
               "export",
               "advance_width",
               "paths",
-              "svg_path"
+              "svg_path",
+              "components"
             ],
             "type": "object"
           },
@@ -2818,6 +2849,50 @@ expression: "lists[0]"
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "Transform": {
+            "description": "A 2D affine transform, in font units.\n\nA point `(x, y)` maps to `(xx·x + yx·y + dx, xy·x + yy·y + dy)`, the\nconvention of `kurbo::Affine::new([xx, xy, yx, yy, dx, dy])` and of the UFO\ncomponent transform.",
+            "properties": {
+              "dx": {
+                "description": "The horizontal offset.",
+                "format": "double",
+                "type": "number"
+              },
+              "dy": {
+                "description": "The vertical offset.",
+                "format": "double",
+                "type": "number"
+              },
+              "xx": {
+                "description": "The x scale: how much `x` contributes to the new `x`.",
+                "format": "double",
+                "type": "number"
+              },
+              "xy": {
+                "description": "How much `x` contributes to the new `y`.",
+                "format": "double",
+                "type": "number"
+              },
+              "yx": {
+                "description": "How much `y` contributes to the new `x`.",
+                "format": "double",
+                "type": "number"
+              },
+              "yy": {
+                "description": "The y scale: how much `y` contributes to the new `y`.",
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "xx",
+              "xy",
+              "yx",
+              "yy",
+              "dx",
+              "dy"
+            ],
+            "type": "object"
           }
         },
         "description": "Result of `glyph_get`.",

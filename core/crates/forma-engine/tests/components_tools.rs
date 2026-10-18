@@ -117,6 +117,29 @@ fn empty_glyph(engine: &mut Engine, doc: &str, name: &str) {
 // ------------------------------------------------------------------- tests
 
 #[test]
+fn glyph_get_lists_the_components_of_a_composite() {
+    let mut engine = engine();
+    let doc = font_with_marks(&mut engine);
+    compose_aacute(&mut engine, &doc);
+    let aacute = glyph(&mut engine, &doc, "aacute");
+    let components = aacute["components"].as_array().expect("components");
+    assert_eq!(components.len(), 2, "{aacute}");
+    assert_eq!(components[0]["base"], json!("a"));
+    assert_eq!(
+        components[0]["transform"],
+        json!({ "xx": 1.0, "xy": 0.0, "yx": 0.0, "yy": 1.0, "dx": 0.0, "dy": 0.0 })
+    );
+    assert_eq!(components[1]["base"], json!("acutecomb"));
+    assert_eq!(
+        components[1]["transform"],
+        json!({ "xx": 1.0, "xy": 0.0, "yx": 0.0, "yy": 1.0, "dx": 200.0, "dy": -60.0 })
+    );
+    let base = glyph(&mut engine, &doc, "a");
+    assert_eq!(components[0]["base_id"], base["id"]);
+    assert_eq!(base["components"], json!([]));
+}
+
+#[test]
 fn compose_aacute_places_mark_above() {
     let mut engine = engine();
     let doc = font_with_marks(&mut engine);
