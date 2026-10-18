@@ -1,0 +1,18 @@
+[package]
+name = "forma-spacing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FORMA spacing: glyph profiles, automatic sidebearings and collision checks"
+
+[dependencies]
+forma-model = { path = "../forma-model" }
+forma-geometry = { path = "../forma-geometry" }
+kurbo = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+schemars = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
