@@ -11,6 +11,7 @@ use crate::errors::ToolError;
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::inputs::CodePoint;
 use crate::tools::limits::parse_checked;
+use crate::tools::report::{Detail, ReportRef, write_report};
 use crate::tools::{Bounded, json_output};
 
 /// `charset_check`.
@@ -46,6 +47,11 @@ pub struct CharsetCheckArgs {
     /// Exclusive with `profile`.
     #[serde(default)]
     pub codepoints: Option<Vec<CodePoint>>,
+    /// How much to list: `summary` (the default) gives totals and the
+    /// first exceptions, and writes everything to a report file
+    /// (`report_path`); `full` lists up to 200 entries.
+    #[serde(default)]
+    pub detail: Detail,
 }
 
 /// A bounded list of text entries with its count.
@@ -82,6 +88,9 @@ pub struct CharsetCheckResult {
     pub outlined_total: usize,
     /// Whether `outlined` lists only the first of them.
     pub outlined_truncated: bool,
+    /// Where the complete detail went.
+    #[serde(flatten)]
+    pub report: ReportRef,
 }
 
 /// `"U+0041 A"`: a code point and its character (the code point alone for
@@ -93,12 +102,8 @@ fn label(code: u32) -> String {
     }
 }
 
-fn charset_check(
-    engine: &mut Engine,
-    _actor: &Actor,
-    args: Value,
-) -> Result<ToolOutput, ToolError> {
-    let args: CharsetCheckArgs = parse_checked(args)?;
+fn charset_check(engine: &mut Engine, _actor: &Actor, raw: Value) -> Result<ToolOutput, ToolError> {
+    let args: CharsetCheckArgs = parse_checked(raw.clone())?;
     let (name, codes): (Option<String>, Vec<u32>) = match (&args.profile, &args.codepoints) {
         (Some(name), None) => {
             let codes = profile(name).ok_or_else(|| {
@@ -124,9 +129,22 @@ fn charset_check(
     };
     let open = engine.doc(&args.doc)?;
     let report = check_charset(open.font(), &codes);
-    let missing = Bounded::of(report.missing.iter().map(|code| label(*code)).collect());
-    let composite = Bounded::of(report.composite);
-    let outlined = Bounded::of(report.outlined);
+    let budget = args.detail.list_budget();
+    let missing_all: Vec<String> = report.missing.iter().map(|code| label(*code)).collect();
+    let file = write_report(
+        engine,
+        Some(&args.doc),
+        CHECK.name,
+        &raw,
+        &serde_json::json!({
+            "missing": &missing_all,
+            "composite": &report.composite,
+            "outlined": &report.outlined,
+        }),
+    );
+    let missing = Bounded::within(missing_all, budget);
+    let composite = Bounded::within(report.composite, budget);
+    let outlined = Bounded::within(report.outlined, budget);
     json_output(&CharsetCheckResult {
         rev: open.rev().0,
         profile: name,
@@ -146,5 +164,6 @@ fn charset_check(
         outlined_total: outlined.total,
         outlined_truncated: outlined.truncated,
         outlined: outlined.items,
+        report: file,
     })
 }

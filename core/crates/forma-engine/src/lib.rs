@@ -42,7 +42,7 @@ pub use engine::{DocHandle, DocSummary, Engine, EngineConfig, OpenDoc, Policy};
 pub use errors::{ErrorCode, ToolError};
 pub use plans::{Clock, SystemClock};
 pub use registry::{
-    CommandSpec, Effects, Handler, OutputKind, ToolOutput, Toolset, any_object_schema, find,
-    registry, schema_of,
+    CommandSpec, Effects, Handler, OutputKind, PROFILES, ToolOutput, Toolset, any_object_schema,
+    find, profile, registry, schema_of,
 };
 pub use tools::capabilities::API_VERSION;

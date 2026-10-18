@@ -836,7 +836,7 @@ fn charset_check_unicase_es_reports_missing() {
     let result = ok(
         &mut engine,
         "charset_check",
-        json!({ "doc": doc, "profile": "unicase-es" }),
+        json!({ "doc": doc, "profile": "unicase-es", "detail": "full" }),
     );
     assert_eq!(result["profile"], json!("unicase-es"));
     assert_eq!(result["required"], json!(119));

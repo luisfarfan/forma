@@ -203,12 +203,13 @@ pub struct MutationResult {
     /// The transaction id of the change, or `null` when nothing changed.
     pub tx: Option<u64>,
     /// The entities the change touched, in entity order and at most 100 of
-    /// them (see `touched_count`): `font_info`, `vertical_metrics:<master
-    /// id>`, `glyph_order` or `glyph:<glyph id>`.
+    /// them, or 20 for a tool called with `detail: summary` (see
+    /// `touched_count`): `font_info`, `vertical_metrics:<master id>`,
+    /// `glyph_order` or `glyph:<glyph id>`.
     pub touched: Vec<EntityKey>,
     /// How many entities the change touched.
     pub touched_count: usize,
-    /// Whether `touched` lists only the first 100 of them.
+    /// Whether `touched` lists only the first of them.
     pub touched_truncated: bool,
     /// Present when the change applied but is not kept in the
     /// crash-recovery journal: why. The change itself is fine; save the
@@ -249,6 +250,33 @@ impl MutationResult {
             journal_warning,
         }
     }
+
+    /// With `detail: summary`, `touched` cut to its first
+    /// [`SUMMARY_ENTRIES`](crate::tools::report::SUMMARY_ENTRIES) entries
+    /// (`touched_count` still counts them all).
+    #[must_use]
+    pub(crate) fn shortened(mut self, detail: crate::tools::report::Detail) -> MutationResult {
+        if detail == crate::tools::report::Detail::Summary {
+            let keep = crate::tools::report::SUMMARY_ENTRIES;
+            if self.touched.len() > keep {
+                self.touched.truncate(keep);
+                self.touched_truncated = true;
+            }
+        }
+        self
+    }
+}
+
+/// A mutation result with the report of its detail, for tools that take a
+/// `detail`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReportedMutation {
+    /// The change.
+    #[serde(flatten)]
+    pub mutation: MutationResult,
+    /// Where the complete detail went.
+    #[serde(flatten)]
+    pub report: crate::tools::report::ReportRef,
 }
 
 /// A set of touched entities cut to its first [`MAX_TOUCHED_ENTRIES`], with

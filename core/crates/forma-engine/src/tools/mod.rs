@@ -30,6 +30,7 @@ pub mod outlines;
 pub mod plans;
 pub mod preview;
 pub mod quality;
+pub mod report;
 pub(crate) mod steps;
 pub mod stroke;
 pub mod trace;
@@ -70,13 +71,23 @@ impl<T: Serialize> Bounded<T> {
     /// The longest start of `items` with at most [`MAX_RESULT_ENTRIES`]
     /// entries whose compact JSON (commas included) fits in
     /// [`MAX_RESULT_LIST_BYTES`]; the first entry is always kept.
-    pub(crate) fn of(mut items: Vec<T>) -> Bounded<T> {
+    pub(crate) fn of(items: Vec<T>) -> Bounded<T> {
+        Bounded::within(items, (MAX_RESULT_ENTRIES, MAX_RESULT_LIST_BYTES))
+    }
+
+    /// [`Bounded::of`] with another budget: at most `max_entries` entries
+    /// whose JSON fits in `max_bytes` (see
+    /// [`Detail::list_budget`](report::Detail::list_budget)).
+    pub(crate) fn within(
+        mut items: Vec<T>,
+        (max_entries, max_bytes): (usize, usize),
+    ) -> Bounded<T> {
         let total = items.len();
         let mut bytes = 0;
         let mut kept = 0;
-        for item in items.iter().take(MAX_RESULT_ENTRIES) {
+        for item in items.iter().take(max_entries) {
             let size = serde_json::to_vec(item).map_or(0, |json| json.len()) + 1;
-            if kept > 0 && bytes + size > MAX_RESULT_LIST_BYTES {
+            if kept > 0 && bytes + size > max_bytes {
                 break;
             }
             bytes += size;

@@ -3,7 +3,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use forma_model::{EntityKey, Font, Glyph, GlyphId, KernRef, Layer, Path, is_valid_glyph_name};
+use forma_model::{
+    EntityKey, Font, Glyph, GlyphId, KernRef, Layer, Path, Provenance, ProvenanceDetail,
+    is_valid_glyph_name,
+};
 
 use super::{
     Touched, check_advance_width, checked_paths, glyph_mut, resolve_glyph, resolve_targets,
@@ -95,6 +98,7 @@ pub(super) fn create_glyph(
             unicodes: unicodes.to_vec(),
             export: true,
             layers,
+            provenance: None,
         }),
     );
     font.glyph_order.push(id);
@@ -206,4 +210,49 @@ fn check_not_used(
         }
     }
     Ok(())
+}
+
+/// Sets or clears the provenance of a glyph; see
+/// [`Command::SetProvenance`](crate::Command::SetProvenance).
+pub(super) fn set_provenance(
+    font: &mut Font,
+    glyph: &GlyphRef,
+    provenance: Option<&Provenance>,
+) -> Result<Touched, EditError> {
+    let id = resolve_glyph(font, glyph)?;
+    if let Some(provenance) = provenance {
+        check_provenance(provenance)?;
+    }
+    if font.glyphs.get(&id).and_then(|g| g.provenance.as_ref()) == provenance {
+        return Ok(Touched::new());
+    }
+    glyph_mut(font, id)?.provenance = provenance.cloned();
+    Ok(BTreeSet::from([EntityKey::Glyph(id)]))
+}
+
+fn check_provenance(provenance: &Provenance) -> Result<(), EditError> {
+    if !provenance
+        .detail
+        .numbers()
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return Err(EditError::InvalidArgument(
+            "provenance measurements must be finite numbers".into(),
+        ));
+    }
+    let unit = |value: f64, what: &str| {
+        if (0.0..=1.0).contains(&value) {
+            Ok(())
+        } else {
+            Err(EditError::InvalidArgument(format!(
+                "{what} must be within 0 to 1, got {value}"
+            )))
+        }
+    };
+    match &provenance.detail {
+        ProvenanceDetail::Traced { iou_mask, .. } => unit(*iou_mask, "iou_mask"),
+        ProvenanceDetail::Synthesized { style_score, .. } => unit(*style_score, "style_score"),
+        _ => Ok(()),
+    }
 }

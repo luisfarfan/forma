@@ -16,6 +16,7 @@ rmcp = { workspace = true, features = ["server", "transport-io"] }
 tokio = { workspace = true }
 # PNG previews travel as base64 (image content and resource blobs).
 base64 = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 # `serve_stdio`'s error type (startup and transport failures).
 anyhow = { workspace = true }

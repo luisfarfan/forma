@@ -58,6 +58,7 @@ fn font() -> Font {
                 unicodes: Vec::new(),
                 export: true,
                 layers: [(master, layer(components))].into(),
+                provenance: None,
             }),
         );
         font.glyph_order.push(gid(n));

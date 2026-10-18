@@ -13,6 +13,7 @@ mod font;
 mod glyph;
 mod ids;
 mod kerning;
+mod provenance;
 mod rev;
 
 pub use actor::Actor;
@@ -23,4 +24,5 @@ pub use font::{
 pub use glyph::{Glyph, Layer, MAX_GLYPH_NAME_LEN, Node, NodeKind, Path, is_valid_glyph_name};
 pub use ids::{EntityKey, FontId, GlyphId, KerningGroupId, MasterId, PathId};
 pub use kerning::{KernRef, KernSide, Kerning, KerningGroup, KerningPair, MasterPairs};
+pub use provenance::{Provenance, ProvenanceDetail, Review, Source};
 pub use rev::Rev;

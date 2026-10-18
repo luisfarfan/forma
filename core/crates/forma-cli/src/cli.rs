@@ -203,6 +203,19 @@ pub struct McpArgs {
     /// Refuse every tool that changes anything.
     #[arg(long)]
     pub read_only: bool,
+    /// Only serve the tools of a profile (within the toolsets): `image-font`
+    /// serves what turning an image of an alphabet into a font needs.
+    #[arg(long, value_parser = parse_profile, value_name = "NAME")]
+    pub profile: Option<&'static str>,
+    /// Whether the tool list carries each tool's result schema: `full` (the
+    /// default) or `none`, which makes the list much smaller for clients
+    /// that load every tool (results still carry structured content).
+    #[arg(long, value_enum, default_value_t = OutputSchemasArg::Full)]
+    pub output_schemas: OutputSchemasArg,
+    /// Print the size of the tool list this server would send (JSON) and
+    /// exit without serving.
+    #[arg(long)]
+    pub print_catalog_size: bool,
     /// Append one JSON line per tool call to this file.
     #[arg(long, value_name = "FILE")]
     pub audit_log: Option<PathBuf>,
@@ -220,6 +233,33 @@ pub struct McpArgs {
     /// FORMA (the default of every `forma` command).
     #[arg(long, value_name = "DIR")]
     pub lock_dir: Option<PathBuf>,
+}
+
+/// Whether `forma mcp` lists result schemas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OutputSchemasArg {
+    /// List each tool's result schema.
+    Full,
+    /// Leave them out.
+    None,
+}
+
+/// Reads a profile name for `--profile`.
+fn parse_profile(text: &str) -> Result<&'static str, String> {
+    forma_engine::PROFILES
+        .iter()
+        .find(|(name, _)| *name == text)
+        .map(|(name, _)| *name)
+        .ok_or_else(|| {
+            let names: Vec<&str> = forma_engine::PROFILES
+                .iter()
+                .map(|(name, _)| *name)
+                .collect();
+            format!(
+                "unknown profile '{text}'; expected one of: {}",
+                names.join(", ")
+            )
+        })
 }
 
 /// Reads a toolset name for `--toolsets`.

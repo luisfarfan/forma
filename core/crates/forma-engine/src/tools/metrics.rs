@@ -19,6 +19,7 @@ use crate::tools::inputs::{find_glyph, find_master, glyph_label, selected_glyphs
 use crate::tools::limits::parse_checked;
 use crate::tools::mutate::{Edit, Mutation, MutationResult, OpArgs, Translation, mutate, run_edit};
 use crate::tools::plans::OrPlan;
+use crate::tools::report::{Detail, ReportRef, write_report};
 use crate::tools::steps::Steps;
 use crate::tools::{Bounded, json_output};
 
@@ -237,6 +238,11 @@ pub struct SpacingAutoOpArgs {
     /// target white, the second must exist and have ink.
     #[serde(default)]
     pub references: Option<[GlyphRef; 2]>,
+    /// How much to list: `summary` (the default) gives totals and the
+    /// first exceptions, and writes everything to a report file
+    /// (`report_path`); `full` lists up to 200 entries.
+    #[serde(default)]
+    pub detail: Detail,
 }
 
 impl OpArgs for SpacingAutoOpArgs {
@@ -284,6 +290,9 @@ pub struct SpacingAutoResult {
     pub clamped_total: usize,
     /// Whether `clamped` lists only the first of them.
     pub clamped_truncated: bool,
+    /// Where the complete detail went.
+    #[serde(flatten)]
+    pub report: ReportRef,
 }
 
 /// The glyphs `spacing_auto` and the kerning tools work on when `glyphs` is
@@ -582,10 +591,15 @@ fn metrics_set(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
 
 fn spacing_auto(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
     let call = Mutation::<SpacingAutoOpArgs>::parse(&args)?;
+    let detail = call.op.detail;
     let font = Arc::clone(engine.doc(&call.doc)?.font());
     let plan = plan_spacing(&font, call.op)?;
     let (mut label, cmds) = plan.translation;
-    let (spaced, clamped) = (plan.spaced.len(), Bounded::of(plan.clamped));
+    let body = serde_json::json!({ "clamped": &plan.clamped, "commands": &cmds });
+    let (spaced, clamped) = (
+        plan.spaced.len(),
+        Bounded::within(plan.clamped, detail.list_budget()),
+    );
     // The composites follow their bases in the same transaction.
     let mut steps = Steps::of(&font, cmds)?;
     let (realign, realigned) = realign_composites(&font, &steps.after, plan.master, &plan.spaced)?;
@@ -604,7 +618,9 @@ fn spacing_auto(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
         label,
         steps,
     };
-    mutate(engine, actor, edit, |_, result: MutationResult| {
+    mutate(engine, actor, edit, |engine, result: MutationResult| {
+        let file = write_report(engine, Some(&call.doc), AUTO.name, &args, &body);
+        let result = result.shortened(detail);
         Ok(SpacingAutoResult {
             rev: result.rev,
             tx: result.tx,
@@ -617,6 +633,7 @@ fn spacing_auto(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
             clamped_total: clamped.total,
             clamped_truncated: clamped.truncated,
             clamped: clamped.items,
+            report: file,
         })
     })
 }

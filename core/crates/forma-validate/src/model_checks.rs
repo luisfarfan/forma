@@ -2,7 +2,7 @@
 //! vertical metrics. They run on a font that satisfies the model invariants.
 
 use forma_geometry::{IssueKind, check_paths};
-use forma_model::{Font, Glyph, GlyphId, KernRef, MasterId};
+use forma_model::{Font, Glyph, GlyphId, KernRef, MasterId, Review, Source};
 
 use crate::{Finding, Severity};
 
@@ -19,7 +19,79 @@ pub(crate) fn check_model(font: &Font) -> Vec<Finding> {
     findings.extend(check_vertical_metrics(font));
     findings.extend(check_mixed_glyphs(font));
     findings.extend(check_kerning_references(font));
+    findings.extend(check_review(font));
     findings
+}
+
+/// The review state of generated glyphs:
+///
+/// * `glyph.pending_review` (warning): a traced or synthesized glyph that no
+///   person has approved yet;
+/// * `glyph.approval_stale` (warning): an approved glyph whose design no
+///   longer matches the approved one (changed outside FORMA's editing, for
+///   example by merging a `.formapackage` with git);
+/// * `glyph.rejected_used_by_component` (error): an exported glyph draws a
+///   rejected glyph through a component.
+fn check_review(font: &Font) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for glyph in exported_glyphs(font) {
+        if let Some(provenance) = &glyph.provenance {
+            let generated = matches!(provenance.source, Source::Traced | Source::Synthesized);
+            if generated && provenance.review == Review::Pending {
+                findings.push(Finding::new(
+                    "glyph.pending_review",
+                    Severity::Warning,
+                    Some(&glyph.name),
+                    format!(
+                        "the {} glyph has not been reviewed; approve or reject it with \
+                         glyph_review",
+                        source_word(provenance.source)
+                    ),
+                ));
+            }
+            if provenance.review == Review::Approved
+                && let Some(approved) = &provenance.approved_geometry
+                && *approved != glyph.geometry_hash()
+            {
+                findings.push(Finding::new(
+                    "glyph.approval_stale",
+                    Severity::Warning,
+                    Some(&glyph.name),
+                    "the design changed since it was approved; review it again".to_owned(),
+                ));
+            }
+        }
+        let rejected_bases: Vec<&str> = glyph
+            .layers
+            .values()
+            .flat_map(|layer| &layer.components)
+            .filter_map(|component| font.glyphs.get(&component.base))
+            .filter(|base| {
+                base.provenance
+                    .as_ref()
+                    .is_some_and(|p| p.review == Review::Rejected)
+            })
+            .map(|base| base.name.as_str())
+            .collect();
+        for base in rejected_bases {
+            findings.push(Finding::new(
+                "glyph.rejected_used_by_component",
+                Severity::Error,
+                Some(&glyph.name),
+                format!("the glyph uses the rejected glyph {base:?} as a component"),
+            ));
+        }
+    }
+    findings
+}
+
+fn source_word(source: Source) -> &'static str {
+    match source {
+        Source::Traced => "traced",
+        Source::Synthesized => "synthesized",
+        Source::Composed => "composed",
+        _ => "hand-drawn",
+    }
 }
 
 /// The glyphs marked for export, in glyph order. The rest are left out of the
@@ -29,7 +101,7 @@ pub(crate) fn exported_glyphs(font: &Font) -> impl Iterator<Item = &Glyph> {
         .iter()
         .filter_map(|id| font.glyphs.get(id))
         .map(|glyph| &**glyph)
-        .filter(|glyph| glyph.export)
+        .filter(|glyph| glyph.is_exported())
 }
 
 /// The check id of a geometry issue kind.
@@ -172,7 +244,7 @@ fn check_kerning_references(font: &Font) -> Vec<Finding> {
     let unexported = |id: GlyphId| {
         font.glyphs
             .get(&id)
-            .filter(|glyph| !glyph.export)
+            .filter(|glyph| !glyph.is_exported())
             .map(|glyph| glyph.name.as_str())
     };
     let mut findings = Vec::new();

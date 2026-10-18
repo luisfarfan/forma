@@ -56,6 +56,7 @@ fn glyph_in(font: &Font, n: u128, name: &str, advance_width: f64, apex: f64) -> 
             },
         )]
         .into(),
+        provenance: None,
     }
 }
 

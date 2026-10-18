@@ -171,7 +171,7 @@ pub struct CommandSpec {
 }
 
 /// Every command, in the exact registration order of the public API.
-static REGISTRY: [CommandSpec; 50] = [
+static REGISTRY: [CommandSpec; 51] = [
     // core
     capabilities::SPEC,
     document::CREATE,
@@ -233,7 +233,53 @@ static REGISTRY: [CommandSpec; 50] = [
     trace::TRACE,
     trace::COMPARE,
     trace::MEASURE,
+    // review (Hito 2.5)
+    glyphs::REVIEW,
 ];
+
+/// The tools of the `image-font` profile, in registry order: what turning
+/// an image of an alphabet into a font needs, with the granular editing
+/// tools for corrections. Names not registered (yet) are ignored.
+const IMAGE_FONT: &[&str] = &[
+    "forma_capabilities",
+    "document_create",
+    "document_open",
+    "document_save",
+    "document_close",
+    "document_list",
+    "plan_commit",
+    "plan_discard",
+    "glyph_list",
+    "glyph_get",
+    "glyph_set_outline",
+    "contour_edit",
+    "nodes_edit",
+    "validate",
+    "export_font",
+    "preview_glyph",
+    "preview_text",
+    "history_list",
+    "history_undo",
+    "history_redo",
+    "image_inspect",
+    "image_trace",
+    "preview_sheet",
+    "glyph_review",
+    "font_from_image",
+    "glyph_synthesize",
+];
+
+/// The tool profiles: a name and the tools it serves.
+pub const PROFILES: [(&str, &[&str]); 1] = [("image-font", IMAGE_FONT)];
+
+/// The tools of the profile `name`, or `None` for an unknown profile.
+#[must_use]
+pub fn profile(name: &str) -> Option<&'static [&'static str]> {
+    PROFILES
+        .iter()
+        .find(|(profile, _)| *profile == name)
+        .map(|(_, tools)| *tools)
+}
 
 /// Every command, in the exact registration order of the public API.
 #[must_use]

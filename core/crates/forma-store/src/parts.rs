@@ -17,14 +17,15 @@ use crate::StoreError;
 use crate::canonical::{canonical_string, try_to_canonical_json};
 
 /// The format version this build writes. Version 2 adds component lists in
-/// glyph layers and the kerning of the font document; both are optional
-/// fields, so a version 1 document is also a valid version 2 document.
-pub const FORMAT_VERSION: u32 = 2;
+/// glyph layers and the kerning of the font document; version 3 adds the
+/// provenance of glyphs. All are optional fields, so a version 1 or 2
+/// document is also a valid version 3 document.
+pub const FORMAT_VERSION: u32 = 3;
 
 /// The format versions this build reads. Saving always writes
 /// [`FORMAT_VERSION`], which loses nothing: a migrated document means the
 /// same font.
-pub const READABLE_VERSIONS: [u32; 2] = [1, 2];
+pub const READABLE_VERSIONS: [u32; 3] = [1, 2, 3];
 
 /// Checks that `version` is one this build can read.
 pub(crate) fn ensure_readable(version: u32) -> Result<(), StoreError> {
@@ -41,10 +42,10 @@ pub(crate) fn ensure_readable(version: u32) -> Result<(), StoreError> {
 
 /// Brings a font document written by format `version` to the current format.
 ///
-/// Pure: no I/O, and the same input gives the same output. From 1 to 2 there
-/// is nothing to change, because the fields that version 2 adds
-/// (`kerning`) default to empty when absent; the function is the place where
-/// later versions add their steps.
+/// Pure: no I/O, and the same input gives the same output. From 1 to 2 and
+/// from 2 to 3 there is nothing to change, because the fields those versions
+/// add (`kerning`; glyph `provenance`) default to empty when absent; the
+/// function is the place where later versions add their steps.
 ///
 /// # Errors
 ///
@@ -57,7 +58,8 @@ pub fn migrate_font_document(version: u32, document: Value) -> Result<Value, Sto
 
 /// Brings a glyph document written by format `version` to the current format.
 /// See [`migrate_font_document`]; the `components` of a layer default to
-/// empty when absent.
+/// empty when absent, and so does the `provenance` of the glyph (a glyph of
+/// an older document was not made by the engine as far as anyone recorded).
 ///
 /// # Errors
 ///
@@ -155,6 +157,18 @@ pub(crate) fn ensure_glyph_finite(glyph: &Glyph) -> Result<(), StoreError> {
                 glyph.name
             )));
         }
+    }
+    if let Some(provenance) = &glyph.provenance
+        && !provenance
+            .detail
+            .numbers()
+            .iter()
+            .all(|value| value.is_finite())
+    {
+        return Err(StoreError::Invalid(format!(
+            "glyph {:?} has a provenance measurement that is not a finite number",
+            glyph.name
+        )));
     }
     Ok(())
 }

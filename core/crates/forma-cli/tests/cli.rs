@@ -654,7 +654,7 @@ fn relative_paths_with_dotdot_resolve_against_cwd() {
 fn parity_every_registry_tool_is_callable() {
     let dir = temp();
     let tools = registry();
-    assert_eq!(tools.len(), 50);
+    assert_eq!(tools.len(), 51);
     for spec in tools {
         let assert = forma(dir.path())
             .args(["call", spec.name, "--args", "{}"])
@@ -786,7 +786,7 @@ fn mcp_stdout_is_protocol_only() {
         run.response(1)["result"]["serverInfo"]["name"],
         json!("forma")
     );
-    assert_eq!(run.tool_names().len(), 50);
+    assert_eq!(run.tool_names().len(), 51);
     assert_eq!(run.messages.len(), 2, "{:#?}", run.messages);
     // stderr is for logs only: the warning is there, and no protocol.
     assert!(run.stderr.contains("WARN"), "{}", run.stderr);
@@ -877,7 +877,7 @@ fn mcp_toolsets_always_include_core() {
 
     // Without the flag, everything.
     let all = run_mcp(dir.path(), &["--no-journal"], &opening());
-    assert_eq!(all.tool_names().len(), 50);
+    assert_eq!(all.tool_names().len(), 51);
 }
 
 #[test]
@@ -1132,4 +1132,36 @@ fn api_docs_up_to_date() {
             .unwrap_or_else(|| panic!("{} is missing or out of order in tools.md", spec.name));
         from += at + heading.len();
     }
+}
+
+// ------------------------------------------------------- tool profiles
+
+#[test]
+fn mcp_unknown_profile_is_a_usage_error() {
+    let dir = temp();
+    forma(dir.path())
+        .args(["mcp", "--profile", "nope", "--print-catalog-size"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("unknown profile 'nope'"));
+}
+
+#[test]
+fn mcp_print_catalog_size_reports_and_exits() {
+    let dir = temp();
+    let size = |args: &[&str]| -> serde_json::Value {
+        let output = forma(dir.path())
+            .args(["mcp", "--print-catalog-size"])
+            .args(args)
+            .output()
+            .expect("run");
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice(&output.stdout).expect("json")
+    };
+    let full = size(&[]);
+    let lean = size(&["--profile", "image-font", "--output-schemas", "none"]);
+    assert_eq!(full["tools"], 51);
+    assert!(lean["tools"].as_u64() < full["tools"].as_u64());
+    assert_eq!(lean["chars_output_schemas"], 0);
+    assert!(lean["chars_total"].as_u64() < full["chars_total"].as_u64());
 }

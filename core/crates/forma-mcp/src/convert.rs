@@ -27,7 +27,15 @@ pub(crate) const PNG_MIME: &str = "image/png";
 /// none); annotations from its effects (a closed world: FORMA never reaches
 /// outside the open documents and the allowed roots); and the `_meta` hints
 /// Anthropic clients read.
+#[cfg(test)]
 pub(crate) fn tool_of(spec: &CommandSpec) -> Tool {
+    tool_with(spec, true)
+}
+
+/// [`tool_of`], leaving out the result schema unless `output_schema`. MCP
+/// lets a tool without one still return `structuredContent`; leaving it out
+/// makes the tool list much smaller for clients that load every tool.
+pub(crate) fn tool_with(spec: &CommandSpec, output_schema: bool) -> Tool {
     let annotations = ToolAnnotations::with_title(spec.title)
         .read_only(spec.effects.read_only)
         .destructive(spec.effects.destructive)
@@ -40,7 +48,8 @@ pub(crate) fn tool_of(spec: &CommandSpec) -> Tool {
     )
     .with_title(spec.title)
     .with_annotations(annotations);
-    if spec.output == OutputKind::Json
+    if output_schema
+        && spec.output == OutputKind::Json
         && let Some(output_schema) = spec.output_schema
     {
         tool = tool.with_raw_output_schema(Arc::new(schema_object(output_schema())));

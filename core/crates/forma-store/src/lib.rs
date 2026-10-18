@@ -28,6 +28,7 @@
 #![forbid(unsafe_code)]
 
 mod atomic;
+mod backup;
 mod canonical;
 mod filenames;
 mod journal;
@@ -43,6 +44,7 @@ use forma_model::Font;
 use thiserror::Error;
 
 pub use atomic::write_file_atomic;
+pub use backup::backup_path;
 pub use canonical::{to_canonical_json, try_to_canonical_json};
 pub use filenames::glyph_file_name;
 pub use journal::{
@@ -148,10 +150,17 @@ fn format_of(path: &Path) -> Result<Format, StoreError> {
 /// exist are deleted at the end. A folder that is neither empty nor a package
 /// is refused and left untouched.
 ///
+/// If the document being replaced was written by an older format version,
+/// an untouched copy is kept first at [`backup_path`] (once: an existing
+/// backup is never overwritten), since older versions of FORMA cannot read
+/// the current format.
+///
 /// # Errors
 ///
 /// * [`StoreError::UnknownFormat`] if the extension is neither `.forma` nor
 ///   `.formapackage`;
+/// * [`StoreError::Io`] if the backup of an older document cannot be made
+///   (nothing is saved then);
 /// * [`StoreError::Invalid`] if the font breaks a data model rule or holds a
 ///   number that JSON cannot represent (NaN, infinity);
 /// * [`StoreError::NotAFormaPackage`] if the target is a folder or file that
@@ -163,7 +172,9 @@ fn format_of(path: &Path) -> Result<Format, StoreError> {
 /// * [`StoreError::Io`] and [`StoreError::Sqlite`] if writing fails; the
 ///   previous document is then intact (see above for packages).
 pub fn save(font: &Font, path: &Path) -> Result<(), StoreError> {
-    match format_of(path)? {
+    let format = format_of(path)?;
+    backup::backup_if_older(path)?;
+    match format {
         Format::Forma => sqlite::save(font, path),
         Format::Package => package::save(font, path),
     }

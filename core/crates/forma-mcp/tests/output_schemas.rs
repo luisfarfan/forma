@@ -469,6 +469,12 @@ async fn every_output_validates_against_its_output_schema() {
     assert_ne!(compared.is_error, Some(true), "{compared:?}");
     c.ok("glyph_measure", json!({ "doc": doc, "glyph": "tracedH" }))
         .await;
+    let r = rev(&c
+        .ok(
+            "glyph_review",
+            json!({ "doc": doc, "base_rev": r, "glyphs": ["tracedH"], "decision": "approve" }),
+        )
+        .await);
 
     // Deletion: refused without a plan, discarded, then committed.
     let error = c
@@ -600,7 +606,7 @@ async fn every_output_validates_against_its_output_schema() {
         Vec::<&&String>::new(),
         "tools never validated"
     );
-    assert_eq!(declared.len(), 45, "{declared:?}");
+    assert_eq!(declared.len(), 46, "{declared:?}");
     let total: usize = c.validated.values().sum();
     assert!(total > 80, "{total} results validated");
     c.client.cancel().await.expect("close");

@@ -287,6 +287,7 @@ mod tests {
             unicodes: Vec::new(),
             export: true,
             layers,
+            provenance: None,
         };
         Arc::make_mut(&mut font.glyphs).insert(id, Arc::new(glyph));
         font.glyph_order.push(id);

@@ -118,6 +118,7 @@ fn registry_order_and_names_match_spec() {
         "image_trace",
         "trace_compare",
         "glyph_measure",
+        "glyph_review",
     ];
     let names: Vec<&str> = registry().iter().map(|spec| spec.name).collect();
     assert_eq!(names, expected);
@@ -203,6 +204,7 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "charset_check",
         "image_trace",
         "glyph_measure",
+        "glyph_review",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");
@@ -273,6 +275,7 @@ fn toolsets_effects_and_outputs_match_rulings() {
             "charset_check" => Quality,
             "image_inspect" | "image_trace" | "trace_compare" => Trace,
             "glyph_measure" => Geometry,
+            "glyph_review" => Glyphs,
             other => panic!("unexpected tool {other}"),
         }
     };
@@ -568,7 +571,7 @@ fn read_only_mode_allows_closing_documents() {
 fn toolsets_can_be_disabled() {
     let root = TempDir::new().expect("tempdir");
     let all = engine_with(&[root.path()]);
-    assert_eq!(all.enabled_specs().len(), 50);
+    assert_eq!(all.enabled_specs().len(), 51);
     assert_eq!(all.enabled_toolsets(), Toolset::ALL.to_vec());
 
     let mut engine = Engine::new(EngineConfig {

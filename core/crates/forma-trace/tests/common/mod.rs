@@ -90,6 +90,7 @@ pub fn truth_font() -> Font {
                 unicodes: vec![unicode],
                 export: true,
                 layers: BTreeMap::from([(master, layer)]),
+                provenance: None,
             }),
         );
         order.push(id);

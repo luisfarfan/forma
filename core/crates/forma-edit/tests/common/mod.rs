@@ -164,6 +164,7 @@ pub fn add_glyph_with_id(
             unicodes: unicodes.to_vec(),
             export: true,
             layers,
+            provenance: None,
         }),
     );
     font.glyph_order.push(id);

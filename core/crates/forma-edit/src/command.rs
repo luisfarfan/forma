@@ -15,7 +15,9 @@ use std::fmt;
 use std::str::FromStr;
 
 use forma_geometry::IssueKind;
-use forma_model::{Font, GlyphId, KernRef, KernSide, MasterId, Path, PathId, Transform};
+use forma_model::{
+    Font, GlyphId, KernRef, KernSide, MasterId, Path, PathId, Provenance, Transform,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -427,5 +429,15 @@ pub enum Command {
         name: String,
         /// The side of the group.
         side: KernSide,
+    },
+    /// Sets (or, with `null`, clears) how the design of a glyph was made and
+    /// its review state. The design itself does not change. Setting the
+    /// provenance it already has changes nothing (the glyph is not touched).
+    SetProvenance {
+        /// The glyph to change.
+        glyph: GlyphRef,
+        /// The new provenance; its measurements must be finite, and scores
+        /// and overlaps within 0 to 1.
+        provenance: Option<Provenance>,
     },
 }

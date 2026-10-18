@@ -67,6 +67,7 @@ fn glyph(font: &Font, n: u128, name: &str, advance_width: f64, paths: Vec<Contou
             },
         )]
         .into(),
+        provenance: None,
     }
 }
 

@@ -19,7 +19,9 @@
 //! * `error_code`: the code of a failed call, `null` on success;
 //! * `args_sha256`: the SHA-256 (lowercase hex) of the arguments as canonical
 //!   JSON (keys sorted, compact). The arguments themselves (outlines, names,
-//!   text) are never written.
+//!   text) are never written;
+//! * `report_path`: present when the call wrote a report file with its
+//!   complete detail (see `tools::report`).
 //!
 //! The file is opened in append mode for every line and created if missing;
 //! its folder must exist. A line that cannot be written is reported with
@@ -55,6 +57,8 @@ struct AuditLine<'a> {
     ok: bool,
     error_code: Option<ErrorCode>,
     args_sha256: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    report_path: Option<&'a str>,
 }
 
 /// What is known of a call when it arrives, until it is done.
@@ -118,6 +122,10 @@ impl AuditEntry {
             ok: result.is_ok(),
             error_code: result.as_ref().err().map(|error| error.code),
             args_sha256: &self.args_sha256,
+            report_path: match result {
+                Ok(ToolOutput::Json(value)) => value.get("report_path").and_then(Value::as_str),
+                _ => None,
+            },
         };
         if let Err(error) = append(path, &line) {
             tracing::warn!(

@@ -231,13 +231,16 @@ async fn tools_list_snapshot() {
     insta::assert_json_snapshot!("tools_list", lists[0]);
 }
 
+/// The number of tools of the public API (Hito 2.5 so far).
+const TOOL_COUNT: usize = 51;
+
 #[tokio::test]
-async fn tool_count_is_50() {
+async fn tool_count_matches_the_contract() {
     let root = TempDir::new().expect("tempdir");
     for era in ERAS {
         let client = connect(config(root.path()), era).await;
         let listed = tools(&client).await;
-        assert_eq!(listed.len(), 50, "{era:?}");
+        assert_eq!(listed.len(), TOOL_COUNT, "{era:?}");
         let expected: Vec<&str> = registry().iter().map(|spec| spec.name).collect();
         assert_eq!(names(&listed), expected, "{era:?}: registry order");
         close(client).await;
@@ -369,6 +372,97 @@ async fn plan_commit_has_requires_user_interaction_meta() {
         assert_eq!(flagged, ["plan_commit"], "{era:?}");
         close(client).await;
     }
+}
+
+#[tokio::test]
+async fn profile_image_font_serves_exactly_its_tools() {
+    let root = TempDir::new().expect("tempdir");
+    let cfg = EngineConfig {
+        profile: Some("image-font"),
+        ..config(root.path())
+    };
+    let wanted = forma_engine::profile("image-font").expect("profile");
+    let expected: Vec<&str> = registry()
+        .iter()
+        .map(|spec| spec.name)
+        .filter(|name| wanted.contains(name))
+        .collect();
+    assert!(expected.contains(&"image_trace") && expected.contains(&"glyph_review"));
+    assert!(!expected.contains(&"kerning_set") && !expected.contains(&"edit_batch"));
+    for era in ERAS {
+        let client = connect(cfg.clone(), era).await;
+        assert_eq!(names(&tools(&client).await), expected, "{era:?}");
+        let doc = new_doc(&client).await;
+        let refused = tool_error(&call(&client, "kerning_get", json!({ "doc": doc })).await);
+        assert_eq!(refused["code"], "UNSUPPORTED", "{era:?}");
+        close(client).await;
+    }
+}
+
+#[tokio::test]
+async fn output_schemas_none_omits_them_but_results_stay_structured() {
+    let root = TempDir::new().expect("tempdir");
+    for era in ERAS {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let options = forma_mcp::ServerOptions {
+            output_schemas: false,
+        };
+        let server = tokio::spawn(forma_mcp::serve_with(
+            config(root.path()),
+            options,
+            server_io,
+        ));
+        let info = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("test-agent", "1.0.0"),
+        );
+        let mode = match era {
+            Era::Legacy => ClientLifecycleMode::Initialize,
+            Era::Modern => ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        };
+        let info = match era {
+            Era::Legacy => info.with_protocol_version(ProtocolVersion::V_2025_06_18),
+            Era::Modern => info,
+        };
+        let client = info
+            .serve_with_lifecycle(client_io, mode)
+            .await
+            .expect("connect");
+        let listed = tools(&client).await;
+        assert_eq!(listed.len(), TOOL_COUNT, "{era:?}");
+        assert!(
+            listed.iter().all(|tool| tool.output_schema.is_none()),
+            "{era:?}"
+        );
+        let result = call(&client, "document_list", json!({})).await;
+        assert!(result.structured_content.is_some(), "{era:?}");
+        close(client).await;
+        let _ = server.await;
+    }
+}
+
+#[test]
+fn catalog_size_without_output_schemas_is_smaller() {
+    let root = TempDir::new().expect("tempdir");
+    let full = forma_mcp::catalog_size(config(root.path()), forma_mcp::ServerOptions::default());
+    let lean = forma_mcp::catalog_size(
+        EngineConfig {
+            profile: Some("image-font"),
+            ..config(root.path())
+        },
+        forma_mcp::ServerOptions {
+            output_schemas: false,
+        },
+    );
+    assert_eq!(full.tools, TOOL_COUNT);
+    assert!(full.chars_total > full.chars_input_schemas + full.chars_output_schemas);
+    assert_eq!(lean.chars_output_schemas, 0);
+    assert!(
+        lean.chars_total * 4 < full.chars_total,
+        "{lean:?} vs {full:?}"
+    );
 }
 
 #[tokio::test]

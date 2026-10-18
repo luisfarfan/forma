@@ -81,6 +81,7 @@ fn glyph(font: &Font, name: &str, unicodes: &[u32], advance: f64, paths: Vec<Pat
         unicodes: unicodes.to_vec(),
         export: true,
         layers,
+        provenance: None,
     }
 }
 

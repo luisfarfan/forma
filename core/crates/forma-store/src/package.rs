@@ -669,6 +669,7 @@ mod tests {
                     unicodes: Vec::new(),
                     export: true,
                     layers: BTreeMap::from([(master, square(width))]),
+                    provenance: None,
                 };
                 (id, Arc::new(glyph))
             })

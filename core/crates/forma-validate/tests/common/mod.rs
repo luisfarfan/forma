@@ -97,6 +97,7 @@ pub fn add_glyph(
         unicodes: unicodes.to_vec(),
         export: true,
         layers,
+        provenance: None,
     };
     font.glyph_order.push(id);
     Arc::make_mut(&mut font.glyphs).insert(id, Arc::new(glyph));

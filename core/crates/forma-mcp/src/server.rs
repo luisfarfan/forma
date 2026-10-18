@@ -55,6 +55,31 @@ const MAX_CLIENT_NAME_CHARS: usize = 64;
 /// control characters).
 const UNKNOWN_CLIENT: &str = "unknown";
 
+/// How the server presents its tools; never what they do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServerOptions {
+    /// List the JSON Schema of each tool's result (`outputSchema`). Results
+    /// carry `structuredContent` either way.
+    pub output_schemas: bool,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        ServerOptions {
+            output_schemas: true,
+        }
+    }
+}
+
+/// The tool definitions `engine` enables, in registry order.
+pub(crate) fn tools_of(engine: &Engine, options: ServerOptions) -> Vec<Tool> {
+    engine
+        .enabled_specs()
+        .into_iter()
+        .map(|spec| convert::tool_with(spec, options.output_schemas))
+        .collect()
+}
+
 /// The FORMA MCP server: a facade over one [`Engine`] that every tool call
 /// and resource read goes through. It holds no business logic.
 #[derive(Debug)]
@@ -73,12 +98,14 @@ impl FormaServer {
     /// the engine refuses the others.
     #[must_use]
     pub fn new(cfg: EngineConfig) -> FormaServer {
+        FormaServer::with_options(cfg, ServerOptions::default())
+    }
+
+    /// [`FormaServer::new`] with presentation options for the tool list.
+    #[must_use]
+    pub fn with_options(cfg: EngineConfig, options: ServerOptions) -> FormaServer {
         let engine = Engine::new(cfg);
-        let tools = engine
-            .enabled_specs()
-            .into_iter()
-            .map(convert::tool_of)
-            .collect();
+        let tools = tools_of(&engine, options);
         FormaServer {
             engine: Arc::new(Mutex::new(engine)),
             tools,

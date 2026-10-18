@@ -23,6 +23,7 @@ fn glyph(id: GlyphId, name: &str, unicodes: &[u32]) -> Glyph {
         unicodes: unicodes.to_vec(),
         export: true,
         layers: BTreeMap::new(),
+        provenance: None,
     }
 }
 

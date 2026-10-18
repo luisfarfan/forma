@@ -346,6 +346,7 @@ fn arb_font() -> impl Strategy<Value = Font> {
                         unicodes,
                         export,
                         layers,
+                        provenance: None,
                     });
                     order.push(id);
                 }

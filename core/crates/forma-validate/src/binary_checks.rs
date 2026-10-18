@@ -353,12 +353,15 @@ fn check_gpos(font: &Font, compiled: &FontRef, findings: &mut Vec<Finding>) {
         return;
     };
     let exported = |reference: KernRef| match reference {
-        KernRef::Glyph(id) => font.glyphs.get(&id).is_some_and(|glyph| glyph.export),
+        KernRef::Glyph(id) => font
+            .glyphs
+            .get(&id)
+            .is_some_and(|glyph| glyph.is_exported()),
         KernRef::Group(id) => font.kerning.groups.get(&id).is_some_and(|group| {
             group
                 .members
                 .iter()
-                .any(|id| font.glyphs.get(id).is_some_and(|glyph| glyph.export))
+                .any(|id| font.glyphs.get(id).is_some_and(|glyph| glyph.is_exported()))
         }),
     };
     let count = pairs

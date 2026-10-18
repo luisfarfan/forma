@@ -112,6 +112,7 @@ impl Fixture {
             unicodes: Vec::new(),
             export: true,
             layers,
+            provenance: None,
         };
         Arc::make_mut(&mut self.font.glyphs).insert(id, Arc::new(glyph));
         self.font.glyph_order.push(id);

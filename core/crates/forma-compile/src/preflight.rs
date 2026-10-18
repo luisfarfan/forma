@@ -67,7 +67,7 @@ pub fn preflight(font: &Font) -> Result<(Font, CompileReport), CompileError> {
     // The invariants guarantee a master, so the default master exists.
     let default_master = font.default_master().id;
     for glyph in font.glyph_order.iter().filter_map(|id| font.glyphs.get(id)) {
-        if glyph.export {
+        if glyph.is_exported() {
             check_glyph(font, glyph, default_master)?;
         }
     }
@@ -242,6 +242,7 @@ fn notdef_glyph(font: &Font) -> Glyph {
             .iter()
             .map(|master| (master.id, layer.clone()))
             .collect(),
+        provenance: None,
     }
 }
 
@@ -293,6 +294,7 @@ fn add_space(font: &mut Font) {
             .iter()
             .map(|master| (master.id, layer.clone()))
             .collect(),
+        provenance: None,
     };
     font.glyph_order.push(glyph.id);
     Arc::make_mut(&mut font.glyphs).insert(glyph.id, Arc::new(glyph));

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::component::Component;
 use crate::ids::{GlyphId, MasterId, PathId};
+use crate::provenance::Provenance;
 
 /// The longest glyph name allowed, in characters.
 pub const MAX_GLYPH_NAME_LEN: usize = 63;
@@ -104,9 +105,24 @@ pub struct Glyph {
     pub export: bool,
     /// The outline for each master the glyph has been drawn in.
     pub layers: BTreeMap<MasterId, Layer>,
+    /// How the design was made and whether it was reviewed; absent for
+    /// glyphs drawn by hand (and every glyph of a format v1 or v2 document).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
 }
 
 impl Glyph {
+    /// Whether the glyph goes into an exported font: it is marked for export
+    /// and its design was not rejected in review.
+    #[must_use]
+    pub fn is_exported(&self) -> bool {
+        self.export
+            && !self
+                .provenance
+                .as_ref()
+                .is_some_and(|p| p.review == crate::provenance::Review::Rejected)
+    }
+
     /// Whether some layer of the glyph has a component of `base`.
     #[must_use]
     pub fn uses_component(&self, base: GlyphId) -> bool {

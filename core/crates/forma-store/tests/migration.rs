@@ -1,4 +1,5 @@
-//! Format v2 (components and kerning) and the migration of v1 documents.
+//! Formats v2 (components and kerning) and v3 (glyph provenance), and the
+//! migration of v1 and v2 documents.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -85,6 +86,7 @@ fn sample_v1_font() -> Font {
                 unicodes: vec![unicode],
                 export: true,
                 layers,
+                provenance: None,
             }),
         );
         order.push(id);
@@ -103,6 +105,23 @@ fn generate_v1_fixtures() {
     let dir = fixtures_v1();
     std::fs::create_dir_all(&dir).unwrap();
     let font = sample_v1_font();
+    forma_store::save(&font, &dir.join("doc.forma")).unwrap();
+    forma_store::save(&font, &dir.join("doc.formapackage")).unwrap();
+}
+
+fn fixtures_v2() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2")
+}
+
+/// Writes the v2 fixtures. Run once, while the format was still version 2:
+/// `cargo test -p forma-store --test migration -- --ignored generate_v2_fixtures`.
+/// The output is versioned and must keep loading forever.
+#[test]
+#[ignore = "generates the committed v2 fixtures; only meaningful with FORMAT_VERSION 2"]
+fn generate_v2_fixtures() {
+    let dir = fixtures_v2();
+    std::fs::create_dir_all(&dir).unwrap();
+    let font = sample_v2_font();
     forma_store::save(&font, &dir.join("doc.forma")).unwrap();
     forma_store::save(&font, &dir.join("doc.formapackage")).unwrap();
 }
@@ -185,7 +204,7 @@ fn sample_v2_font() -> Font {
 }
 
 #[test]
-fn v1_forma_loads_and_saves_as_v2() {
+fn v1_forma_loads_and_saves_as_v3() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("doc.forma");
     std::fs::copy(fixtures_v1().join("doc.forma"), &path).unwrap();
@@ -194,13 +213,18 @@ fn v1_forma_loads_and_saves_as_v2() {
     let font = load(&path).unwrap();
     assert_eq!(font, sample_v1_font());
     save(&font, &path).unwrap();
-    assert_eq!(user_version(&path), 2);
-    assert_eq!(manifest_version(&path), 2);
+    assert_eq!(user_version(&path), 3);
+    assert_eq!(manifest_version(&path), 3);
     assert_eq!(load(&path).unwrap(), font);
+    // The v1 original was kept, byte for byte.
+    assert_eq!(
+        std::fs::read(forma_store::backup_path(&path, 1)).unwrap(),
+        std::fs::read(fixtures_v1().join("doc.forma")).unwrap()
+    );
 }
 
 #[test]
-fn v1_package_loads_and_saves_as_v2() {
+fn v1_package_loads_and_saves_as_v3() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("doc.formapackage");
     copy_dir(&fixtures_v1().join("doc.formapackage"), &path);
@@ -210,8 +234,13 @@ fn v1_package_loads_and_saves_as_v2() {
     save(&font, &path).unwrap();
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(path.join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["format_version"], json!(2));
+    assert_eq!(manifest["format_version"], json!(3));
     assert_eq!(load(&path).unwrap(), font);
+    assert!(
+        forma_store::backup_path(&path, 1)
+            .join("manifest.json")
+            .is_file()
+    );
     // Same content: the font and glyph documents did not change.
     for file in [
         "font.json",
@@ -228,18 +257,18 @@ fn v1_package_loads_and_saves_as_v2() {
 }
 
 #[test]
-fn v3_is_rejected_with_unsupported_version() {
+fn v4_is_rejected_with_unsupported_version() {
     let dir = TempDir::new().unwrap();
 
     let forma = dir.path().join("doc.forma");
     save(&sample_v2_font(), &forma).unwrap();
     Connection::open(&forma)
         .unwrap()
-        .pragma_update(None, "user_version", 3)
+        .pragma_update(None, "user_version", 4)
         .unwrap();
     assert!(matches!(
         load(&forma),
-        Err(StoreError::UnsupportedVersion(3))
+        Err(StoreError::UnsupportedVersion(4))
     ));
 
     let package = dir.path().join("doc.formapackage");
@@ -247,18 +276,18 @@ fn v3_is_rejected_with_unsupported_version() {
     let manifest_path = package.join("manifest.json");
     let mut manifest: Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["format_version"] = json!(3);
+    manifest["format_version"] = json!(4);
     std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(matches!(
         load(&package),
-        Err(StoreError::UnsupportedVersion(3))
+        Err(StoreError::UnsupportedVersion(4))
     ));
 }
 
 #[test]
 fn versions_are_declared() {
-    assert_eq!(FORMAT_VERSION, 2);
-    assert_eq!(READABLE_VERSIONS, [1, 2]);
+    assert_eq!(FORMAT_VERSION, 3);
+    assert_eq!(READABLE_VERSIONS, [1, 2, 3]);
 }
 
 #[test]
@@ -275,7 +304,17 @@ fn migrate_documents_are_pure() {
             migrate_glyph_document(version, glyph_doc.clone()).unwrap()
         );
     }
-    // v2 -> v2 is the identity, and v1 -> v2 changes nothing.
+    // v3 -> v3 is the identity, and v1/v2 -> v3 change nothing.
+    for version in [1, 2, 3] {
+        assert_eq!(
+            migrate_font_document(version, font_doc.clone()).unwrap(),
+            font_doc
+        );
+        assert_eq!(
+            migrate_glyph_document(version, glyph_doc.clone()).unwrap(),
+            glyph_doc
+        );
+    }
     assert_eq!(
         migrate_font_document(2, font_doc.clone()).unwrap(),
         font_doc
@@ -293,8 +332,8 @@ fn migrate_documents_are_pure() {
         glyph_doc
     );
     assert!(matches!(
-        migrate_font_document(3, font_doc),
-        Err(StoreError::UnsupportedVersion(3))
+        migrate_font_document(4, font_doc),
+        Err(StoreError::UnsupportedVersion(4))
     ));
     assert!(matches!(
         migrate_glyph_document(0, glyph_doc),
@@ -390,4 +429,135 @@ fn generate_v2_fuzz_seeds() {
     let mut bytes = vec![0u8];
     bytes.extend_from_slice(manifest.as_bytes());
     std::fs::write(seeds.join("load_package/manifest_v2.seed"), bytes).unwrap();
+}
+
+#[test]
+fn v2_forma_migrates_to_v3_with_a_single_backup() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("doc.forma");
+    std::fs::copy(fixtures_v2().join("doc.forma"), &path).unwrap();
+    assert_eq!(user_version(&path), 2);
+    let font = load(&path).unwrap();
+    assert_eq!(font, sample_v2_font());
+    assert!(font.glyphs.values().all(|glyph| glyph.provenance.is_none()));
+    save(&font, &path).unwrap();
+    assert_eq!(user_version(&path), 3);
+    let backup = forma_store::backup_path(&path, 2);
+    let original = std::fs::read(fixtures_v2().join("doc.forma")).unwrap();
+    assert_eq!(std::fs::read(&backup).unwrap(), original);
+    // A second save (now over a v3 document) leaves the backup alone.
+    save(&font, &path).unwrap();
+    assert_eq!(std::fs::read(&backup).unwrap(), original);
+    assert!(!forma_store::backup_path(&path, 3).exists());
+}
+
+#[test]
+fn v2_package_migrates_to_v3_losing_nothing() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("doc.formapackage");
+    copy_dir(&fixtures_v2().join("doc.formapackage"), &path);
+    let font = load(&path).unwrap();
+    assert_eq!(font, sample_v2_font());
+    save(&font, &path).unwrap();
+    assert_eq!(load(&path).unwrap(), font);
+    // Field by field: every glyph document and the font document are
+    // unchanged; only the manifest declares the new version.
+    for file in [
+        "font.json",
+        "glyphs/A_.json",
+        "glyphs/B_.json",
+        "glyphs/space.json",
+    ] {
+        assert_eq!(
+            std::fs::read(path.join(file)).unwrap(),
+            std::fs::read(fixtures_v2().join("doc.formapackage").join(file)).unwrap(),
+            "{file}"
+        );
+    }
+    let backup = forma_store::backup_path(&path, 2);
+    assert_eq!(
+        std::fs::read(backup.join("glyphs/space.json")).unwrap(),
+        std::fs::read(fixtures_v2().join("doc.formapackage/glyphs/space.json")).unwrap()
+    );
+}
+
+#[test]
+fn migration_is_deterministic() {
+    let dir = TempDir::new().unwrap();
+    let mut outputs = Vec::new();
+    for n in 0..2 {
+        let path = dir.path().join(format!("doc{n}.formapackage"));
+        copy_dir(&fixtures_v2().join("doc.formapackage"), &path);
+        let font = load(&path).unwrap();
+        save(&font, &path).unwrap();
+        let mut files = Vec::new();
+        for file in [
+            "manifest.json",
+            "font.json",
+            "glyphs/A_.json",
+            "glyphs/space.json",
+        ] {
+            files.push(std::fs::read(path.join(file)).unwrap());
+        }
+        outputs.push(files);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+}
+
+#[test]
+fn provenance_roundtrips_both_formats() {
+    use forma_model::{Provenance, ProvenanceDetail, Review, Source};
+    let mut font = sample_v2_font();
+    let mut glyphs = (*font.glyphs).clone();
+    let a = GlyphId(Uuid::from_u128(0x100));
+    let mut glyph = (*glyphs[&a]).clone();
+    let mut provenance = Provenance::pending(
+        Source::Traced,
+        1,
+        ProvenanceDetail::Traced {
+            image_sha256: "ab".repeat(32),
+            candidates: vec![3, 4],
+            px_rect: [1.0, 2.0, 30.5, 40.0],
+            iou_mask: 0.991,
+            hausdorff_p95_px: Some(0.4),
+            topology_ok: Some(true),
+        },
+    );
+    provenance.review = Review::Approved;
+    provenance.approved_geometry = Some(glyph.geometry_hash());
+    glyph.provenance = Some(provenance);
+    glyphs.insert(a, Arc::new(glyph));
+    font.glyphs = Arc::new(glyphs);
+    let dir = TempDir::new().unwrap();
+    for name in ["doc.forma", "doc.formapackage"] {
+        let path = dir.path().join(name);
+        save(&font, &path).unwrap();
+        assert_eq!(load(&path).unwrap(), font, "{name}");
+    }
+}
+
+#[test]
+fn non_finite_provenance_is_refused_on_save() {
+    use forma_model::{Provenance, ProvenanceDetail, Source};
+    let mut font = sample_v2_font();
+    let mut glyphs = (*font.glyphs).clone();
+    let a = GlyphId(Uuid::from_u128(0x100));
+    let mut glyph = (*glyphs[&a]).clone();
+    glyph.provenance = Some(Provenance::pending(
+        Source::Synthesized,
+        1,
+        ProvenanceDetail::Synthesized {
+            recipe: "x".into(),
+            recipe_version: 1,
+            sources: vec![],
+            style_score: f64::NAN,
+        },
+    ));
+    glyphs.insert(a, Arc::new(glyph));
+    font.glyphs = Arc::new(glyphs);
+    let dir = TempDir::new().unwrap();
+    assert!(matches!(
+        save(&font, &dir.path().join("doc.forma")),
+        Err(StoreError::Invalid(_))
+    ));
 }

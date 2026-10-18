@@ -16,6 +16,7 @@ use crate::tools::inputs::{check_grid, default_grid, glyph_label, selected_glyph
 use crate::tools::limits::parse_checked;
 use crate::tools::mutate::{Edit, Mutation, MutationResult, OpArgs, Translation, mutate, run_edit};
 use crate::tools::plans::OrPlan;
+use crate::tools::report::{Detail, ReportRef, write_report};
 use crate::tools::steps::Steps;
 use crate::tools::{Bounded, json_output};
 
@@ -135,6 +136,11 @@ pub struct GeometryCheckArgs {
     #[serde(default = "default_grid")]
     #[schemars(range(min = 0.0))]
     pub grid: f64,
+    /// How much to list: `summary` (the default) gives totals and the
+    /// first exceptions, and writes everything to a report file
+    /// (`report_path`); `full` lists up to 200 entries.
+    #[serde(default)]
+    pub detail: Detail,
 }
 
 /// Result of `geometry_check`.
@@ -154,6 +160,9 @@ pub struct GeometryCheckResult {
     /// glyphs at a time with `glyphs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Where the complete detail went.
+    #[serde(flatten)]
+    pub report: ReportRef,
 }
 
 /// One geometry issue of a glyph.
@@ -194,6 +203,11 @@ pub struct GeometryFixOpArgs {
     #[serde(default = "default_grid")]
     #[schemars(range(min = 0.0))]
     pub grid: f64,
+    /// How much to list: `summary` (the default) gives totals and the
+    /// first exceptions, and writes everything to a report file
+    /// (`report_path`); `full` lists up to 200 entries.
+    #[serde(default)]
+    pub detail: Detail,
 }
 
 impl OpArgs for GeometryFixOpArgs {
@@ -222,6 +236,9 @@ pub struct GeometryFixResult {
     /// The number of fixable issues of the requested kinds found before the
     /// fix.
     pub fixed: usize,
+    /// Where the complete detail went.
+    #[serde(flatten)]
+    pub report: ReportRef,
 }
 
 /// Arguments of `remove_overlap`.
@@ -367,18 +384,18 @@ pub(crate) fn geometry_fix_commands(
 fn geometry_check(
     engine: &mut Engine,
     _actor: &Actor,
-    args: Value,
+    raw: Value,
 ) -> Result<ToolOutput, ToolError> {
-    let args: GeometryCheckArgs = parse_checked(args)?;
+    let args: GeometryCheckArgs = parse_checked(raw.clone())?;
     check_grid(args.grid)?;
     let open = engine.doc(&args.doc)?;
     let font = open.font();
-    let issues = Bounded::of(
-        selected_glyphs(font, args.glyphs.as_deref())?
-            .into_iter()
-            .flat_map(|glyph| glyph_issues(font, glyph, args.grid))
-            .collect(),
-    );
+    let all: Vec<GlyphIssue> = selected_glyphs(font, args.glyphs.as_deref())?
+        .into_iter()
+        .flat_map(|glyph| glyph_issues(font, glyph, args.grid))
+        .collect();
+    let file = write_report(engine, Some(&args.doc), CHECK.name, &raw, &all);
+    let issues = Bounded::within(all, args.detail.list_budget());
     json_output(&GeometryCheckResult {
         rev: open.rev().0,
         note: issues.note(
@@ -388,13 +405,16 @@ fn geometry_check(
         total: issues.total,
         truncated: issues.truncated,
         issues: issues.items,
+        report: file,
     })
 }
 
 fn geometry_fix(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
     let call = Mutation::<GeometryFixOpArgs>::parse(&args)?;
+    let detail = call.op.detail;
     let font = Arc::clone(engine.doc(&call.doc)?.font());
     let (fixed, (label, cmds)) = plan_fixes(&font, call.op)?;
+    let body = serde_json::json!({ "fixed": fixed, "commands": &cmds });
     let edit = Edit {
         tool: FIX.name,
         args: &args,
@@ -404,7 +424,9 @@ fn geometry_fix(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
         label,
         steps: Steps::of(&font, cmds)?,
     };
-    mutate(engine, actor, edit, |_, result| {
+    mutate(engine, actor, edit, |engine, result| {
+        let file = write_report(engine, Some(&call.doc), FIX.name, &args, &body);
+        let result = result.shortened(detail);
         Ok(GeometryFixResult {
             rev: result.rev,
             tx: result.tx,
@@ -413,6 +435,7 @@ fn geometry_fix(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
             touched_truncated: result.touched_truncated,
             journal_warning: result.journal_warning,
             fixed,
+            report: file,
         })
     })
 }

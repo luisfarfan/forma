@@ -97,7 +97,18 @@ fn long_lists_are_cut_with_exact_totals() {
         assert_eq!(one["total"], json!(per_glyph));
         assert_eq!(one["truncated"], json!(false));
         assert!(one.get("note").is_none(), "{one}");
-        let checked = ok(&mut engine, "geometry_check", json!({ "doc": doc }));
+        // The summary lists a few; `full` keeps the long, bounded list.
+        let summary = ok(&mut engine, "geometry_check", json!({ "doc": doc }));
+        let listed = summary["issues"].as_array().map_or(0, Vec::len);
+        assert!((1..=20).contains(&listed), "{listed}");
+        assert_eq!(summary["truncated"], json!(true));
+        assert!(summary["report_path"].is_string(), "{summary}");
+        assert_eq!(summary["total"], json!(300 * per_glyph));
+        let checked = ok(
+            &mut engine,
+            "geometry_check",
+            json!({ "doc": doc, "detail": "full" }),
+        );
         let issues = checked["issues"].as_array().expect("issues");
         assert!(
             issues.len() <= CAP && issues.len() > 100,
@@ -134,7 +145,11 @@ fn long_lists_are_cut_with_exact_totals() {
         let font = forma_store::load(&path).expect("load");
         let full = forma_validate::validate(&font);
         assert!(full.findings.len() > CAP, "{}", full.findings.len());
-        let validated = ok(&mut engine, "validate", json!({ "doc": doc }));
+        let validated = ok(
+            &mut engine,
+            "validate",
+            json!({ "doc": doc, "detail": "full" }),
+        );
         let report = &validated["report"];
         let listed = report["findings"].as_array().expect("findings").len();
         assert!(listed <= CAP && listed > 100, "{listed}");

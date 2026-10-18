@@ -68,7 +68,7 @@ pub fn check_charset(font: &Font, codepoints: &[u32]) -> CharsetReport {
         .iter()
         .filter_map(|id| font.glyphs.get(id))
         .map(|glyph| &**glyph)
-        .filter(|glyph: &&Glyph| glyph.export);
+        .filter(|glyph: &&Glyph| glyph.is_exported());
     for glyph in glyphs {
         let covers: Vec<u32> = glyph
             .unicodes

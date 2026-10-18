@@ -2,9 +2,10 @@
 //! `kerning_check`.
 
 use std::collections::{BTreeSet, HashSet};
+use std::sync::Arc;
 
 use forma_edit::{Command, GlyphRef, KernRefInput};
-use forma_model::{Actor, Font, GlyphId, KernRef, KernSide, KerningGroup, MasterId};
+use forma_model::{Actor, Font, GlyphId, KernRef, KernSide, KerningGroup, MasterId, Rev};
 use forma_spacing::{KerningParams, MAX_CHECK_PAIRS, auto_kerning, collisions_among};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -15,8 +16,12 @@ use crate::errors::{ToolError, from_spacing_error};
 use crate::registry::{CommandSpec, Effects, OutputKind, ToolOutput, Toolset, schema_of};
 use crate::tools::inputs::{find_glyph, find_master};
 use crate::tools::limits::{limit_exceeded, parse_checked};
-use crate::tools::mutate::{Mutation, MutationResult, OpArgs, Translation, run_edit};
+use crate::tools::mutate::{
+    Edit, Mutation, MutationResult, OpArgs, ReportedMutation, Translation, mutate, run_edit,
+};
 use crate::tools::plans::OrPlan;
+use crate::tools::report::{Detail, ReportRef, write_report};
+use crate::tools::steps::Steps;
 use crate::tools::{Bounded, json_output};
 
 /// The glyph that is never kerned.
@@ -92,7 +97,7 @@ pub(crate) const AUTO: CommandSpec = CommandSpec {
     effects: Effects::DESTRUCTIVE,
     output: OutputKind::Json,
     input_schema: schema_of::<KerningAutoArgs>,
-    output_schema: Some(schema_of::<OrPlan<MutationResult>>),
+    output_schema: Some(schema_of::<OrPlan<ReportedMutation>>),
     handler: kerning_auto,
 };
 
@@ -142,7 +147,7 @@ fn kerning_glyphs(
             .iter()
             .filter_map(|id| font.glyphs.get(id))
             .filter(|glyph| {
-                glyph.export
+                glyph.is_exported()
                     && glyph.layers.get(&master).is_some_and(|layer| {
                         layer.advance_width != 0.0
                             && (!layer.paths.is_empty() || !layer.components.is_empty())
@@ -201,6 +206,11 @@ pub struct KerningGetArgs {
     /// Only the groups and pairs of these glyphs, by name or id.
     #[serde(default)]
     pub glyphs: Option<Vec<GlyphRef>>,
+    /// How much to list: `summary` (the default) gives totals and the
+    /// first exceptions, and writes everything to a report file
+    /// (`report_path`); `full` lists up to 200 entries.
+    #[serde(default)]
+    pub detail: Detail,
 }
 
 /// A kerning group as `kerning_get` lists it.
@@ -248,6 +258,9 @@ pub struct KerningGetResult {
     /// Present when a list was cut: how to see the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Where the complete detail went.
+    #[serde(flatten)]
+    pub report: ReportRef,
 }
 
 /// Whether a side of a pair involves one of `wanted`, directly or through a
@@ -267,8 +280,8 @@ fn involves(font: &Font, wanted: &BTreeSet<GlyphId>, reference: KernRef) -> bool
 /// glyph sorts before a group of the same name).
 type SortKey = (String, bool);
 
-fn kerning_get(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
-    let args: KerningGetArgs = parse_checked(args)?;
+fn kerning_get(engine: &mut Engine, _actor: &Actor, raw: Value) -> Result<ToolOutput, ToolError> {
+    let args: KerningGetArgs = parse_checked(raw.clone())?;
     let open = engine.doc(&args.doc)?;
     let font = open.font();
     let master = find_master(font, args.master)?;
@@ -334,7 +347,18 @@ fn kerning_get(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<ToolO
         })
         .collect();
 
-    let (groups, pairs) = (Bounded::of(groups), Bounded::of(pairs));
+    let file = write_report(
+        engine,
+        Some(&args.doc),
+        GET.name,
+        &raw,
+        &serde_json::json!({ "groups": &groups, "pairs": &pairs }),
+    );
+    let budget = args.detail.list_budget();
+    let (groups, pairs) = (
+        Bounded::within(groups, budget),
+        Bounded::within(pairs, budget),
+    );
     let hint = "pass `glyphs` to list fewer";
     let note = [groups.note("groups", hint), pairs.note("pairs", hint)]
         .into_iter()
@@ -349,6 +373,7 @@ fn kerning_get(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<ToolO
         pairs_truncated: pairs.truncated,
         pairs: pairs.items,
         note,
+        report: file,
     })
 }
 
@@ -508,6 +533,11 @@ pub struct KerningAutoOpArgs {
     /// containing them); true when omitted.
     #[serde(default = "default_replace")]
     pub replace: bool,
+    /// How much to list: `summary` (the default) gives totals and the
+    /// first exceptions, and writes everything to a report file
+    /// (`report_path`); `full` lists up to 200 entries.
+    #[serde(default)]
+    pub detail: Detail,
 }
 
 impl OpArgs for KerningAutoOpArgs {
@@ -683,7 +713,26 @@ pub(crate) fn kerning_auto_commands(
 }
 
 fn kerning_auto(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOutput, ToolError> {
-    run_edit(engine, actor, AUTO.name, &args, kerning_auto_commands)
+    let call = Mutation::<KerningAutoOpArgs>::parse(&args)?;
+    let detail = call.op.detail;
+    let font = Arc::clone(engine.doc(&call.doc)?.font());
+    let (label, cmds) = kerning_auto_commands(&font, call.op)?;
+    let body = serde_json::json!({ "commands": &cmds });
+    let edit = Edit {
+        tool: AUTO.name,
+        args: &args,
+        doc: &call.doc,
+        base_rev: Rev(call.base_rev),
+        dry_run: call.dry_run,
+        label,
+        steps: Steps::of(&font, cmds)?,
+    };
+    mutate(engine, actor, edit, |engine, result| {
+        Ok(ReportedMutation {
+            mutation: result.shortened(detail),
+            report: write_report(engine, Some(&call.doc), AUTO.name, &args, &body),
+        })
+    })
 }
 
 // --------------------------------------------------------- kerning_check
@@ -705,6 +754,11 @@ pub struct KerningCheckArgs {
     /// omitted (only overlaps are reported).
     #[serde(default)]
     pub min_distance: Option<f64>,
+    /// How much to list: `summary` (the default) gives totals and the
+    /// first exceptions, and writes everything to a report file
+    /// (`report_path`); `full` lists up to 200 entries.
+    #[serde(default)]
+    pub detail: Detail,
 }
 
 /// A pair whose ink is too close.
@@ -736,14 +790,13 @@ pub struct KerningCheckResult {
     /// Present when the list was cut: how to see the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Where the complete detail went.
+    #[serde(flatten)]
+    pub report: ReportRef,
 }
 
-fn kerning_check(
-    engine: &mut Engine,
-    _actor: &Actor,
-    args: Value,
-) -> Result<ToolOutput, ToolError> {
-    let args: KerningCheckArgs = parse_checked(args)?;
+fn kerning_check(engine: &mut Engine, _actor: &Actor, raw: Value) -> Result<ToolOutput, ToolError> {
+    let args: KerningCheckArgs = parse_checked(raw.clone())?;
     let open = engine.doc(&args.doc)?;
     let font = open.font();
     let master = find_master(font, args.master)?;
@@ -771,16 +824,16 @@ fn kerning_check(
         .collect();
     let found =
         collisions_among(font, master, &ids, &pairs, min_distance).map_err(from_spacing_error)?;
-    let collisions = Bounded::of(
-        found
-            .into_iter()
-            .map(|c| CollisionInfo {
-                left: glyph_name(font, c.left),
-                right: glyph_name(font, c.right),
-                distance: c.distance,
-            })
-            .collect::<Vec<_>>(),
-    );
+    let all: Vec<CollisionInfo> = found
+        .into_iter()
+        .map(|c| CollisionInfo {
+            left: glyph_name(font, c.left),
+            right: glyph_name(font, c.right),
+            distance: c.distance,
+        })
+        .collect();
+    let file = write_report(engine, Some(&args.doc), CHECK.name, &raw, &all);
+    let collisions = Bounded::within(all, args.detail.list_budget());
     json_output(&KerningCheckResult {
         rev: open.rev().0,
         checked_pairs: pairs.len(),
@@ -791,6 +844,7 @@ fn kerning_check(
         collisions_total: collisions.total,
         collisions_truncated: collisions.truncated,
         collisions: collisions.items,
+        report: file,
     })
 }
 
@@ -838,6 +892,7 @@ mod tests {
                 unicodes: Vec::new(),
                 export: true,
                 layers,
+                provenance: None,
             };
             Arc::make_mut(&mut font.glyphs).insert(id, Arc::new(glyph));
             font.glyph_order.push(id);
@@ -873,6 +928,7 @@ mod tests {
             min_distance: None,
             grouping: None,
             replace,
+            detail: Detail::Full,
         }
     }
 

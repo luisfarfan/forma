@@ -41,7 +41,53 @@ use rmcp::service::{QuitReason, ServerInitializeError};
 use rmcp::transport::IntoTransport;
 use rmcp::{RoleServer, ServiceExt};
 
-pub use server::FormaServer;
+pub use server::{FormaServer, ServerOptions};
+
+/// The size of the tool list a client receives, in characters of compact
+/// JSON, by part. Tokens are only estimated (characters / 4): what a client
+/// actually spends depends on how it loads tools; measure it per client.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct CatalogSize {
+    /// How many tools are listed.
+    pub tools: usize,
+    /// The whole list.
+    pub chars_total: usize,
+    /// The argument schemas.
+    pub chars_input_schemas: usize,
+    /// The result schemas.
+    pub chars_output_schemas: usize,
+    /// The descriptions.
+    pub chars_descriptions: usize,
+    /// A rough estimate of the tokens of the whole list.
+    pub est_tokens: usize,
+}
+
+/// The size of the tool list a server with `cfg` and `options` sends.
+#[must_use]
+pub fn catalog_size(cfg: EngineConfig, options: ServerOptions) -> CatalogSize {
+    let engine = forma_engine::Engine::new(cfg);
+    let tools = server::tools_of(&engine, options);
+    let len = |value: &serde_json::Value| serde_json::to_string(value).map_or(0, |t| t.len());
+    let mut size = CatalogSize {
+        tools: tools.len(),
+        chars_total: 0,
+        chars_input_schemas: 0,
+        chars_output_schemas: 0,
+        chars_descriptions: 0,
+        est_tokens: 0,
+    };
+    for tool in &tools {
+        let value = serde_json::to_value(tool).unwrap_or_default();
+        size.chars_total += len(&value);
+        size.chars_input_schemas += len(&value["inputSchema"]);
+        if !value["outputSchema"].is_null() {
+            size.chars_output_schemas += len(&value["outputSchema"]);
+        }
+        size.chars_descriptions += value["description"].as_str().map_or(0, str::len);
+    }
+    size.est_tokens = size.chars_total / 4;
+    size
+}
 
 /// Serves MCP over `transport` with a new engine configured by `cfg`, until
 /// the client goes away.
@@ -56,7 +102,27 @@ where
     T: IntoTransport<RoleServer, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
-    let running = match FormaServer::new(cfg).serve(transport).await {
+    serve_with(cfg, ServerOptions::default(), transport).await
+}
+
+/// [`serve`] with presentation options for the tool list.
+///
+/// # Errors
+///
+/// As [`serve`].
+pub async fn serve_with<T, E, A>(
+    cfg: EngineConfig,
+    options: ServerOptions,
+    transport: T,
+) -> anyhow::Result<()>
+where
+    T: IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let running = match FormaServer::with_options(cfg, options)
+        .serve(transport)
+        .await
+    {
         Ok(running) => running,
         // End of input before any request: nothing to serve.
         Err(ServerInitializeError::ConnectionClosed(_)) => return Ok(()),
@@ -76,4 +142,13 @@ where
 /// As [`serve`].
 pub async fn serve_stdio(cfg: EngineConfig) -> anyhow::Result<()> {
     serve(cfg, rmcp::transport::stdio()).await
+}
+
+/// [`serve_stdio`] with presentation options for the tool list.
+///
+/// # Errors
+///
+/// As [`serve`].
+pub async fn serve_stdio_with(cfg: EngineConfig, options: ServerOptions) -> anyhow::Result<()> {
+    serve_with(cfg, options, rmcp::transport::stdio()).await
 }

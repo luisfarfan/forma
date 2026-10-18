@@ -95,6 +95,10 @@ pub struct EngineConfig {
     /// The enabled toolsets; `None` enables all of them. The tools of a
     /// disabled toolset are refused and not listed.
     pub toolsets: Option<Vec<Toolset>>,
+    /// A tool profile (see [`profile`](crate::registry::profile)): only its
+    /// tools are accepted and listed, within the enabled toolsets. `None`
+    /// serves every tool.
+    pub profile: Option<&'static str>,
 }
 
 /// The handle of an open document: `"doc_<32 hex digits>"`, random, valid
@@ -356,9 +360,17 @@ impl Engine {
             .collect()
     }
 
-    /// Refuses a command of a disabled toolset, or one that is not read-only
-    /// in read-only mode (save the exemptions of [`ALLOWED_IN_READ_ONLY`]).
+    /// Refuses a command outside the profile or of a disabled toolset, or
+    /// one that is not read-only in read-only mode (save the exemptions of [`ALLOWED_IN_READ_ONLY`]).
     pub(crate) fn check_available(&self, spec: &CommandSpec) -> Result<(), ToolError> {
+        if let Some(name) = self.cfg.profile
+            && !crate::registry::profile(name).is_some_and(|tools| tools.contains(&spec.name))
+        {
+            return Err(ToolError::unsupported(format!(
+                "tool '{}' is not in the '{name}' profile",
+                spec.name
+            )));
+        }
         if !self.is_toolset_enabled(spec.toolset) {
             return Err(ToolError::unsupported(format!(
                 "toolset '{}' is disabled",

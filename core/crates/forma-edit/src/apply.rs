@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use forma_geometry::to_bezpath;
-use forma_model::{EntityKey, Font, Glyph, GlyphId, Layer, MasterId, Path, PathId};
+use forma_model::{EntityKey, Font, Glyph, GlyphId, Layer, MasterId, Path, PathId, Review};
 
 use crate::{Command, EditError, GlyphRef};
 
@@ -142,7 +142,13 @@ pub fn apply(font: &Font, cmd: &Command) -> Result<(Font, BTreeSet<EntityKey>), 
         Command::DeleteKerningGroup { name, side } => {
             kerning::delete_kerning_group(&mut next, name, *side)?
         }
+        Command::SetProvenance { glyph, provenance } => {
+            glyphs::set_provenance(&mut next, glyph, provenance.as_ref())?
+        }
     };
+    if !matches!(cmd, Command::SetProvenance { .. }) {
+        mark_design_changes(font, &mut next, &touched)?;
+    }
     next.validate_invariants().map_err(|error| {
         EditError::InvalidArgument(format!("the command would break a font invariant: {error}"))
     })?;
@@ -172,7 +178,8 @@ pub fn affected_glyph_count(font: &Font, cmd: &Command) -> usize {
         | Command::ContourEdit { glyph, .. }
         | Command::NodesEdit { glyph, .. }
         | Command::SetMetrics { glyph, .. }
-        | Command::SetComponents { glyph, .. } => usize::from(find_glyph(font, glyph).is_some()),
+        | Command::SetComponents { glyph, .. }
+        | Command::SetProvenance { glyph, .. } => usize::from(find_glyph(font, glyph).is_some()),
         Command::DeleteGlyphs { glyphs }
         | Command::Decompose { glyphs, .. }
         | Command::RemoveOverlap { glyphs, .. } => distinct(glyphs),
@@ -184,6 +191,33 @@ pub fn affected_glyph_count(font: &Font, cmd: &Command) -> usize {
         | Command::SetKerningGroup { .. }
         | Command::DeleteKerningGroup { .. } => 0,
     }
+}
+
+// -------------------------------------------------------------- provenance
+
+/// After a command: every touched glyph with a provenance whose design
+/// changed (see [`Glyph::same_design`]) is marked as edited, and an approval
+/// or rejection of it no longer stands, so it goes back to review. Changes of
+/// metrics or metadata alone keep the review state.
+fn mark_design_changes(before: &Font, next: &mut Font, touched: &Touched) -> Result<(), EditError> {
+    for key in touched {
+        let EntityKey::Glyph(id) = key else { continue };
+        let (Some(old), Some(new)) = (before.glyphs.get(id), next.glyphs.get(id)) else {
+            continue;
+        };
+        if new.provenance.is_none() || old.same_design(new) {
+            continue;
+        }
+        let glyph = glyph_mut(next, *id)?;
+        if let Some(provenance) = glyph.provenance.as_mut() {
+            provenance.edited = true;
+            if provenance.review != Review::Pending {
+                provenance.review = Review::Pending;
+                provenance.approved_geometry = None;
+            }
+        }
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------- resolution

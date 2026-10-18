@@ -12,7 +12,8 @@ use forma_engine::{CommandSpec, EngineConfig, ErrorCode, ToolError, ToolOutput, 
 use serde_json::{Value, json};
 
 use crate::cli::{
-    CallArgs, Command, ConvertArgs, ExportArgs, GenDocsArgs, McpArgs, NewArgs, PathArg,
+    CallArgs, Command, ConvertArgs, ExportArgs, GenDocsArgs, McpArgs, NewArgs, OutputSchemasArg,
+    PathArg,
 };
 use crate::docs;
 use crate::output::{EXIT_FAILURE, Exit, Failure, print_json, report};
@@ -274,7 +275,17 @@ fn mcp(args: McpArgs) -> Exit {
         lock_dir: lock_dir(args.lock_dir),
         read_only: args.read_only,
         toolsets: args.toolsets.map(with_core),
+        profile: args.profile,
     };
+    let options = forma_mcp::ServerOptions {
+        output_schemas: args.output_schemas == OutputSchemasArg::Full,
+    };
+    if args.print_catalog_size {
+        let size = forma_mcp::catalog_size(cfg, options);
+        let text = serde_json::to_string_pretty(&size).context("cannot encode the size")?;
+        println!("{text}");
+        return Ok(0);
+    }
 
     if std::io::stdin().is_terminal() {
         eprintln!(
@@ -285,7 +296,7 @@ fn mcp(args: McpArgs) -> Exit {
         .enable_all()
         .build()
         .context("cannot start the async runtime")?;
-    let served = runtime.block_on(forma_mcp::serve_stdio(cfg));
+    let served = runtime.block_on(forma_mcp::serve_stdio_with(cfg, options));
     // The stdin reader is a blocking task: do not wait for it for long.
     runtime.shutdown_timeout(Duration::from_secs(2));
     served?;

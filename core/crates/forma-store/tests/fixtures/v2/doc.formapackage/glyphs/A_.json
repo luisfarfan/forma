@@ -1,0 +1,45 @@
+{
+  "export": true,
+  "id": "00000000-0000-0000-0000-000000000100",
+  "layers": {
+    "00000000-0000-0000-0000-000000000010": {
+      "advance_width": 700.0,
+      "paths": [
+        {
+          "closed": true,
+          "id": 1,
+          "nodes": [
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 50.0,
+              "y": 0.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 650.0,
+              "y": 0.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 650.0,
+              "y": 600.0
+            },
+            {
+              "kind": "line",
+              "smooth": false,
+              "x": 50.0,
+              "y": 600.0
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "name": "A",
+  "unicodes": [
+    65
+  ]
+}

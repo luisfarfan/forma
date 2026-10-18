@@ -9,12 +9,13 @@ use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use forma_edit::{Command, GlyphRef};
-use forma_model::{Actor, EntityKey, Font, MasterId, Rev};
+use forma_model::{Actor, EntityKey, Font, MasterId, Provenance, ProvenanceDetail, Rev, Source};
 use forma_trace::{Candidate, PaletteEntry, Row, TraceError, TraceOptions, TracedGlyph};
 use image::RgbImage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::engine::{DocHandle, Engine};
 use crate::errors::{ToolError, from_trace_error};
@@ -25,6 +26,7 @@ use crate::tools::limits::{limit_exceeded, parse_checked};
 use crate::tools::mutate::{Edit, Mutation, OpArgs, mutate};
 use crate::tools::plans::OrPlan;
 use crate::tools::preview::image_output;
+use crate::tools::report::{Detail, ReportRef, write_report};
 use crate::tools::steps::Steps;
 use crate::tools::{Bounded, json_output};
 
@@ -198,6 +200,11 @@ pub struct ImageTraceOpArgs {
     /// The master to draw; the default master when omitted.
     #[serde(default)]
     pub master: Option<MasterId>,
+    /// How much to list: `summary` (the default) gives totals and the
+    /// first exceptions, and writes everything to a report file
+    /// (`report_path`); `full` lists up to 200 entries.
+    #[serde(default)]
+    pub detail: Detail,
 }
 
 impl OpArgs for ImageTraceOpArgs {
@@ -234,8 +241,17 @@ pub struct ImageTraceResult {
     /// journal: what went wrong.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_warning: Option<String>,
-    /// The glyphs traced, in the order of the assignments.
+    /// The glyphs traced, in the order of the assignments: all of them up to
+    /// 20 (200 with `detail: full`); beyond that, those with the lowest
+    /// overlap (see `traced_total`, `iou_stats` and the report).
     pub traced: Vec<TracedEntry>,
+    /// The lowest, median and highest overlap of the traced glyphs.
+    pub iou_stats: [f64; 3],
+    /// How many glyphs were traced.
+    pub traced_total: usize,
+    /// Where the complete detail went.
+    #[serde(flatten)]
+    pub report: ReportRef,
 }
 
 /// Arguments of `trace_compare`.
@@ -350,6 +366,12 @@ fn trace_options(color: Option<&str>, tolerance: Option<f64>) -> Result<TraceOpt
 /// on what is read, at most one byte past the limit, so that a file that
 /// grows in between cannot be read whole).
 fn read_image(engine: &Engine, path: &str) -> Result<RgbImage, ToolError> {
+    read_image_hashed(engine, path).map(|(image, _)| image)
+}
+
+/// Reads and decodes the image at `path`, with the lowercase hex SHA-256 of
+/// its bytes (recorded in the provenance of traced glyphs).
+fn read_image_hashed(engine: &Engine, path: &str) -> Result<(RgbImage, String), ToolError> {
     let resolved = engine.check_allowed(FsPath::new(path), true)?;
     let metadata = std::fs::metadata(&resolved)
         .map_err(|error| ToolError::io(format!("cannot read '{path}': {error}")))?;
@@ -380,7 +402,12 @@ fn read_image(engine: &Engine, path: &str) -> Result<RgbImage, ToolError> {
         // The file grew after the metadata check.
         return Err(too_large(read));
     }
-    forma_trace::decode(&bytes).map_err(from_trace_error)
+    let sha256 = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let image = forma_trace::decode(&bytes).map_err(from_trace_error)?;
+    Ok((image, sha256))
 }
 
 /// Reads the file at `path`, but no more than `limit + 1` bytes: one more
@@ -463,13 +490,80 @@ fn attribute_failure(
     Err(from_trace_error(error))
 }
 
+/// At most `keep` entries: all of them when they fit, else those with the
+/// lowest overlap (the ones to look at), still in assignment order.
+fn lowest_iou_in_order(entries: Vec<TracedEntry>, keep: usize) -> Vec<TracedEntry> {
+    if entries.len() <= keep {
+        return entries;
+    }
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by(|&a, &b| entries[a].iou.total_cmp(&entries[b].iou).then(a.cmp(&b)));
+    let mut chosen: Vec<usize> = order.into_iter().take(keep).collect();
+    chosen.sort_unstable();
+    chosen
+        .into_iter()
+        .map(|index| entries[index].clone())
+        .collect()
+}
+
+/// The lowest, median and highest overlap of `entries` (zeros when empty).
+fn iou_stats(entries: &[TracedEntry]) -> [f64; 3] {
+    let mut values: Vec<f64> = entries.iter().map(|entry| entry.iou).collect();
+    values.sort_by(f64::total_cmp);
+    match (values.first(), values.last()) {
+        (Some(&low), Some(&high)) => [low, values[values.len() / 2], high],
+        _ => [0.0; 3],
+    }
+}
+
+/// The pixel box `[left, top, right, bottom]` of a traced outline, mapped
+/// back to the image through its placement.
+fn traced_px_rect(glyph: &TracedGlyph) -> [f64; 4] {
+    let (mut x0, mut y0, mut x1, mut y1) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for node in glyph.paths.iter().flat_map(|path| &path.nodes) {
+        x0 = x0.min(node.x);
+        x1 = x1.max(node.x);
+        y0 = y0.min(node.y);
+        y1 = y1.max(node.y);
+    }
+    if !x0.is_finite() {
+        return [0.0; 4];
+    }
+    let p = &glyph.placement;
+    let px = |x: f64| p.origin_px.0 + (x - p.lsb) / p.scale;
+    let py = |y: f64| p.origin_px.1 - y / p.scale;
+    [px(x0), py(y1), px(x1), py(y0)]
+}
+
+/// The provenance of a glyph traced from the image with hash `image_sha256`.
+fn traced_provenance(image_sha256: &str, glyph: &TracedGlyph) -> Provenance {
+    Provenance::pending(
+        Source::Traced,
+        0,
+        ProvenanceDetail::Traced {
+            image_sha256: image_sha256.to_owned(),
+            candidates: vec![glyph.candidate],
+            px_rect: traced_px_rect(glyph),
+            iou_mask: glyph.iou.clamp(0.0, 1.0),
+            hausdorff_p95_px: None,
+            topology_ok: None,
+        },
+    )
+}
+
 /// The commands that give each assigned glyph its traced outline and advance
-/// width.
+/// width, and record that it was traced (pending review).
 fn trace_commands(
     font: &Font,
     master: Option<MasterId>,
     assignments: &[Assignment],
     traced: &[TracedGlyph],
+    image_sha256: &str,
 ) -> Vec<Command> {
     let default_master = font.default_master().id;
     let mut cmds = Vec::new();
@@ -517,6 +611,10 @@ fn trace_commands(
                 paths: glyph.paths.clone(),
             });
         }
+        cmds.push(Command::SetProvenance {
+            glyph: GlyphRef::Name(assignment.name.clone()),
+            provenance: Some(traced_provenance(image_sha256, glyph)),
+        });
     }
     cmds
 }
@@ -582,7 +680,7 @@ fn image_trace(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
         }
     }
     let opts = trace_options(op.color.as_deref(), op.tolerance)?;
-    let image = read_image(engine, &op.path)?;
+    let (image, image_sha256) = read_image_hashed(engine, &op.path)?;
     let font = Arc::clone(engine.doc(&call.doc)?.font());
     let master = find_master(&font, op.master)?;
     let cap = cap_height(&font, master)?;
@@ -599,7 +697,13 @@ fn image_trace(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
             nodes: glyph.paths.iter().map(|path| path.nodes.len()).sum(),
         })
         .collect();
-    let cmds = trace_commands(&font, op.master, &op.assignments, &traced);
+    let cmds = trace_commands(&font, op.master, &op.assignments, &traced, &image_sha256);
+    let detail = op.detail;
+    let body = serde_json::json!({ "traced": &entries });
+    let traced_total = entries.len();
+    let iou_stats = iou_stats(&entries);
+    let (keep, _) = detail.list_budget();
+    let entries = lowest_iou_in_order(entries, keep);
     let edit = Edit {
         tool: TRACE.name,
         args: &args,
@@ -609,7 +713,9 @@ fn image_trace(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
         label: format!("Trace {} glyphs from an image", entries.len()),
         steps: Steps::of(&font, cmds)?,
     };
-    mutate(engine, actor, edit, |_engine, result| {
+    mutate(engine, actor, edit, |engine, result| {
+        let file = write_report(engine, Some(&call.doc), TRACE.name, &args, &body);
+        let result = result.shortened(detail);
         Ok(ImageTraceResult {
             rev: result.rev,
             tx: result.tx,
@@ -618,6 +724,9 @@ fn image_trace(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
             touched_truncated: result.touched_truncated,
             journal_warning: result.journal_warning,
             traced: entries,
+            iou_stats,
+            traced_total,
+            report: file,
         })
     })
 }

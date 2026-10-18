@@ -159,14 +159,14 @@ fn exported_glyphs(font: &Font) -> Vec<&Glyph> {
     let mut glyphs = Vec::new();
     for id in &font.glyph_order {
         if let Some(glyph) = font.glyphs.get(id)
-            && glyph.export
+            && glyph.is_exported()
             && seen.insert(*id)
         {
             glyphs.push(&**glyph);
         }
     }
     for (id, glyph) in font.glyphs.iter() {
-        if glyph.export && !seen.contains(id) {
+        if glyph.is_exported() && !seen.contains(id) {
             glyphs.push(&**glyph);
         }
     }
@@ -235,7 +235,7 @@ fn ufo_glyph(
             .glyphs
             .get(&component.base)
             .ok_or_else(|| InteropError::Norad(unknown_base(glyph, component.base)))?;
-        if base.export {
+        if base.is_exported() {
             let name =
                 Name::new(&base.name).map_err(|error| InteropError::Norad(error.to_string()))?;
             out.components
@@ -282,7 +282,7 @@ fn write_kerning(font: &Font, master: MasterId, ufo: &mut norad::Font) -> Result
     let exported_name = |id: GlyphId| {
         font.glyphs
             .get(&id)
-            .filter(|glyph| glyph.export)
+            .filter(|glyph| glyph.is_exported())
             .map(|glyph| glyph.name.as_str())
     };
     let to_name =

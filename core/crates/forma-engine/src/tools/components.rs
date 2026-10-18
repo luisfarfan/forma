@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use forma_edit::{Command, ComponentInput, GlyphRef};
 use forma_geometry::layer_bbox;
-use forma_model::{Actor, Font, MasterId, Rev, Transform};
+use forma_model::{Actor, Font, MasterId, Provenance, ProvenanceDetail, Rev, Source, Transform};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -320,9 +320,17 @@ pub(crate) fn glyph_compose_commands(
             paths: Vec::new(),
         },
         Command::SetComponents {
-            glyph: GlyphRef::Name(op.name),
+            glyph: GlyphRef::Name(op.name.clone()),
             master: None,
             components,
+        },
+        Command::SetProvenance {
+            glyph: GlyphRef::Name(op.name),
+            provenance: Some(Provenance::pending(
+                Source::Composed,
+                0,
+                ProvenanceDetail::None,
+            )),
         },
     ];
     Ok((label, cmds))
