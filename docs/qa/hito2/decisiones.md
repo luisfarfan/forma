@@ -41,6 +41,8 @@ La revisión final (55c98dd..48c489c) dejó una sola ola de correcciones. Las re
 26. **`preview_text` deja en blanco U+0020 y U+00A0 sin glifo**, con `round(UPM / 4)`, el ancho del `space` que añade la exportación (que solo añade U+0020). Costo si es incorrecta: el preview de U+00A0 no coincide con la fuente exportada, que no lo tiene.
 27. **Errores de límite del trazado:** el tope de piezas de tinta en bruto es la variante nueva `TraceError::TooManySpecks` ("too many ink specks before noise filtering"), y `TooLarge` lleva `{limit, actual}` del límite superado (bytes si el archivo es demasiado grande; si no, píxeles). Costo si es incorrecta: ninguno.
 
+28. **Chrome en la CI solo en Linux.** En los runners de macOS de GitHub, Chrome sin interfaz no tiene pantalla (`CVDisplayLinkCreateWithCGDisplay failed`) y se cuelga aun con perfil limpio y flags de CI. El criterio 6 exige la carga del WOFF2 en Chrome en la CI de Linux, así que Ubuntu corre con `FORMA_REQUIRE_CHROME=1`. macOS y Windows corren con `FORMA_SKIP_CHROME=1`, que imprime `[SKIPPED]` con el motivo; en local el chequeo sigue corriendo. Costo si es incorrecta: no hay evidencia de Chrome en la CI de macOS y Windows (la cubren Linux y la ejecución local en macOS).
+
 ## Cambios aditivos del contrato `tools/list`
 
 El snapshot de `tools/list` cambió varias veces durante el hito, siempre de forma **aditiva** (ninguna de las 35 herramientas del Hito 1 perdió un campo ni cambió de tipo):
