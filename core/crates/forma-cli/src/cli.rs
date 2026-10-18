@@ -8,7 +8,7 @@ use forma_engine::{Policy, Toolset};
 /// The FORMA font editor on the command line, and its MCP server.
 ///
 /// Every subcommand is a thin facade over the same command registry the MCP
-/// server and the editor use: `forma call <tool>` runs any of the 35 tools.
+/// server and the editor use: `forma call <tool>` runs any of the 40 tools.
 #[derive(Debug, Parser)]
 #[command(
     name = "forma",
@@ -197,7 +197,7 @@ pub struct McpArgs {
     pub policy: PolicyArg,
     /// Only serve these toolsets (comma-separated); `core` is always included.
     /// One or more of: core, glyphs, geometry, spacing, quality, export,
-    /// preview, history. Default: all.
+    /// preview, history, components. Default: all.
     #[arg(long, value_delimiter = ',', value_parser = parse_toolset, value_name = "A,B")]
     pub toolsets: Option<Vec<Toolset>>,
     /// Refuse every tool that changes anything.

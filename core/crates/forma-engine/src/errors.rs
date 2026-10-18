@@ -5,6 +5,7 @@ use std::fmt;
 
 use forma_compile::CompileError;
 use forma_edit::{ConflictInfo, Document, EditError};
+use forma_geometry::GeometryError;
 use forma_interop::InteropError;
 use forma_model::{EntityKey, Font, GlyphId, KernRef, KerningGroupId, Rev};
 use forma_render::RenderError;
@@ -172,6 +173,19 @@ pub fn from_edit_error(error: EditError) -> ToolError {
         EditError::Conflict(ref info) => {
             let details = conflict_details(info);
             ToolError::new(ErrorCode::RevisionConflict, error.to_string()).with_details(details)
+        }
+    }
+}
+
+/// Maps a [`GeometryError`] of `stroke` onto a [`ToolError`]: a skeleton or
+/// style that cannot be stroked (`InvalidPath`) is `INVALID_ARGUMENT`; strokes
+/// that cannot be united (`Degenerate`) are `INVALID_GEOMETRY`.
+#[must_use]
+pub fn from_stroke_error(error: GeometryError) -> ToolError {
+    match error {
+        GeometryError::InvalidPath(_) => ToolError::invalid_argument(error.to_string()),
+        GeometryError::Degenerate(_) => {
+            ToolError::new(ErrorCode::InvalidGeometry, error.to_string())
         }
     }
 }

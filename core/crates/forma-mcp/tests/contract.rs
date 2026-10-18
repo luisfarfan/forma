@@ -222,12 +222,12 @@ async fn tools_list_snapshot() {
 }
 
 #[tokio::test]
-async fn tool_count_is_35() {
+async fn tool_count_is_40() {
     let root = TempDir::new().expect("tempdir");
     for era in ERAS {
         let client = connect(config(root.path()), era).await;
         let listed = tools(&client).await;
-        assert_eq!(listed.len(), 35, "{era:?}");
+        assert_eq!(listed.len(), 40, "{era:?}");
         let expected: Vec<&str> = registry().iter().map(|spec| spec.name).collect();
         assert_eq!(names(&listed), expected, "{era:?}: registry order");
         close(client).await;

@@ -183,6 +183,9 @@ const fn toolset_summary(toolset: Toolset) -> &'static str {
         Toolset::Export => "Exportación a TTF, WOFF2 y UFO.",
         Toolset::Preview => "Imágenes y SVG de glifos, texto y comparaciones.",
         Toolset::History => "Historial, deshacer, rehacer, revertir, restaurar y diff.",
+        Toolset::Components => {
+            "Componentes: fijarlos, componer glifos con marcas y descomponerlos."
+        }
         // `Toolset` is `#[non_exhaustive]`: a new one shows up without text
         // until it is written here.
         _ => "",

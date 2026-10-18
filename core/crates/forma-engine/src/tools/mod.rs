@@ -12,6 +12,7 @@ use crate::limits::{MAX_RESULT_ENTRIES, MAX_RESULT_LIST_BYTES};
 use crate::registry::ToolOutput;
 
 pub mod capabilities;
+pub mod components;
 pub mod document;
 pub mod edit_batch;
 pub mod export;
@@ -28,6 +29,7 @@ pub mod plans;
 pub mod preview;
 pub mod quality;
 pub(crate) mod steps;
+pub mod stroke;
 
 /// Deserializes the arguments of a tool; a mismatch (missing, mistyped or
 /// unknown field) is `INVALID_ARGUMENT` with serde's message.

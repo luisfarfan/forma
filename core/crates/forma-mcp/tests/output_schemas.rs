@@ -321,6 +321,54 @@ async fn every_output_validates_against_its_output_schema() {
         )
         .await);
 
+    // Components, strokes and overlaps.
+    let composed = c
+        .ok(
+            "glyph_compose",
+            json!({ "doc": doc, "base_rev": r, "name": "AB", "base": "A",
+                    "marks": [{ "glyph": "B", "position": "above" }] }),
+        )
+        .await;
+    assert_eq!(composed["glyph"]["name"], json!("AB"));
+    let r = rev(&composed);
+    let r = rev(&c
+        .planned(
+            "component_set",
+            json!({ "doc": doc, "base_rev": r, "glyph": "AB",
+                    "components": [{ "base": "A" }, { "base": "B" }] }),
+        )
+        .await);
+    let r = rev(&c
+        .ok(
+            "glyph_decompose",
+            json!({ "doc": doc, "base_rev": r, "glyphs": ["AB"] }),
+        )
+        .await);
+    let r = rev(&c
+        .ok(
+            "remove_overlap",
+            json!({ "doc": doc, "base_rev": r, "glyphs": ["AB"] }),
+        )
+        .await);
+    let r = rev(&c
+        .ok(
+            "glyph_create",
+            json!({ "doc": doc, "base_rev": r, "name": "S", "advance_width": 600 }),
+        )
+        .await);
+    let stroke = json!({ "glyph": "S", "width": 60, "cap": { "type": "round" },
+        "skeletons": [{ "nodes": [
+            { "x": 100, "y": 100, "kind": "line" },
+            { "x": 400, "y": 100, "kind": "line" }] }] });
+    let mut args = stroke.clone();
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(r);
+    let r = rev(&c.ok("glyph_stroke", args).await);
+    let mut args = stroke;
+    args["doc"] = json!(doc);
+    args["base_rev"] = json!(r);
+    let r = rev(&c.planned("glyph_stroke", args).await);
+
     // Deletion: refused without a plan, discarded, then committed.
     let error = c
         .fails(
@@ -451,7 +499,7 @@ async fn every_output_validates_against_its_output_schema() {
         Vec::<&&String>::new(),
         "tools never validated"
     );
-    assert_eq!(declared.len(), 32, "{declared:?}");
+    assert_eq!(declared.len(), 37, "{declared:?}");
     let total: usize = c.validated.values().sum();
     assert!(total > 80, "{total} results validated");
     c.client.cancel().await.expect("close");

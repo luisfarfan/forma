@@ -103,6 +103,11 @@ fn registry_order_and_names_match_spec() {
         "history_revert",
         "history_restore",
         "document_diff",
+        "component_set",
+        "glyph_compose",
+        "glyph_decompose",
+        "glyph_stroke",
+        "remove_overlap",
     ];
     let names: Vec<&str> = registry().iter().map(|spec| spec.name).collect();
     assert_eq!(names, expected);
@@ -175,6 +180,11 @@ fn implemented_schemas_deny_unknown_fields_and_describe_results() {
         "document_diff",
         "validate",
         "export_font",
+        "component_set",
+        "glyph_compose",
+        "glyph_decompose",
+        "glyph_stroke",
+        "remove_overlap",
     ];
     for name in implemented {
         let spec = forma_engine::find(name).expect("registered");
@@ -231,6 +241,9 @@ fn toolsets_effects_and_outputs_match_rulings() {
             "preview_glyph" | "preview_text" | "preview_compare" => Preview,
             "history_list" | "history_undo" | "history_redo" | "history_revert"
             | "history_restore" | "document_diff" => History,
+            "component_set" | "glyph_compose" | "glyph_decompose" => Components,
+            "glyph_stroke" => Glyphs,
+            "remove_overlap" => Geometry,
             other => panic!("unexpected tool {other}"),
         }
     };
@@ -264,6 +277,8 @@ fn toolsets_effects_and_outputs_match_rulings() {
         "export_font",
         "history_revert",
         "history_restore",
+        "component_set",
+        "glyph_stroke",
     ];
     let images = ["preview_glyph", "preview_text", "preview_compare"];
     for spec in registry() {
@@ -391,7 +406,15 @@ fn capabilities_report_limits() {
     assert_eq!(
         caps["toolsets"],
         json!([
-            "core", "glyphs", "geometry", "spacing", "quality", "export", "preview", "history"
+            "core",
+            "glyphs",
+            "geometry",
+            "spacing",
+            "quality",
+            "export",
+            "preview",
+            "history",
+            "components"
         ])
     );
     assert_eq!(
@@ -494,7 +517,7 @@ fn read_only_mode_allows_closing_documents() {
 fn toolsets_can_be_disabled() {
     let root = TempDir::new().expect("tempdir");
     let all = engine_with(&[root.path()]);
-    assert_eq!(all.enabled_specs().len(), 35);
+    assert_eq!(all.enabled_specs().len(), 40);
     assert_eq!(all.enabled_toolsets(), Toolset::ALL.to_vec());
 
     let mut engine = Engine::new(EngineConfig {

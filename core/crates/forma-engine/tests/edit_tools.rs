@@ -121,7 +121,7 @@ fn polyline_svg(count: usize) -> String {
     svg
 }
 
-const MUTATING: [&str; 10] = [
+const MUTATING: [&str; 15] = [
     "font_set_info",
     "font_set_vertical_metrics",
     "edit_batch",
@@ -132,6 +132,11 @@ const MUTATING: [&str; 10] = [
     "contour_edit",
     "nodes_edit",
     "metrics_set",
+    "component_set",
+    "glyph_compose",
+    "glyph_decompose",
+    "glyph_stroke",
+    "remove_overlap",
 ];
 
 // ------------------------------------------------------------ from the brief

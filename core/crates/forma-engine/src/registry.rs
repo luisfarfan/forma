@@ -13,8 +13,8 @@ use forma_model::Actor;
 use crate::engine::Engine;
 use crate::errors::ToolError;
 use crate::tools::{
-    capabilities, document, edit_batch, export, font, geometry, glyphs, history, metrics, outlines,
-    plans, preview, quality,
+    capabilities, components, document, edit_batch, export, font, geometry, glyphs, history,
+    metrics, outlines, plans, preview, quality, stroke,
 };
 
 /// A group of related tools that a facade can enable or disable together.
@@ -39,11 +39,13 @@ pub enum Toolset {
     Preview,
     /// History, undo/redo, revert, restore and diff.
     History,
+    /// Components: setting, composing and decomposing.
+    Components,
 }
 
 impl Toolset {
     /// Every toolset, in the order the registry introduces them.
-    pub const ALL: [Toolset; 8] = [
+    pub const ALL: [Toolset; 9] = [
         Self::Core,
         Self::Glyphs,
         Self::Geometry,
@@ -52,6 +54,7 @@ impl Toolset {
         Self::Export,
         Self::Preview,
         Self::History,
+        Self::Components,
     ];
 
     /// The serialized name, such as `"core"`.
@@ -66,6 +69,7 @@ impl Toolset {
             Self::Export => "export",
             Self::Preview => "preview",
             Self::History => "history",
+            Self::Components => "components",
         }
     }
 }
@@ -158,7 +162,7 @@ pub struct CommandSpec {
 }
 
 /// Every command, in the exact registration order of the public API.
-static REGISTRY: [CommandSpec; 35] = [
+static REGISTRY: [CommandSpec; 40] = [
     // core
     capabilities::SPEC,
     document::CREATE,
@@ -202,6 +206,12 @@ static REGISTRY: [CommandSpec; 35] = [
     history::REVERT,
     history::RESTORE,
     history::DIFF,
+    // components and geometry (Hito 2)
+    components::SET,
+    components::COMPOSE,
+    components::DECOMPOSE,
+    stroke::SPEC,
+    geometry::REMOVE_OVERLAP,
 ];
 
 /// Every command, in the exact registration order of the public API.

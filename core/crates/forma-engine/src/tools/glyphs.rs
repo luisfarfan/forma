@@ -537,24 +537,39 @@ fn glyph_create(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolO
         steps: Steps::of(&font, cmds)?,
     };
     mutate(engine, actor, edit, |engine, result| {
-        let glyph = engine
-            .doc(&call.doc)?
-            .font()
-            .glyph_by_name(&name)
-            .map(|glyph| CreatedGlyph {
-                id: glyph.id,
-                name: glyph.name.clone(),
-            })
-            .ok_or_else(|| ToolError::not_found(format!("not found: glyph '{name}'")))?;
-        Ok(GlyphCreateResult {
-            rev: result.rev,
-            tx: result.tx,
-            touched: result.touched,
-            touched_count: result.touched_count,
-            touched_truncated: result.touched_truncated,
-            journal_warning: result.journal_warning,
-            glyph,
+        created_result(engine, &call.doc, &name, result)
+    })
+}
+
+/// The result of a tool that created the glyph `name` in `doc`: the
+/// mutation result plus the glyph's identity.
+///
+/// # Errors
+///
+/// `NOT_FOUND` if the document or the glyph cannot be found.
+pub(crate) fn created_result(
+    engine: &Engine,
+    doc: &DocHandle,
+    name: &str,
+    result: MutationResult,
+) -> Result<GlyphCreateResult, ToolError> {
+    let glyph = engine
+        .doc(doc)?
+        .font()
+        .glyph_by_name(name)
+        .map(|glyph| CreatedGlyph {
+            id: glyph.id,
+            name: glyph.name.clone(),
         })
+        .ok_or_else(|| ToolError::not_found(format!("not found: glyph '{name}'")))?;
+    Ok(GlyphCreateResult {
+        rev: result.rev,
+        tx: result.tx,
+        touched: result.touched,
+        touched_count: result.touched_count,
+        touched_truncated: result.touched_truncated,
+        journal_warning: result.journal_warning,
+        glyph,
     })
 }
 
