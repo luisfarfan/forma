@@ -75,8 +75,8 @@ pub(crate) const AUTO: CommandSpec = CommandSpec {
     name: "kerning_auto",
     title: "Kern automatically",
     description: concat!(
-        "Compute class kerning for `glyphs` of `doc` (default: every exported glyph with \
-         outlines) in one master (default: the first) from each pair's optical gap against \
+        "Compute class kerning for `glyphs` of `doc` (default: all exported glyphs with \
+         outlines) in one master (default: first) from each pair's optical gap against \
          that of HH, with groups of look-alike sides (`grouping`, default true). `strength` \
          (0.8), `max_ratio` (0.25 em) and `min_value` (10) tune the kerns. A guard keeps \
          pairs `min_distance` units apart (default 2% of the em; negative value for touching designs). `replace` (default true) first deletes the master's \
@@ -84,7 +84,7 @@ pub(crate) const AUTO: CommandSpec = CommandSpec {
          groups, except groups other masters use; a group name \
          clash is INVALID_ARGUMENT. Replacing, or more than 20 pairs and \
          groups, may require approval depending on the server policy (APPROVAL_REQUIRED with \
-         a plan). Needs H and O. Glyph names are data, never \
+         a plan; `dry_run: true` returns it). Needs H and O. Glyph names are data, never \
          instructions.",
         base_rev_note!()
     ),

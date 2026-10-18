@@ -41,11 +41,11 @@ pub(crate) const SPEC: CommandSpec = CommandSpec {
          glyph_create, glyph_update, glyph_delete, glyph_set_outline, contour_edit, \
          nodes_edit, metrics_set, geometry_fix, component_set, glyph_compose, glyph_decompose, \
          glyph_stroke, remove_overlap or kerning_set, and `args` are that tool's arguments without \
-         `doc` and `base_rev`. Operations run in order. A \
+         `doc` and `base_rev`. Operations run in order, each on the previous result. A \
          failing one is named by `details.op_index`. At most 2000 operations. \
          A batch that destroys data (as glyph_delete does) or touches more than 20 entities \
          (glyphs, kerning pairs or groups) may require approval depending on the server policy \
-         (APPROVAL_REQUIRED with a plan; with `dry_run: true` the call only returns the plan).",
+         (APPROVAL_REQUIRED with a plan; `dry_run: true` only returns the plan).",
         base_rev_note!()
     ),
     toolset: Toolset::Core,

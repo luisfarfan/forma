@@ -305,3 +305,74 @@ fn too_many_assignments_is_limit_exceeded() {
     let error = call(&mut engine, "image_trace", args).expect_err("too many");
     assert_eq!(error.code, ErrorCode::LimitExceeded);
 }
+
+// ------------------------------------------------------- fix round 1
+
+/// A PNG of `n x n` ink squares on a dark background.
+fn grid_png(path: &Path, n: u32) {
+    let pitch = 40;
+    let mut img =
+        image::RgbImage::from_pixel(n * pitch + 40, n * pitch + 40, image::Rgb([17, 17, 17]));
+    for gy in 0..n {
+        for gx in 0..n {
+            for y in 0..20 {
+                for x in 0..20 {
+                    img.put_pixel(
+                        30 + gx * pitch + x,
+                        30 + gy * pitch + y,
+                        image::Rgb([255, 90, 31]),
+                    );
+                }
+            }
+        }
+    }
+    img.save(path).expect("save");
+}
+
+#[test]
+fn inspect_summary_is_bounded_but_the_count_is_total() {
+    let (mut engine, dir, _path) = setup();
+    let grid = dir.path().join("grid.png");
+    grid_png(&grid, 20);
+    let (png, summary) = image(&mut engine, "image_inspect", json!({ "path": grid }));
+    assert_png(&png);
+    assert_eq!(
+        summary["candidates_total"],
+        json!(400),
+        "{}",
+        summary["note"]
+    );
+    assert_eq!(summary["candidates_truncated"], json!(true));
+    let listed = summary["candidates"].as_array().expect("candidates").len();
+    assert!(listed <= 200 && listed > 0, "{listed}");
+    assert!(
+        summary.to_string().len() <= 32 * 1024,
+        "{}",
+        summary.to_string().len()
+    );
+    // Rows, palette, ink and background stay complete.
+    assert_eq!(summary["rows"].as_array().expect("rows").len(), 20);
+    assert!(summary["ink"].is_array() && summary["background"].is_array());
+    assert!(summary["palette"].as_array().is_some());
+    // A small image is not truncated.
+    let (_, small) = image(
+        &mut engine,
+        "image_inspect",
+        json!({ "path": dir.path().join("specimen.png") }),
+    );
+    assert_eq!(small["candidates_total"], json!(8));
+    assert_eq!(small["candidates_truncated"], json!(false));
+}
+
+#[cfg(unix)]
+#[test]
+fn inspect_through_a_symlink_that_escapes_is_path_not_allowed() {
+    let (mut engine, dir, _path) = setup();
+    let outside = tempfile::tempdir().expect("tempdir");
+    let secret = outside.path().join("secret.png");
+    std::fs::copy(dir.path().join("specimen.png"), &secret).expect("copy");
+    let link = dir.path().join("link.png");
+    std::os::unix::fs::symlink(&secret, &link).expect("symlink");
+    let error = raw(&mut engine, "image_inspect", json!({ "path": link })).expect_err("escape");
+    assert_eq!(error.code, ErrorCode::PathNotAllowed);
+}
