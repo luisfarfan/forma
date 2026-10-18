@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -204,6 +205,28 @@ def find_chrome() -> str | None:
     return None
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kills Chrome and all its children, then reaps it."""
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, check=False,
+            )
+    except OSError:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def check_chrome(check: Check, woff2: Path) -> bool:
     """Returns False if no browser exists (the check is skipped)."""
     chrome = find_chrome()
@@ -228,28 +251,51 @@ document.fonts.load('16px "FormaCheck"', 'ABC').then(function (faces) {{
 </script>""",
             encoding="utf-8",
         )
+        profile = tempfile.mkdtemp(prefix="profile-", dir=work)
         command = [
             chrome,
             "--headless=new",
             "--disable-gpu",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--metrics-recording-only",
             "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
             "--allow-file-access-from-files",
-            f"--user-data-dir={work / 'profile'}",
+            f"--user-data-dir={profile}",
             "--virtual-time-budget=5000",
             "--dump-dom",
             page.as_uri(),
         ]
+        if sys.platform == "darwin":
+            command.insert(1, "--use-mock-keychain")
         if sys.platform.startswith("linux"):
             # CI containers and root users cannot start Chrome's sandbox.
             command.insert(1, "--no-sandbox")
-        try:
-            result = subprocess.run(
-                command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=120, check=False,
+        spawn: dict = {}
+        if os.name == "posix":
+            spawn["start_new_session"] = True  # own process group, killable as a whole
+        else:
+            spawn["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        out_file, err_file = work / "stdout.txt", work / "stderr.txt"
+        with open(out_file, "wb") as out, open(err_file, "wb") as err:
+            proc = subprocess.Popen(
+                command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, **spawn
             )
-        except subprocess.TimeoutExpired:
-            check.fail("Chrome did not finish within 120 s")
-            return True
+            try:
+                returncode = proc.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                tail = err_file.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+                detail = "\n".join(tail) or "(empty stderr)"
+                check.fail(f"Chrome did not finish within 120 s; last stderr lines:\n{detail}")
+                return True
+        result = argparse.Namespace(
+            stdout=out_file.read_text(encoding="utf-8", errors="replace"),
+            returncode=returncode,
+        )
         dom = result.stdout
         if f"{MARKER}=true" in dom:
             check.notes.append(Path(chrome).name)
