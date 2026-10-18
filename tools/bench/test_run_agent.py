@@ -70,8 +70,19 @@ class RunAgentDryRun(unittest.TestCase):
             self.assertEqual(args[args.index("--policy") + 1], "prompted")
             self.assertEqual(args[-2:], ["--profile", "image-font"])
             self.assertIn("codex exec", done.stdout.replace("\\", ""))
+            # Mode B gives the same task as mode A, without tool hints: the
+            # server alone has to lead the agent to its operations.
             prompt = read(os.path.join(run_dir, "prompt.txt"))
-            self.assertIn("font_from_image", prompt)
+            self.assertNotIn("font_from_image", prompt)
+            self.assertIn("default_tools_approval_mode", done.stdout)
+
+    def test_policy_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done, run_dir = self.run_script("claude-code", "b", tmp, POLICY="auto")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            mcp = json.loads(read(os.path.join(run_dir, "mcp.json")))
+            args = mcp["mcpServers"]["forma"]["args"]
+            self.assertEqual(args[args.index("--policy") + 1], "auto")
 
     def test_bad_arguments_print_usage(self):
         done = subprocess.run(["bash", SCRIPT, "claude-code"], capture_output=True, text=True)

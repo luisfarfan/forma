@@ -439,3 +439,33 @@ Resueltas en §11.
 6. **Formato v3:** migración sin pérdida, determinista y con respaldo; procedencia y revisión por glifo; los cambios geométricos se distinguen de los de métricas y metadatos; las aprobaciones no se invalidan sin cambio de diseño; se mantienen las garantías de historial, transacciones y concurrencia (§5.4).
 7. **Seguridad:** ningún glifo sintetizado de baja confianza se aprueba automáticamente (§5.5).
 8. **Consultar al responsable** ante cualquier decisión que comprometa la fidelidad tipográfica, la compatibilidad de documentos o la seguridad.
+
+## 12. Enmiendas de la implementación
+
+Lo que la implementación cambió respecto de esta especificación. El detalle y las razones están en `docs/qa/hito2-5/decisiones.md` (el número entre paréntesis).
+
+1. **`layout` es obligatorio en `font_from_image`** (34). El modo `"auto"` de §5.2 no se implementó: sin layout, la asignación de letras sería adivinar.
+2. **Alcance de las etapas de espaciado y kerning** (45, 54). Solo actúan sobre los glifos que hace la llamada. El kerning se limita a las letras trazadas y compuestas, y solo reemplaza pares entre dos glifos de la llamada. Los sintetizados se kernean tras su revisión.
+3. **Las etapas respetan los toolsets deshabilitados** (55); el perfil de herramientas no las desactiva.
+4. **Exportación tras la canalización** (35, 46):
+   - omite los archivos existentes;
+   - espera mientras haya glifos con `needs_look` o sintetizados pendientes;
+   - pasa por `Engine::call`.
+5. **Puertas de calidad** (24, 47, 50):
+   - la desviación de ajuste es el percentil 99, no el máximo, a la espera de la decisión del responsable (48);
+   - un rasgo encontrado en un ráster grueso se vuelve a medir a resolución completa;
+   - una región junto al borde solo se excusa si no es más profunda que el presupuesto de ajuste;
+   - el detalle de menos de una unidad de fuente es motivo de revisión.
+6. **Síntesis** (38–44, 51–57):
+   - **Kit de estilo:**
+     - una sola clase de final (plano, redondo o bola);
+     - medida de la forma del final (`terminal_fill`);
+     - dispersión del trazo entre glifos.
+   - **Recetas como datos** (`unicase-es` v1, con puntos unidos por diseño).
+   - **Control de estructura** (piezas, contrahuecos, separación, tinta fuera de la caja, tamaño de los diacríticos).
+   - **Autoprueba de reproducción** (umbral 0,9): por debajo, todo glifo dibujado por esqueleto pide una mirada.
+   - **Procedencia sintetizada** con `strategy` y `sources` por nombre.
+7. **Benchmark** (Task 19):
+   - el modo C corre `font_from_image` y separa fidelidad y tipografía;
+   - la puerta de regresión (S, L, O en cada push; M y M-hand nocturno) compara con `baseline.json`;
+   - la irregularidad conservada solo cuenta los dibujos irregulares cuya imagen no difumina la tinta.

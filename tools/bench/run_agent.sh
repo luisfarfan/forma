@@ -26,6 +26,9 @@
 #   FORMA_BIN     the `forma` binary (default: core/target/{release,debug}, then PATH)
 #   FORMA_BENCH_BIN  the `forma-bench` binary (same search)
 #   FORMA_MCP_EXTRA  extra arguments for `forma mcp` (e.g. "--profile image-font")
+#   POLICY        the server's approval policy instead of the mode's (auto,
+#                 prompted, strict): auto stands for an operator who approved
+#                 in advance (one human intervention)
 #   CLAUDE_EXTRA_ARGS / CODEX_EXTRA_ARGS  extra client arguments
 #   BENCH_OUT     output base (default <repo>/bench-out)
 #   CASE_IMAGE, CASE_LAYOUT  use this image and layout ("ABC|DEF") instead of
@@ -117,6 +120,11 @@ PY
 
 # --- the MCP server ----------------------------------------------------------
 if [ "$mode" = a ]; then policy=auto; else policy=prompted; fi
+# A headless client cannot answer an approval itself (Claude Code refuses to
+# let the agent commit plans meant for a person), and a second stdio client
+# cannot commit this server's plans: POLICY=auto stands for the operator
+# approving in advance, counted as one human intervention.
+policy=${POLICY:-$policy}
 # shellcheck disable=SC2206
 mcp_extra=(${FORMA_MCP_EXTRA:-})
 mcp_args=(mcp --allow-dir "$work" --policy "$policy" --audit-log "$run_dir/audit.jsonl" ${mcp_extra[@]+"${mcp_extra[@]}"})
@@ -149,7 +157,12 @@ else
   cmd=(codex exec --json --skip-git-repo-check -C "$work" -s workspace-write
     -c 'approval_policy="never"'
     -c "mcp_servers.forma.command=$toml_cmd"
-    -c "mcp_servers.forma.args=$toml_args")
+    -c "mcp_servers.forma.args=$toml_args"
+    # Codex asks before running a tool marked destructive, and in `exec`
+    # nobody answers: the FORMA server's own approvals (its policy, plans
+    # and tokens) govern its tools instead. Only this server; the sandbox
+    # stays as it is.
+    -c 'mcp_servers.forma.default_tools_approval_mode="approve"')
   [ -z "${MODEL:-}" ] || cmd+=(-m "$MODEL")
   cmd+=(${extra[@]+"${extra[@]}"} "$prompt")
 fi
@@ -168,7 +181,8 @@ if [ "$dry_run" = 1 ]; then
   timed_out=false
 else
   : >"$transcript"
-  (cd "$work" && "${cmd[@]}" >"$transcript" 2>"$run_dir/stderr.log") &
+  # stdin closed: `codex exec` otherwise waits for more input on it.
+  (cd "$work" && "${cmd[@]}" </dev/null >"$transcript" 2>"$run_dir/stderr.log") &
   pid=$!
   capped=false
   timed_out=false
