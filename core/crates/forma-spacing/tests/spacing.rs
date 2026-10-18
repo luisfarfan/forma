@@ -18,8 +18,9 @@ fn default_params_match_the_spec() {
     let params = SpacingParams::default();
     assert_eq!(params.tightness, 0.6);
     assert_eq!(params.references, ["H".to_owned(), "O".to_owned()]);
-    assert_eq!(params.depth_ratio, 0.15);
+    assert_eq!(params.depth_ratio, 0.4);
     assert_eq!(params.lines, 64);
+    assert_eq!(params.edge_weight, 0.25);
 }
 
 #[test]
@@ -241,8 +242,110 @@ fn invalid_params_are_rejected() {
             lines: 2,
             ..SpacingParams::default()
         },
+        SpacingParams {
+            depth_ratio: f64::INFINITY,
+            ..SpacingParams::default()
+        },
+        SpacingParams {
+            edge_weight: 1.5,
+            ..SpacingParams::default()
+        },
     ] {
         let err = auto_spacing(&font, master(&font), &h, &params).unwrap_err();
         assert!(matches!(err, SpacingError::InvalidParameter(_)), "{err}");
     }
+}
+
+/// The default spacing of `names`, by name.
+fn spaced(
+    font: &forma_model::Font,
+    names: &[&str],
+    params: &SpacingParams,
+) -> std::collections::BTreeMap<String, (f64, f64)> {
+    let result = auto_spacing(font, master(font), &ids(font, names), params).expect("spacing");
+    assert_eq!(result.len(), names.len());
+    names
+        .iter()
+        .zip(result)
+        .map(|(name, sb)| ((*name).to_owned(), (sb.lsb, sb.rsb)))
+        .collect()
+}
+
+const OUTCOME: [&str; 5] = ["H", "O", "A", "B", "C"];
+
+#[test]
+fn round_letters_get_a_fraction_of_the_h_margin() {
+    let font = fixture_font();
+    let sb = spaced(&font, &OUTCOME, &SpacingParams::default());
+    let h = sb["H"].0;
+    assert!((sb["H"].0 - sb["H"].1).abs() <= 1.0, "{sb:?}");
+    let (l, r) = sb["O"];
+    assert!((l - r).abs() <= 1.0, "{sb:?}");
+    for side in [l, r] {
+        assert!(
+            0.5 * h <= side && side <= 0.9 * h,
+            "O {side} vs H {h}: {sb:?}"
+        );
+    }
+}
+
+#[test]
+fn diagonal_letters_get_a_small_non_negative_margin() {
+    let font = fixture_font();
+    let sb = spaced(&font, &OUTCOME, &SpacingParams::default());
+    let h = sb["H"].0;
+    let (l, r) = sb["A"];
+    assert!((l - r).abs() <= 1.0, "{sb:?}");
+    for side in [l, r] {
+        assert!((0.0..=0.6 * h).contains(&side), "A {side} vs H {h}: {sb:?}");
+    }
+}
+
+#[test]
+fn bowls_and_open_letters_get_non_negative_sidebearings() {
+    let font = fixture_font();
+    let sb = spaced(&font, &OUTCOME, &SpacingParams::default());
+    for name in ["B", "C"] {
+        let (l, r) = sb[name];
+        assert!(l >= 0.0 && r >= 0.0, "{name}: {sb:?}");
+    }
+}
+
+#[test]
+fn tightness_scales_every_glyph_monotonically() {
+    let font = fixture_font();
+    let loose = spaced(&font, &OUTCOME, &SpacingParams::default());
+    let tight = spaced(
+        &font,
+        &OUTCOME,
+        &SpacingParams {
+            tightness: 0.3,
+            ..SpacingParams::default()
+        },
+    );
+    for name in OUTCOME {
+        let (a, b) = (tight[name], loose[name]);
+        assert!(a.0 <= b.0 && a.1 <= b.1, "{name}: {a:?} vs {b:?}");
+    }
+    assert!(tight["H"].0 < loose["H"].0);
+    assert!(tight["O"].0 < loose["O"].0);
+}
+
+#[test]
+fn negative_margins_are_clamped_to_zero() {
+    // With no margin on H, the white of A and O is already more than the
+    // target: their margins would be negative, and are clamped to 0.
+    let font = fixture_font();
+    let sb = spaced(
+        &font,
+        &OUTCOME,
+        &SpacingParams {
+            tightness: 0.0,
+            ..SpacingParams::default()
+        },
+    );
+    assert_eq!(sb["H"], (0.0, 0.0));
+    assert_eq!(sb["A"], (0.0, 0.0));
+    assert_eq!(sb["O"], (0.0, 0.0));
+    assert!(sb.values().all(|&(l, r)| l >= 0.0 && r >= 0.0), "{sb:?}");
 }

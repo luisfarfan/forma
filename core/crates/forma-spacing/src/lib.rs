@@ -23,4 +23,6 @@ mod spacing;
 pub use collision::{Collision, MAX_CHECK_PAIRS, collisions};
 pub use error::SpacingError;
 pub use profile::{MAX_LINES, MIN_LINES, Profile, Zone, measurement_zone, profile};
-pub use spacing::{Sidebearings, SpacingParams, auto_spacing};
+pub use spacing::{
+    DEFAULT_DEPTH_RATIO, DEFAULT_EDGE_WEIGHT, Sidebearings, SpacingParams, auto_spacing,
+};
