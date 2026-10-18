@@ -34,7 +34,7 @@ pub use sheet::{
     SheetImage, sheet_png,
 };
 pub use svg::glyph_svg;
-pub use text::{MAX_WRAPPED_HEIGHT, text_png, text_png_wrapped};
+pub use text::{MAX_WRAPPED_HEIGHT, WrappedText, text_png, text_png_wrapped};
 
 /// The smallest preview size, in pixels.
 pub const MIN_SIZE: u32 = 16;

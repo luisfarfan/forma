@@ -189,6 +189,13 @@ pub struct TextPreviewSummary {
     pub width: u32,
     /// The height of the image, in pixels.
     pub height: u32,
+    /// With `wrap`: the lines drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u32>,
+    /// With `wrap`: the lines left out because the image would be taller
+    /// than 4096 pixels (preview the rest separately).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines_dropped: Option<u32>,
 }
 
 /// Arguments of `preview_compare`.
@@ -316,12 +323,22 @@ fn preview_text(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<Tool
         ));
     }
     let open = engine.doc(&args.doc)?;
-    let png = if args.wrap {
-        forma_render::text_png_wrapped(open.font(), &args.text, args.height)
+    let (png, lines, lines_dropped) = if args.wrap {
+        let wrapped = forma_render::text_png_wrapped(open.font(), &args.text, args.height)
+            .map_err(from_render_error)?;
+        (
+            wrapped.png,
+            Some(wrapped.lines),
+            (wrapped.lines_dropped > 0).then_some(wrapped.lines_dropped),
+        )
     } else {
-        forma_render::text_png(open.font(), &args.text, args.height)
-    }
-    .map_err(from_render_error)?;
+        (
+            forma_render::text_png(open.font(), &args.text, args.height)
+                .map_err(from_render_error)?,
+            None,
+            None,
+        )
+    };
     let (width, height) = png_dimensions(&png)
         .ok_or_else(|| ToolError::io("internal error: the rendered preview is not a PNG"))?;
     let summary = TextPreviewSummary {
@@ -329,6 +346,8 @@ fn preview_text(engine: &mut Engine, _actor: &Actor, args: Value) -> Result<Tool
         text: args.text,
         width,
         height,
+        lines,
+        lines_dropped,
     };
     image_output(png, &summary)
 }

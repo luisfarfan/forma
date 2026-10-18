@@ -78,19 +78,32 @@ pub fn text_png(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderE
 }
 
 /// The tallest image [`text_png_wrapped`] produces, in pixels; lines that
-/// do not fit are left out.
+/// do not fit are left out (and counted in [`WrappedText::lines_dropped`]).
 pub const MAX_WRAPPED_HEIGHT: u32 = 4096;
+
+/// Text rendered in several lines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WrappedText {
+    /// The PNG.
+    pub png: Vec<u8>,
+    /// The lines drawn.
+    pub lines: u32,
+    /// The lines left out because the image would be taller than
+    /// [`MAX_WRAPPED_HEIGHT`].
+    pub lines_dropped: u32,
+}
 
 /// Renders text like [`text_png`], but wraps it at spaces into several
 /// lines (each `height` pixels tall) instead of clipping it at 2048 px, so
 /// that nothing is cut off. A word wider than a whole line is clipped like
 /// in [`text_png`]. Explicit line breaks (`\n`) start a new line. At most
-/// [`MAX_WRAPPED_HEIGHT`] pixels of lines are drawn.
+/// [`MAX_WRAPPED_HEIGHT`] pixels of lines are drawn; the result says how
+/// many were left out.
 ///
 /// # Errors
 ///
 /// As [`text_png`].
-pub fn text_png_wrapped(font: &Font, text: &str, height: u32) -> Result<Vec<u8>, RenderError> {
+pub fn text_png_wrapped(font: &Font, text: &str, height: u32) -> Result<WrappedText, RenderError> {
     let height_px = check_size(height)?;
     if text.is_empty() {
         return Err(RenderError::InvalidText);
@@ -119,6 +132,7 @@ pub fn text_png_wrapped(font: &Font, text: &str, height: u32) -> Result<Vec<u8>,
         )?);
     }
     let fit = (MAX_WRAPPED_HEIGHT / height).max(1) as usize;
+    let dropped = lines.len().saturating_sub(fit);
     lines.truncate(fit);
     let width = lines
         .iter()
@@ -133,7 +147,11 @@ pub fn text_png_wrapped(font: &Font, text: &str, height: u32) -> Result<Vec<u8>,
     for (k, line) in lines.iter().enumerate() {
         line.draw(&mut canvas, k as f64 * f64::from(height_px));
     }
-    canvas.finish()
+    Ok(WrappedText {
+        png: canvas.finish()?,
+        lines: u32::try_from(lines.len()).unwrap_or(u32::MAX),
+        lines_dropped: u32::try_from(dropped).unwrap_or(u32::MAX),
+    })
 }
 
 /// A line of text laid out: the glyphs and where each goes.

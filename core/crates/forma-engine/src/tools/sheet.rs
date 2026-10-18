@@ -325,15 +325,26 @@ fn preview_sheet(
             name: glyph.name.clone(),
             source: source.to_owned(),
             review: review_text.to_owned(),
+            // The first two reasons and how many more (glyph_get has all).
             attention: glyph
                 .provenance
                 .as_ref()
-                .map(|p| p.attention.clone())
+                .map(|p| {
+                    let mut shown: Vec<String> = p.attention.iter().take(2).cloned().collect();
+                    if p.attention.len() > 2 {
+                        shown.push(format!("+{} more (see glyph_get)", p.attention.len() - 2));
+                    }
+                    shown
+                })
                 .unwrap_or_default(),
         });
     }
     let sheet = forma_render::sheet_png(font, master, &cells, cell).map_err(from_render_error)?;
-    notes.truncate(5);
+    if notes.len() > 5 {
+        let more = notes.len() - 4;
+        notes.truncate(4);
+        notes.push(format!("and {more} more notes"));
+    }
     image_output(
         sheet.png,
         &SheetSummary {
