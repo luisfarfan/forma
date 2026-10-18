@@ -60,3 +60,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 # Turns the binary mask of each traced glyph into cubic splines (ADR 0009); FORMA
 # does its own color analysis and mask. MIT OR Apache-2.0.
 visioncortex = "0.9.3"
+# DEV ONLY (forma-bench): reads the outlines of the OFL test fonts to render the
+# benchmark corpus and its ground truth. Its read-fonts matches ours. MIT OR
+# Apache-2.0, maintained by Google Fonts (fontations).
+skrifa = "0.46.2"
