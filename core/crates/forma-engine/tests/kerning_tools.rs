@@ -185,50 +185,141 @@ fn spacing_auto_sets_symmetric_h() {
     assert!((h["lsb"].as_f64().expect("lsb") - 48.0).abs() <= 1.0, "{h}");
 }
 
-#[test]
-fn spacing_auto_leaves_a_composite_untouched_and_unlisted() {
-    let mut engine = engine();
-    let doc = fixture_doc(&mut engine);
-    let rev = rev_of(&mut engine, &doc);
+/// The centre of the ink of `glyph`, from its side bearings.
+fn ink_centre(metrics: &Value) -> f64 {
+    let lsb = metrics["lsb"].as_f64().expect("lsb");
+    let rsb = metrics["rsb"].as_f64().expect("rsb");
+    let advance = metrics["advance_width"].as_f64().expect("advance");
+    (lsb + advance - rsb) / 2.0
+}
+
+/// The fixture plus the mark `acutecomb` (advance 0, 0..100 × 760..860) and
+/// `Aacute` composed from `A` and the mark.
+fn composed_doc(engine: &mut Engine) -> String {
+    let doc = fixture_doc(engine);
+    let rev = rev_of(engine, &doc);
     ok(
-        &mut engine,
+        engine,
         "glyph_create",
         json!({ "doc": doc, "base_rev": rev, "name": "acutecomb", "advance_width": 0,
             "svg_path": "M0 760 L100 760 L100 860 L0 860 Z" }),
     );
-    let rev = rev_of(&mut engine, &doc);
+    let rev = rev_of(engine, &doc);
     ok(
-        &mut engine,
+        engine,
         "glyph_compose",
-        json!({ "doc": doc, "base_rev": rev, "name": "Hacute", "base": "H",
-            "marks": [{ "glyph": "acutecomb", "position": "above" }] }),
+        json!({ "doc": doc, "base_rev": rev, "name": "Aacute", "unicodes": ["U+00C1"],
+            "base": "A", "marks": [{ "glyph": "acutecomb", "position": "above" }] }),
     );
-    let composite = |engine: &mut Engine| {
-        ok(
-            engine,
-            "glyph_get",
-            json!({ "doc": doc, "glyph": "Hacute" }),
-        )["glyph"]
-            .clone()
-    };
-    let before = composite(&mut engine);
-    // Make H lopsided, so that spacing it changes the document.
+    doc
+}
+
+fn glyph_of(engine: &mut Engine, doc: &str, name: &str) -> Value {
+    ok(engine, "glyph_get", json!({ "doc": doc, "glyph": name }))["glyph"].clone()
+}
+
+#[test]
+fn spacing_auto_realigns_composites_and_leaves_marks_alone() {
+    let mut engine = engine();
+    let doc = composed_doc(&mut engine);
+    let mark_before = glyph_of(&mut engine, &doc, "acutecomb");
+    let a_before = metrics(&mut engine, &doc, "A");
+
     let rev = rev_of(&mut engine, &doc);
-    ok(
+    let done = approved(
         &mut engine,
-        "metrics_set",
-        json!({ "doc": doc, "base_rev": rev, "items": [{ "glyph": "H", "lsb": 20 }] }),
+        "spacing_auto",
+        json!({ "doc": doc, "base_rev": rev }),
     );
+    assert!(done["tx"].is_u64(), "{done}");
+
+    // A was respaced...
+    let a = metrics(&mut engine, &doc, "A");
+    assert_ne!(a, a_before, "A was not respaced: {a}");
+    // ...and Aacute followed it: same advance, accent centred on the base.
+    let aacute = glyph_of(&mut engine, &doc, "Aacute");
+    assert_eq!(aacute["advance_width"], a["advance_width"], "{aacute}");
+    let components = aacute["components"].as_array().expect("components");
+    assert_eq!(components[0]["base"], json!("A"));
+    assert_eq!(components[0]["transform"]["dx"], json!(0.0), "{aacute}");
+    let accent_centre = components[1]["transform"]["dx"].as_f64().expect("dx") + 50.0;
+    let base_centre = ink_centre(&a);
+    assert!(
+        (accent_centre - base_centre).abs() <= 1.0,
+        "accent at {accent_centre}, base at {base_centre}"
+    );
+    // The zero-advance mark is neither spaced nor moved.
+    assert_eq!(glyph_of(&mut engine, &doc, "acutecomb"), mark_before);
+    // Spaced: the fixture's drawn glyphs, V and .notdef; not the mark nor
+    // the composite, which is realigned.
+    assert_eq!(done["spaced"], json!(12), "{done}");
+    assert_eq!(done["realigned"], json!(1), "{done}");
+}
+
+#[test]
+fn spacing_auto_realigns_a_composite_outside_the_selection() {
+    let mut engine = engine();
+    let doc = composed_doc(&mut engine);
     let rev = rev_of(&mut engine, &doc);
     let done = ok(
         &mut engine,
         "spacing_auto",
-        json!({ "doc": doc, "base_rev": rev, "glyphs": ["H", "Hacute"] }),
+        json!({ "doc": doc, "base_rev": rev, "glyphs": ["A", "Aacute"] }),
     );
-    // Only H is spaced: the composite is neither changed nor counted.
+    let a = metrics(&mut engine, &doc, "A");
+    let aacute = glyph_of(&mut engine, &doc, "Aacute");
+    assert_eq!(aacute["advance_width"], a["advance_width"], "{aacute}");
+    // Only A is spaced; the composite is realigned, not spaced.
     assert_eq!(done["spaced"], json!(1), "{done}");
-    assert_eq!(done["touched_count"], json!(1), "{done}");
-    assert_eq!(composite(&mut engine), before);
+    assert_eq!(done["realigned"], json!(1), "{done}");
+    assert_eq!(done["touched_count"], json!(2), "{done}");
+
+    // Spacing only the mark changes nothing.
+    let rev = rev_of(&mut engine, &doc);
+    let done = ok(
+        &mut engine,
+        "spacing_auto",
+        json!({ "doc": doc, "base_rev": rev, "glyphs": ["acutecomb"] }),
+    );
+    assert_eq!(done["spaced"], json!(0), "{done}");
+    assert_eq!(done["tx"], Value::Null, "{done}");
+}
+
+#[test]
+fn compose_space_kern_then_check_has_no_collisions() {
+    let mut engine = engine_with(Policy::Auto);
+    let doc = composed_doc(&mut engine);
+    let rev = rev_of(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "spacing_auto",
+        json!({ "doc": doc, "base_rev": rev }),
+    );
+    let rev = rev_of(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "kerning_auto",
+        json!({ "doc": doc, "base_rev": rev }),
+    );
+    let kerning = ok(&mut engine, "kerning_get", json!({ "doc": doc }));
+    let pairs = kerning["pairs"].as_array().expect("pairs");
+    assert!(
+        pairs
+            .iter()
+            .all(|p| p["first"] != json!("acutecomb") && p["second"] != json!("acutecomb")),
+        "a zero-advance mark was kerned: {kerning}"
+    );
+    for min_distance in [0.0, 20.0] {
+        let check = ok(
+            &mut engine,
+            "kerning_check",
+            json!({ "doc": doc, "min_distance": min_distance }),
+        );
+        assert_eq!(check["collisions_total"], json!(0), "{check}");
+        // 12 kerned glyphs (the fixture without space and .notdef, V and
+        // Aacute; not the mark): 12 × 12 pairs.
+        assert_eq!(check["checked_pairs"], json!(12 * 12), "{check}");
+    }
 }
 
 #[test]

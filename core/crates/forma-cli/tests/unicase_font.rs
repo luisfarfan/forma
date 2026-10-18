@@ -26,8 +26,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mcp_common::{
-    Client, ModelGlyph, call, close, connect, copy_specimen, effective_kern, is_legacy,
-    kerning_maps, legacy, model_glyphs, modern, path_text, rounded, unicode_text, with_timeout_for,
+    Client, ModelGlyph, assert_composites_follow_bases, call, close, connect, copy_specimen,
+    effective_kern, is_legacy, kerning_maps, legacy, model_glyphs, modern, path_text, rounded,
+    unicode_text, with_timeout_for,
 };
 use read_fonts::tables::glyf::Glyph;
 use read_fonts::types::GlyphId;
@@ -357,6 +358,12 @@ async fn scenario(mode: ClientLifecycleMode) {
     )
     .await;
     let spacing_time = spacing_started.elapsed();
+    // The accented letters followed their respaced bases.
+    let composites: Vec<(&str, &str, &str)> = ACCENTED
+        .iter()
+        .map(|&(name, base, mark, _)| (name, base, mark))
+        .collect();
+    assert_composites_follow_bases(&client, &doc, &composites).await;
     let kerning_started = Instant::now();
     rev = plan_and_commit(
         &client,

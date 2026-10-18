@@ -45,8 +45,8 @@ pub(crate) struct Steps {
     pub touched: BTreeSet<EntityKey>,
     /// Whether some command, at its turn, destroys data that existed before
     /// the call: it deletes glyphs or a kerning group, replaces the non-empty
-    /// layer or the non-empty component list of a glyph that existed before
-    /// the call, removes the last contour of a layer that had contours when
+    /// layer of a glyph that existed before the call or its non-empty
+    /// component list with one of other glyphs, removes the last contour of a layer that had contours when
     /// the call started, applies a singular transform to a contour, or
     /// removes a kerning pair that existed before the call.
     pub destructive: bool,
@@ -120,8 +120,10 @@ impl Steps {
     /// Whether `cmd`, applied to the current scratch state, destroys data
     /// that existed before the call: deleting glyphs or a kerning group
     /// always does; replacing a layer does when the layer has contours, and
-    /// replacing components does when the layer has components, provided
-    /// the glyph existed before the call (a glyph the call created holds
+    /// replacing components does when the layer has components and the new
+    /// list draws other glyphs (a different list of bases: changed, added or
+    /// removed; moving the same ones does not), provided the glyph existed
+    /// before the call (a glyph the call created holds
     /// nothing older than the call); a transform with a singular matrix
     /// (`|a·d − b·c| < 1e-9`) always does, since it collapses the contour;
     /// setting a kerning pair to 0 does when the pair is there and was there
@@ -141,9 +143,17 @@ impl Steps {
             Command::SetOutline { glyph, master, .. } => self
                 .older_layer(glyph, *master)
                 .is_some_and(|layer| !layer.paths.is_empty()),
-            Command::SetComponents { glyph, master, .. } => self
-                .older_layer(glyph, *master)
-                .is_some_and(|layer| !layer.components.is_empty()),
+            Command::SetComponents {
+                glyph,
+                master,
+                components,
+            } => self.older_layer(glyph, *master).is_some_and(|layer| {
+                // Moving the same glyphs keeps them; changing, adding or
+                // removing glyphs replaces the list.
+                let bases = components.iter().map(|c| c.base.resolve(&self.after));
+                let old = layer.components.iter().map(|c| Some(c.base));
+                !layer.components.is_empty() && !old.eq(bases)
+            }),
             Command::SetKerningPair {
                 master,
                 first,
@@ -553,6 +563,16 @@ mod tests {
                 "{replacement:?}"
             );
         }
+        // Moving the same bases is not: neither is the same list again,
+        // which touches nothing.
+        let mut moved = set("g2", &["g0"]);
+        if let Command::SetComponents { components, .. } = &mut moved {
+            components[0].transform.dx = 25.0;
+        }
+        assert_eq!(effects(&composite, vec![moved]), Effects::WRITE);
+        let same = Steps::of(&composite, vec![set("g2", &["g0"])]).expect("same");
+        assert_eq!(same.effects(), Effects::WRITE);
+        assert!(same.touched.is_empty(), "{:?}", same.touched);
         // Decomposing and removing overlaps are not.
         let decompose = Command::Decompose {
             glyphs: vec![by_name("g2")],

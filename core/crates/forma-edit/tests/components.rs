@@ -114,6 +114,23 @@ fn area(paths: &[Path]) -> f64 {
 }
 
 #[test]
+fn set_components_with_the_same_list_touches_nothing() {
+    let mut font = base_font();
+    add_glyph(&mut font, "Adot", &[], 600.0, Vec::new());
+    let list = || vec![input("A", translate(10.0, 0.0))];
+    let (next, _) = run(&font, set_components("Adot", list()));
+    let (again, touched) = run(&next, set_components("Adot", list()));
+    assert!(touched.is_empty(), "{touched:?}");
+    assert_eq!(again, next);
+    // Moving the component is a change.
+    let (_, touched) = run(
+        &next,
+        set_components("Adot", vec![input("A", translate(20.0, 0.0))]),
+    );
+    assert_eq!(touched.len(), 1);
+}
+
+#[test]
 fn set_components_and_render_bbox() {
     let mut font = base_font();
     add_glyph(&mut font, "Adot", &[], 600.0, Vec::new());

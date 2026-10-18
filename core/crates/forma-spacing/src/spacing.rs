@@ -255,9 +255,19 @@ pub(crate) fn reference(
 ///    (`O`) must exist and have ink, but it does not set the target: it is
 ///    spaced from the same white as every other glyph.
 ///
-/// Glyphs whose layer has components and no contours of its own
-/// (composites inherit the spacing of their bases) and glyphs without ink
-/// are skipped. The result follows the order of `glyphs`, each glyph once.
+/// Skipped, and left out of the result:
+///
+/// * glyphs whose layer has components and no contours of its own
+///   (composites inherit the spacing of their bases: realigning them is the
+///   caller's job, as `spacing_auto` does);
+/// * glyphs whose layer has an advance width of 0 (combining marks: they
+///   are placed over other glyphs, so they keep their advance and their
+///   contours);
+/// * glyphs without ink.
+///
+/// A glyph with contours of its own and components (a mixed glyph) is
+/// spaced like any other, on its whole outline. The result follows the
+/// order of `glyphs`, each glyph once.
 ///
 /// # Errors
 ///
@@ -324,7 +334,8 @@ pub fn auto_spacing(
             continue;
         }
         let own = layer(font, glyph, master)?;
-        if own.paths.is_empty() && !own.components.is_empty() {
+        let composite = own.paths.is_empty() && !own.components.is_empty();
+        if composite || own.advance_width == 0.0 {
             continue;
         }
         let outline = Outline::of(font, glyph, master)?;

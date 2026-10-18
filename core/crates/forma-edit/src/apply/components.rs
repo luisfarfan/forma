@@ -40,6 +40,11 @@ pub(super) fn set_components(
             transform: input.transform,
         });
     }
+    // The same list on an existing layer changes nothing.
+    let current = font.glyphs.get(&id).and_then(|g| g.layers.get(&master));
+    if current.is_some_and(|layer| layer.components == resolved) {
+        return Ok(BTreeSet::new());
+    }
     // A base without a layer in the master, or a cycle, breaks the font
     // invariants, which `apply` checks afterwards.
     let default = font.default_master().id;

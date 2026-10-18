@@ -24,8 +24,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mcp_common::{
-    ACTOR, ModelGlyph, call, close, connect, copy_specimen, decode_png, effective_kern, group_key,
-    is_legacy, legacy, model_glyphs, modern, path_text, rounded, unicode_text, with_timeout_for,
+    ACTOR, ModelGlyph, assert_composites_follow_bases, call, close, connect, copy_specimen,
+    decode_png, effective_kern, group_key, is_legacy, legacy, model_glyphs, modern, path_text,
+    rounded, unicode_text, with_timeout_for,
 };
 use read_fonts::types::GlyphId;
 use read_fonts::{FontRef, TableProvider};
@@ -210,8 +211,9 @@ async fn scenario(mode: ClientLifecycleMode) {
         rev = composed["rev"].as_u64().expect("rev");
     }
 
-    // 8. spacing_auto: 14 glyphs is under the mass-edit threshold of 20, so
-    //    it applies without approval.
+    // 8. spacing_auto: 10 glyphs spaced and the 2 composites realigned with
+    //    their bases (the zero-width mark is left alone) are under the
+    //    mass-edit threshold of 20, so it applies without approval.
     let spaced = call(
         &client,
         "spacing_auto",
@@ -221,6 +223,13 @@ async fn scenario(mode: ClientLifecycleMode) {
     .ok();
     rev = spaced["rev"].as_u64().expect("rev");
     eprintln!("[hito2] spacing_auto: {spaced}");
+    assert_eq!(spaced["realigned"], json!(2), "{spaced}");
+    assert_composites_follow_bases(
+        &client,
+        &doc,
+        &[("Aacute", "A", "acutecomb"), ("Oacute", "O", "acutecomb")],
+    )
+    .await;
 
     // 9. kerning_auto dry run, then plan_commit.
     let planned = call(

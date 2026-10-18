@@ -241,17 +241,26 @@ fn component_set_replacing_requires_plan() {
     let mut engine = engine();
     let doc = font_with_marks(&mut engine);
     empty_glyph(&mut engine, &doc, "target");
-    let set = |rev: u64, dx: f64| {
+    let set = |rev: u64, base: &str, dx: f64| {
         json!({ "doc": doc, "base_rev": rev, "glyph": "target", "components": [
-            { "base": "a", "transform": { "xx": 1, "xy": 0, "yx": 0, "yy": 1, "dx": dx, "dy": 0 } }
+            { "base": base, "transform": { "xx": 1, "xy": 0, "yx": 0, "yy": 1, "dx": dx, "dy": 0 } }
         ] })
     };
     // The first call fills an empty component list: not destructive.
     let rev = rev_of(&mut engine, &doc);
-    ok(&mut engine, "component_set", set(rev, 0.0));
-    // The second replaces existing components: it needs a plan.
+    ok(&mut engine, "component_set", set(rev, "a", 0.0));
+    // Moving the same glyph is a plain write.
     let rev = rev_of(&mut engine, &doc);
-    let refused = err(&mut engine, "component_set", set(rev, 10.0));
+    let moved = ok(&mut engine, "component_set", set(rev, "a", 10.0));
+    assert!(moved["tx"].is_u64(), "{moved}");
+    // The same list again changes nothing.
+    let rev = rev_of(&mut engine, &doc);
+    let same = ok(&mut engine, "component_set", set(rev, "a", 10.0));
+    assert_eq!(same["tx"], Value::Null, "{same}");
+    assert_eq!(same["rev"], json!(rev), "{same}");
+    assert_eq!(same["touched_count"], json!(0), "{same}");
+    // Drawing another glyph replaces the components: it needs a plan.
+    let refused = err(&mut engine, "component_set", set(rev, "acutecomb", 10.0));
     assert_eq!(refused.code, ErrorCode::ApprovalRequired);
     let token = refused.details["plan"]["plan_token"].clone();
     let done = ok(&mut engine, "plan_commit", json!({ "plan_token": token }));

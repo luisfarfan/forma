@@ -519,3 +519,48 @@ impl KerningMaps {
         )
     }
 }
+
+/// The horizontal centre of the contours of `glyph`, from `glyph_get`'s
+/// bounding box.
+fn contour_centre(glyph: &Value) -> f64 {
+    let bbox = &glyph["bbox"];
+    let x = |key: &str| {
+        bbox[key]
+            .as_f64()
+            .unwrap_or_else(|| panic!("no bbox: {glyph}"))
+    };
+    (x("x_min") + x("x_max")) / 2.0
+}
+
+/// Checks that each composite `(name, base, mark)` of `doc` has the advance
+/// width of its base and its mark centred on the base (±2 units), as
+/// `glyph_compose` placed it before `spacing_auto` respaced the base.
+pub async fn assert_composites_follow_bases(
+    client: &Client,
+    doc: &str,
+    composites: &[(&str, &str, &str)],
+) {
+    let get = |name: String| {
+        let args = json!({ "doc": doc, "glyph": name });
+        async move { call(client, "glyph_get", args).await.ok()["glyph"].clone() }
+    };
+    for &(name, base, mark) in composites {
+        let composite = get(name.to_owned()).await;
+        let base_glyph = get(base.to_owned()).await;
+        let mark_glyph = get(mark.to_owned()).await;
+        assert_eq!(
+            composite["advance_width"], base_glyph["advance_width"],
+            "{name}: advance differs from {base}'s"
+        );
+        let components = composite["components"].as_array().expect("components");
+        assert_eq!(components[0]["base"], json!(base), "{composite}");
+        assert_eq!(components[1]["base"], json!(mark), "{composite}");
+        let dx = |index: usize| components[index]["transform"]["dx"].as_f64().expect("dx");
+        let base_centre = contour_centre(&base_glyph) + dx(0);
+        let mark_centre = contour_centre(&mark_glyph) + dx(1);
+        assert!(
+            (mark_centre - base_centre).abs() <= 2.0,
+            "{name}: {mark} centred at {mark_centre}, {base} at {base_centre}"
+        );
+    }
+}

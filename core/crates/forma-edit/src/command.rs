@@ -356,7 +356,8 @@ pub enum Command {
     /// Replaces the components of a glyph in one master; an empty list
     /// removes them. The contours and the advance width stay as they are. A
     /// glyph without a layer in the master gets one, without contours and
-    /// with the advance width of its default layer.
+    /// with the advance width of its default layer. The same list as the
+    /// layer already has changes nothing (the glyph is not touched).
     SetComponents {
         /// The glyph to change.
         glyph: GlyphRef,

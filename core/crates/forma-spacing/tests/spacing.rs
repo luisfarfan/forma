@@ -186,6 +186,22 @@ fn composites_are_skipped() {
 }
 
 #[test]
+fn zero_advance_marks_are_skipped() {
+    let mut font = fixture_font();
+    let a = id(&font, "A");
+    let mark = add_svg_glyph(
+        &mut font,
+        "acutecomb",
+        0.0,
+        "M0 760 L100 760 L100 860 L0 860 Z",
+    );
+    let result =
+        auto_spacing(&font, master(&font), &[mark, a], &SpacingParams::default()).expect("spacing");
+    assert_eq!(result.len(), 1, "{result:?}");
+    assert_eq!(result[0].glyph, a);
+}
+
+#[test]
 fn tightness_changes_spacing() {
     let font = fixture_font();
     let h = ids(&font, &["H"]);
