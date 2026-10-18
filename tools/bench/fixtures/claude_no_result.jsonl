@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"id":"m1","model":"claude-test-1","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3,"output_tokens":1}}}
+{"type":"assistant","message":{"id":"m1","model":"claude-test-1","content":[{"type":"tool_use","id":"t1","name":"mcp__forma__validate","input":{}}],"usage":{"input_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3,"output_tokens":5}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"assistant","message":{"id":"m2","model":"claude-test-1","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":4,"cache_read_input_tokens":8,"cache_creation_input_tokens":0,"output_tokens":7}}}

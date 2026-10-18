@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"t"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"forma","tool":"image_inspect","arguments":{"path":"/x.png"},"result":{"content":[{"type":"text","text":"{\"rows\":1}"}]},"status":"completed"}}
+{"type":"item.completed","item":{"id":"i2","type":"command_execution","command":"ls","aggregated_output":"a\nb\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"i3","type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":50}}

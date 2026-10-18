@@ -1,0 +1,13 @@
+Build a complete, valid font from the alphabet image {{IMAGE}} using the FORMA MCP tools (server "forma"). Work alone and decide everything yourself; do not ask me questions.
+
+Task:
+- Create a new FORMA document, trace every letter of the image into editable outlines, set sensible spacing and kerning, validate the font and export it as TTF and WOFF2.
+- The rows of the image, in reading order, are: {{LAYOUT}} (one string per row; each character is one glyph, in order).
+- Write every file (the document and the exports) inside {{WORK_DIR}}, the only folder the tools may use.
+- Name the document `{{CASE}}.forma` and the exports `{{CASE}}.ttf` and `{{CASE}}.woff2`.
+
+How to work: prefer the high-level operations of the server. Use `font_from_image` to go from the image and the layout to a font in one step; look at results through the contact sheets (`preview_sheet`) rather than one glyph at a time; review only what the report flags (`glyph_review`); use `glyph_synthesize` only for glyphs the image does not give. Do not write coordinates by hand when a tool can derive them.
+
+Quality bar: the outlines must match the image (keep every counter and thin feature; never merge touching letters or drop pieces silently), and `validate` must report 0 errors. If something cannot be done faithfully, say so in your final answer instead of faking it.
+
+Finish with a short report: glyphs created, the IoU of each trace, validation result, files written, and anything you could not do.

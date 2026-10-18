@@ -1,0 +1,6 @@
+{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"s"}}
+{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"model":"test-model"}}
+{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","server":"forma","tool":"image_trace","arguments":{"doc":"d"},"result":{"content":[{"type":"text","text":"abcd"},{"type":"image","data":"ZZZZ"}]},"status":"completed"}}}
+{"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}
+{"timestamp":"2026-01-01T00:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"cache_write_input_tokens":0,"output_tokens":30,"reasoning_output_tokens":9,"total_tokens":330}}}}
+{"timestamp":"2026-01-01T00:00:05Z","type":"event_msg","payload":{"type":"task_complete","duration_ms":8000}}
