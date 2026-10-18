@@ -4,8 +4,8 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 
 **FORMA es open source, sin fines comerciales, bajo `MIT OR Apache-2.0`.**
 
-**Estado: Hito 1 completado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`): CI en verde en macOS, Windows y Ubuntu (PR #1, 2026-10-17) y fuzzing nocturno en verde (los dos objetivos). **Hito 2 implementado** (rama `hito2`, PR #2): CI en verde en macOS, Windows y Ubuntu (2026-10-18) y demo con Claude Code sobre la imagen de prueba propia; falta la demo local con el alfabeto de la hermana del responsable: de una imagen de un alfabeto a una fuente completa (50 herramientas); diseño vinculante en `docs/superpowers/specs/2026-10-17-hito2-imagen-a-fuente-design.md`. **La interfaz gráfica va al final del roadmap** (Hito 8; ADR 0008): motor primero, hitos guiados por fuentes demo. Repositorio público: `github.com/luisfarfan/forma`.
-- **Aprobado:** Rust como núcleo, licencia MIT OR Apache-2.0, Hitos 1 y 2, instalación justificada de sus dependencias.
+**Estado: Hito 1 completado** (núcleo headless + MCP + CLI; ver `docs/04-roadmap.md`): CI en verde en macOS, Windows y Ubuntu (PR #1, 2026-10-17) y fuzzing nocturno en verde (los dos objetivos). **Hito 2 completado** (PR #2, 2026-10-18): de una imagen de un alfabeto a una fuente completa (diseño en `docs/superpowers/specs/2026-10-17-hito2-imagen-a-fuente-design.md`). **Hito 2.5 aprobado y en curso** (rama `hito2-5`): imagen → fuente autónoma con mínima IA; diseño vinculante en `docs/superpowers/specs/2026-10-18-hito2-5-imagen-a-fuente-autonoma-design.md`, ADR 0010. **La interfaz gráfica va al final del roadmap** (Hito 8; ADR 0008): motor primero, hitos guiados por fuentes demo. Repositorio público: `github.com/luisfarfan/forma`.
+- **Aprobado:** Rust como núcleo, licencia MIT OR Apache-2.0, Hitos 1, 2 y 2.5, instalación justificada de sus dependencias.
 - **No aprobado aún:** el toolkit de UI. No construyas el editor gráfico ni instales Qt o Slint hasta aprobar el Hito 8 (spike de UI).
 
 ## Documentos de referencia (leer antes de trabajar)
@@ -37,6 +37,8 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
   - `forma-render`: vello_cpu.
   - `forma-trace`: imagen a contornos (`image`, `visioncortex`; ADR 0009).
   - `forma-spacing`: espaciado, kerning automático y colisiones.
+  - `forma-synth`: kit de estilo y síntesis de glifos por recetas (Hito 2.5).
+  - `forma-bench` (solo desarrollo): corpus y benchmark del pipeline imagen → fuente.
   - `forma-mcp`: rmcp.
   - `forma-cli`.
   - `forma-canvas`.

@@ -27,8 +27,9 @@ Así, MCP y multiplataforma no son trabajo "al final", sino parte de cada entreg
 ```mermaid
 flowchart LR
   F0["Fase 0 ✔<br/>Investigación rev. 2"] --> H1["Hito 1 ✔<br/>Núcleo headless + MCP + CLI<br/>3 SO"]
-  H1 --> H2["Hito 2<br/>Imagen → fuente completa<br/>unicase-es"]
-  H2 --> H3["Hito 3<br/>Fuente original líquida + muestra de dominio público<br/>anchors · mark/mkmk · alternativas · ligaduras · features"]
+  H1 --> H2["Hito 2 ✔<br/>Imagen → fuente completa<br/>unicase-es"]
+  H2 --> H25["Hito 2.5<br/>Imagen → fuente autónoma<br/>mínima IA"]
+  H25 --> H3["Hito 3<br/>Fuente original líquida + muestra de dominio público<br/>anchors · mark/mkmk · alternativas · ligaduras · features"]
   H3 --> H4["Hito 4<br/>Reconstrucción de fuentes OFL premium<br/>UFO · designspace · .glyphs"]
   H4 --> H5["Hito 5<br/>Multi-master y variables"]
   H5 --> H6["Hito 6<br/>CFF/OTF y hinting"]
@@ -41,6 +42,7 @@ flowchart LR
 |---|---|---|---|
 | Hito 1 ✔ | "Forma Demo" (`.notdef space A B C H O a b c n o`) | Un agente crea, valida y exporta una fuente real por MCP, sin UI, en los 3 SO | L |
 | Hito 2 | Alfabeto A–Z dibujado a mano por la hermana del responsable (local, fuera del repositorio) | De una imagen de un alfabeto a una fuente unicase completa (89 glifos, 119 códigos), espaciada, con kerning, validada y lista para la web | L |
+| Hito 2.5 | El mismo alfabeto + corpus propio, OFL (Inter, EB Garamond, Fraunces, Patrick Hand) y casos orgánicos generados por código | `font_from_image`: una imagen se convierte en una fuente fiel y editable con una operación del motor; la IA solo supervisa; síntesis estilística con revisión; benchmark A/B/C | L |
 | Hito 3 | Fuente original "líquida" + muestra de dominio público | Anchors, `mark`/`mkmk`, alternativas, ligaduras y features OpenType de punta a punta | L |
 | Hito 4 | Fuentes OFL premium, reconstruidas desde sus fuentes públicas | Importación de UFO, designspace y `.glyphs`; el binario propio se compara con el oficial | L |
 | Hito 5 | Fuente variable de 2 ejes y 4 masters | Multi-master y variables creadas por un agente vía MCP, verificadas contra fontTools | L |
@@ -160,7 +162,7 @@ Versiones [H]: los hitos headless usan `0.0.x` (el Hito 1 fue v0.0.1); el Hito 8
 
 ---
 
-## Hito 2 — De una imagen a una fuente completa  ← **hito en curso**
+## Hito 2 — De una imagen a una fuente completa  ✔ **completado** (PR #2, 2026-10-18)
 
 > Diseño vinculante: `docs/superpowers/specs/2026-10-17-hito2-imagen-a-fuente-design.md` (aprobado 2026-10-17). Plan: `docs/superpowers/plans/2026-10-17-hito2-imagen-a-fuente.md`. Rama `hito2`. Sustituye al antiguo Hito 2 (spike de UI), que pasa al Hito 8.
 
@@ -219,6 +221,26 @@ Todos están automatizados en la CI de los 3 SO, salvo el 8, que es la demo manu
    - La fuente cumple los criterios 2–6.
    - El responsable aprueba la hoja de prueba de los glifos diseñados en la 2b.
    - La evidencia queda en local (`~/fonts/hermana/`). En `docs/qa/hito2/` solo se publica la demo con la imagen de prueba propia.
+
+**Tamaño:** L.
+
+---
+
+## Hito 2.5 — De una imagen a una fuente con mínima intervención de IA  ← **hito en curso**
+
+> Diseño vinculante: `docs/superpowers/specs/2026-10-18-hito2-5-imagen-a-fuente-autonoma-design.md` (aprobado con ajustes el 2026-10-18). Plan: `docs/superpowers/plans/2026-10-18-hito2-5-imagen-a-fuente-autonoma.md`. ADR 0010. Rama `hito2-5`.
+
+**Objetivo:** FORMA recibe un alfabeto dibujado a mano y produce una fuente profesional, editable y fiel al original con una sola operación del motor (`font_from_image`). La IA solo supervisa, interpreta ambigüedades y aprueba. **Prioridad:** calidad tipográfica > automatización > tokens > velocidad.
+
+**Entregables:**
+- Respuestas MCP compactas (`detail`, informes en archivo), hojas de contacto (`preview_sheet`), perfil de herramientas `image-font` y output schemas opcionales.
+- Procedencia y revisión por glifo (formato v3, `glyph_review`).
+- `font_from_image` como una transacción y un plan.
+- Trazado subpíxel con presupuesto de fidelidad en píxeles, validación topológica y de rasgos finos, y agrupación de letras de varias piezas por layout.
+- Síntesis estilística (`forma-synth`, `glyph_synthesize`) que rechaza en lugar de crear glifos mediocres.
+- Benchmark reproducible: corpus S, M, M-hand, L y O; modos A (Hito 2), B (optimizado) y C (sin IA); calibración de umbrales.
+
+**Criterios de aceptación:** §8.4 de la especificación (calidad sin regresión, E y H resueltas sin intervención, síntesis marcada y revisable, modo C sin IA, consumo medido y publicado, disciplina de contrato y CI en los 3 SO).
 
 **Tamaño:** L.
 
