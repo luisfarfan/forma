@@ -24,8 +24,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mcp_common::{
-    ACTOR, Client, call, close, connect, copy_specimen, decode_png, is_legacy, legacy, modern,
-    path_text, with_timeout_for,
+    ACTOR, ModelGlyph, call, close, connect, copy_specimen, decode_png, effective_kern, group_key,
+    is_legacy, legacy, model_glyphs, modern, path_text, rounded, unicode_text, with_timeout_for,
 };
 use read_fonts::types::GlyphId;
 use read_fonts::{FontRef, TableProvider};
@@ -50,10 +50,6 @@ async fn image_to_font_scenario(#[case] mode: ClientLifecycleMode) {
         scenario(mode),
     )
     .await;
-}
-
-fn unicode_text(code: u32) -> String {
-    format!("U+{code:04X}")
 }
 
 async fn scenario(mode: ClientLifecycleMode) {
@@ -434,35 +430,6 @@ async fn scenario(mode: ClientLifecycleMode) {
     close(client).await;
 }
 
-/// One glyph of the model, as `glyph_list` reports it.
-#[derive(Clone, Debug)]
-struct ModelGlyph {
-    name: String,
-    unicodes: Vec<u32>,
-    advance_width: f64,
-}
-
-async fn model_glyphs(client: &Client, doc: &str) -> Vec<ModelGlyph> {
-    let listed = call(client, "glyph_list", json!({ "doc": doc, "limit": 500 }))
-        .await
-        .ok();
-    listed["glyphs"]
-        .as_array()
-        .expect("glyphs")
-        .iter()
-        .map(|glyph| ModelGlyph {
-            name: glyph["name"].as_str().expect("name").to_owned(),
-            unicodes: glyph["unicodes"]
-                .as_array()
-                .expect("unicodes")
-                .iter()
-                .map(|code| u32::try_from(code.as_u64().expect("code point")).expect("u32"))
-                .collect(),
-            advance_width: glyph["advance_width"].as_f64().expect("advance"),
-        })
-        .collect()
-}
-
 fn glyph_for(model: &[ModelGlyph], c: char) -> &ModelGlyph {
     model
         .iter()
@@ -502,39 +469,6 @@ fn check_ttf(ttf: &[u8], model: &[ModelGlyph]) {
             );
         }
     }
-}
-
-/// The group key of kerning side `side` as `kerning_get` lists pairs: `@name`.
-fn group_key(name: &str) -> String {
-    if name.starts_with('@') {
-        name.to_owned()
-    } else {
-        format!("@{name}")
-    }
-}
-
-/// The effective kerning of `left` then `right`: glyph-glyph exception, then
-/// glyph-group, group-glyph and group-group.
-fn effective_kern(
-    pairs: &BTreeMap<(String, String), f64>,
-    first_group: &BTreeMap<String, String>,
-    second_group: &BTreeMap<String, String>,
-    left: &str,
-    right: &str,
-) -> f64 {
-    let lg = first_group.get(left);
-    let rg = second_group.get(right);
-    let candidates = [
-        Some((left.to_owned(), right.to_owned())),
-        rg.map(|g| (left.to_owned(), g.clone())),
-        lg.map(|g| (g.clone(), right.to_owned())),
-        lg.zip(rg).map(|(a, b)| (a.clone(), b.clone())),
-    ];
-    candidates
-        .into_iter()
-        .flatten()
-        .find_map(|key| pairs.get(&key).copied())
-        .unwrap_or(0.0)
 }
 
 fn write_acceptance(out: &Path, root: &Path, model: &[ModelGlyph], kerning: &Value) {
@@ -626,12 +560,4 @@ fn write_acceptance(out: &Path, root: &Path, model: &[ModelGlyph], kerning: &Val
     let mut text = serde_json::to_string_pretty(&expected).expect("JSON");
     text.push('\n');
     std::fs::write(out.join("hito2-expected.json"), text).expect("write expected");
-}
-
-/// An advance width rounded with [`f64::round`], as a JSON integer.
-fn rounded(advance: f64) -> i64 {
-    let rounded = advance.round();
-    assert!(rounded.abs() < 1e9, "advance width {advance} out of range");
-    // Exact: a whole number well inside the range of i64.
-    rounded as i64
 }

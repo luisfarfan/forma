@@ -1,9 +1,11 @@
 #Requires -Version 7.0
-# Milestone 1 acceptance with external oracles (docs/04-roadmap.md, Hito 1,
-# criteria 2 and 8): the PowerShell twin of scripts/acceptance.sh. An AI agent
-# builds "Forma Demo" through `forma mcp` (the stdio scenario test), then
-# independent tools check the font it exported: OTS, HarfBuzz, fontTools,
-# fontmake parity and, if it is installed, fontspector.
+# Acceptance with external oracles (docs/04-roadmap.md): the PowerShell twin
+# of scripts/acceptance.sh. Milestone 1 (criteria 2 and 8): an AI agent builds
+# "Forma Demo" through `forma mcp` (the stdio scenario test), then independent
+# tools check the font it exported: OTS, HarfBuzz, fontTools, fontmake parity
+# and fontspector. Milestone 2 (criteria 3, 5 and 6): the image-to-font
+# scenario and the complete unicase-es test font, checked by OTS, HarfBuzz,
+# fontTools, Chrome (where one is installed) and fontspector.
 #
 # Usage (from any folder):  pwsh scripts/acceptance.ps1
 #
@@ -72,7 +74,7 @@ $Python = Find-Python
 # The same head timestamps from both compilers (fontc and fontmake honour it).
 $env:SOURCE_DATE_EPOCH = '0'
 
-Write-Step '1/5 Build the release forma binary'
+Write-Step '1/8 Build the release forma binary'
 Push-Location $Core
 try {
     cargo build --release -p forma-cli --locked
@@ -110,11 +112,11 @@ foreach ($file in @('forma-demo.ttf', 'forma-demo.woff2', 'forma-demo.forma', 'e
     }
 }
 
-Write-Step '3/5 Export the scenario document as a UFO'
+Write-Step '3/8 Export the scenario document as a UFO'
 & $Forma export (Join-Path $Out 'forma-demo.forma') --format ufo -o (Join-Path $Out 'forma-demo.ufo')
 Assert-ExitCode 'forma export --format ufo failed'
 
-Write-Step '4/5 External oracles: OTS, HarfBuzz, fontTools, fontmake parity'
+Write-Step '4/8 External oracles: OTS, HarfBuzz, fontTools, fontmake parity'
 # Run from the artefact folder, never from inside the Python environment.
 Push-Location $Out
 try {
@@ -130,7 +132,7 @@ finally {
     Pop-Location
 }
 
-Write-Step '5/5 fontspector (opentype profile)'
+Write-Step '5/8 fontspector (opentype profile)'
 $Fontspector = Get-Command fontspector -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
 if ($Fontspector) {
@@ -152,6 +154,62 @@ else {
         Stop-Acceptance "fontspector is required (FORMA_REQUIRE_FONTSPECTOR=$Required) but is not on the PATH; install it with: cargo install fontspector --locked"
     }
     Write-Host 'fontspector: SKIPPED (not on the PATH; install it with: cargo install fontspector --locked)'
+}
+
+Write-Step '6/8 Milestone 2 scenarios: image to font and the unicase-es font'
+$env:FORMA_ACCEPTANCE_OUT = $Out
+Push-Location $Core
+try {
+    cargo test -p forma-cli --locked --test mcp_scenario_hito2 --test unicase_font
+    Assert-ExitCode 'the milestone 2 tests failed'
+}
+finally {
+    Pop-Location
+    Remove-Item Env:FORMA_ACCEPTANCE_OUT -ErrorAction SilentlyContinue
+}
+foreach ($file in @('hito2-specimen.ttf', 'hito2-specimen.woff2', 'hito2-specimen.forma', 'hito2-expected.json',
+        'unicase-es.ttf', 'unicase-es.woff2', 'unicase-expected.json')) {
+    $path = Join-Path $Out $file
+    if (-not (Test-Path $path -PathType Leaf) -or (Get-Item $path).Length -eq 0) {
+        Stop-Acceptance "the milestone 2 tests did not write $path"
+    }
+}
+
+Write-Step '7/8 External oracles for milestone 2: OTS, HarfBuzz, fontTools, Chrome'
+Push-Location $Out
+try {
+    foreach ($pair in @(@('hito2-specimen', 'hito2-expected'), @('unicase-es', 'unicase-expected'))) {
+        & $Python -I (Join-Path $Repo 'tools' 'oracle' 'verify_hito2.py') `
+            --ttf (Join-Path $Out "$($pair[0]).ttf") `
+            --woff2 (Join-Path $Out "$($pair[0]).woff2") `
+            --expected (Join-Path $Out "$($pair[1]).json")
+        Assert-ExitCode "the external oracles rejected $($pair[0]) (see above)"
+    }
+}
+finally {
+    Pop-Location
+}
+
+Write-Step '8/8 fontspector on the milestone 2 fonts (opentype profile)'
+if ($Fontspector) {
+    Push-Location $Out
+    try {
+        foreach ($font in @('hito2-specimen', 'unicase-es')) {
+            $report = Join-Path $Out "fontspector-$font.json"
+            & $Fontspector.Source --profile opentype --error-code-on fail --json $report (Join-Path $Out "$font.ttf")
+            Assert-ExitCode "fontspector reported a FAIL on $font (report: $report)"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+else {
+    $Required = [Environment]::GetEnvironmentVariable('FORMA_REQUIRE_FONTSPECTOR')
+    if ($Required -and $Required -ne '0') {
+        Stop-Acceptance "fontspector is required (FORMA_REQUIRE_FONTSPECTOR=$Required) but is not on the PATH"
+    }
+    Write-Host 'fontspector: SKIPPED (not on the PATH)'
 }
 
 Write-Host ''

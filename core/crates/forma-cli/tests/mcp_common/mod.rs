@@ -386,3 +386,136 @@ pub fn fixture() -> Value {
 pub fn fixture_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/hito1/glyphs.json")
 }
+
+/// `U+0041` for 0x41.
+pub fn unicode_text(code: u32) -> String {
+    format!("U+{code:04X}")
+}
+
+/// One glyph of the model, as `glyph_list` reports it.
+#[derive(Clone, Debug)]
+pub struct ModelGlyph {
+    pub name: String,
+    pub unicodes: Vec<u32>,
+    pub advance_width: f64,
+}
+
+/// The glyphs of `doc` (up to 500), as `glyph_list` reports them.
+pub async fn model_glyphs(client: &Client, doc: &str) -> Vec<ModelGlyph> {
+    let listed = call(client, "glyph_list", json!({ "doc": doc, "limit": 500 }))
+        .await
+        .ok();
+    listed["glyphs"]
+        .as_array()
+        .expect("glyphs")
+        .iter()
+        .map(|glyph| ModelGlyph {
+            name: glyph["name"].as_str().expect("name").to_owned(),
+            unicodes: glyph["unicodes"]
+                .as_array()
+                .expect("unicodes")
+                .iter()
+                .map(|code| u32::try_from(code.as_u64().expect("code point")).expect("u32"))
+                .collect(),
+            advance_width: glyph["advance_width"].as_f64().expect("advance"),
+        })
+        .collect()
+}
+
+/// The group key of kerning side `side` as `kerning_get` lists pairs: `@name`.
+pub fn group_key(name: &str) -> String {
+    if name.starts_with('@') {
+        name.to_owned()
+    } else {
+        format!("@{name}")
+    }
+}
+
+/// The effective kerning of `left` then `right`: glyph-glyph exception, then
+/// glyph-group, group-glyph and group-group.
+pub fn effective_kern(
+    pairs: &std::collections::BTreeMap<(String, String), f64>,
+    first_group: &std::collections::BTreeMap<String, String>,
+    second_group: &std::collections::BTreeMap<String, String>,
+    left: &str,
+    right: &str,
+) -> f64 {
+    let lg = first_group.get(left);
+    let rg = second_group.get(right);
+    let candidates = [
+        Some((left.to_owned(), right.to_owned())),
+        rg.map(|g| (left.to_owned(), g.clone())),
+        lg.map(|g| (g.clone(), right.to_owned())),
+        lg.zip(rg).map(|(a, b)| (a.clone(), b.clone())),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(|key| pairs.get(&key).copied())
+        .unwrap_or(0.0)
+}
+
+/// An advance width rounded with [`f64::round`], as a JSON integer.
+pub fn rounded(advance: f64) -> i64 {
+    let rounded = advance.round();
+    assert!(rounded.abs() < 1e9, "advance width {advance} out of range");
+    // Exact: a whole number well inside the range of i64.
+    rounded as i64
+}
+
+/// The kerning of `kerning_get`'s result as lookup tables: the pair values by
+/// `(first, second)` and the group of each glyph on the first and second sides.
+pub fn kerning_maps(kerning: &Value) -> KerningMaps {
+    let mut first_group = std::collections::BTreeMap::new();
+    let mut second_group = std::collections::BTreeMap::new();
+    for group in kerning["groups"].as_array().expect("groups") {
+        let key = group_key(group["name"].as_str().expect("group name"));
+        let target = match group["side"].as_str() {
+            Some("first") => &mut first_group,
+            Some("second") => &mut second_group,
+            other => panic!("unknown side {other:?}"),
+        };
+        for member in group["members"].as_array().expect("members") {
+            target.insert(member.as_str().expect("member").to_owned(), key.clone());
+        }
+    }
+    let pairs = kerning["pairs"]
+        .as_array()
+        .expect("pairs")
+        .iter()
+        .map(|pair| {
+            (
+                (
+                    pair["first"].as_str().expect("first").to_owned(),
+                    pair["second"].as_str().expect("second").to_owned(),
+                ),
+                pair["value"].as_f64().expect("value"),
+            )
+        })
+        .collect();
+    KerningMaps {
+        pairs,
+        first_group,
+        second_group,
+    }
+}
+
+/// The lookup tables of [`kerning_maps`].
+pub struct KerningMaps {
+    pub pairs: std::collections::BTreeMap<(String, String), f64>,
+    pub first_group: std::collections::BTreeMap<String, String>,
+    pub second_group: std::collections::BTreeMap<String, String>,
+}
+
+impl KerningMaps {
+    /// The effective kerning of `left` then `right`.
+    pub fn effective(&self, left: &str, right: &str) -> f64 {
+        effective_kern(
+            &self.pairs,
+            &self.first_group,
+            &self.second_group,
+            left,
+            right,
+        )
+    }
+}
