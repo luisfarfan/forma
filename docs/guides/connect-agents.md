@@ -66,9 +66,10 @@ Los pasos que el agente suele seguir:
 
 1. `image_inspect`: devuelve la imagen con cada candidato numerado. El agente la mira y decide qué letra es cada número (el texto lista como máximo 200 candidatos; la imagen anotada los muestra todos).
 2. `image_trace`: crea los glifos y devuelve el IoU de cada uno. `trace_compare` superpone un glifo y su candidato para revisar; `nodes_edit` corrige a mano.
-3. `glyph_measure` (grosor y tapas del trazo), `glyph_create` y `glyph_stroke` para los glifos que la imagen no tiene; `glyph_compose` para las acentuadas.
-4. `spacing_auto`, `kerning_auto` y `kerning_check`.
-5. `charset_check` con `profile: "unicase-es"`, `validate`, `export_font`.
+3. `glyph_measure` (grosor y tapas del trazo), `glyph_create` y `glyph_stroke` (con `remove_overlap` si hace falta) para los glifos que la imagen no tiene: cifras, signos y marcas.
+4. `glyph_compose` para las acentuadas, cuando las bases y las marcas ya existen.
+5. `spacing_auto` (los compuestos siguen a su base: mismo avance y marca centrada), `kerning_auto` y `kerning_check`.
+6. `charset_check` con `profile: "unicase-es"`, `validate`, `export_font` y `document_save`.
 
 Notas que conviene saber:
 - `image_inspect` e `image_trace` leen la imagen desde las carpetas permitidas (`--allow-dir`), con un máximo de 64 MiB y 50 megapíxeles.
@@ -79,6 +80,8 @@ Notas que conviene saber:
 - `kerning_check` verifica `kerning_auto` si usa el mismo `glyphs` y el mismo `min_distance` (por defecto, `kerning_auto` mantiene 2 % del em entre los pares; `kerning_check` usa 0).
 - `kerning_auto` con `replace` y un subconjunto `glyphs` solo borra los pares que involucran esos glifos.
 - `history_revert` de una transacción que creó un glifo que después recibió kerning o componentes falla sin tocar nada (no hay cascada); revierte primero lo posterior.
+- `spacing_auto` no espacia las marcas de avance 0, y `kerning_auto`/`kerning_check` las dejan fuera de su conjunto por defecto (se pueden pedir con `glyphs`).
+- `glyph_stroke` y `remove_overlap` devuelven `LIMIT_EXCEEDED` si la unión supera su presupuesto (50 000 segmentos o 100 000 pares de segmentos que pueden cruzarse).
 - `image_trace`, `spacing_auto` y `kerning_auto` no entran en `edit_batch`. Los dos últimos y `image_trace` piden plan si la operación es masiva (más de 20 entidades) o destructiva.
 
 ## 7. Cómo trabaja un agente con FORMA

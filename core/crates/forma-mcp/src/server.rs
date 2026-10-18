@@ -36,12 +36,14 @@ Destructive or mass edits return APPROVAL_REQUIRED with a plan: show it to the u
 plan_commit only after they confirm.\n\
 Image to font flow:\n\
 1. image_inspect: look at the annotated image and decide which letter each candidate is.\n\
-2. image_trace the candidates into glyphs, then trace_compare to check the fit.\n\
-3. geometry_check / geometry_fix, then glyph_measure to learn the stroke style.\n\
-4. spacing_auto, kerning_auto, then kerning_check.\n\
-5. glyph_compose for accented letters from marks; glyph_stroke + remove_overlap to draw digits, \
-punctuation and marks in the measured style.\n\
-6. preview_text, charset_check, validate, export_font, document_save.";
+2. image_trace the candidates into glyphs, trace_compare to check the fit, geometry_check / \
+geometry_fix.\n\
+3. glyph_measure to learn the stroke style; glyph_stroke + remove_overlap to draw digits, \
+punctuation and marks in it.\n\
+4. glyph_compose for accented letters from the base letters and the marks.\n\
+5. spacing_auto (composites follow their bases), kerning_auto, then kerning_check; \
+preview_text to look.\n\
+6. charset_check, validate, export_font, document_save.";
 
 /// The newest protocol revision FORMA serves (and is tested with).
 const NEWEST_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2026_07_28;
@@ -313,6 +315,42 @@ mod tests {
             "export_font",
         ] {
             assert!(INSTRUCTIONS.contains(tool), "{tool}");
+        }
+    }
+
+    #[test]
+    fn instructions_give_the_image_flow_in_order() {
+        // Draw everything before composing, compose before spacing (the
+        // composites follow their bases), space before kerning.
+        let order = [
+            "image_trace",
+            "glyph_measure",
+            "glyph_stroke",
+            "remove_overlap",
+            "glyph_compose",
+            "spacing_auto",
+            "kerning_auto",
+            "kerning_check",
+            "charset_check",
+            "validate",
+            "export_font",
+            "document_save",
+        ];
+        let positions: Vec<usize> = order
+            .iter()
+            .map(|tool| {
+                INSTRUCTIONS
+                    .find(tool)
+                    .unwrap_or_else(|| panic!("{tool} is missing"))
+            })
+            .collect();
+        for (pair, tools) in positions.windows(2).zip(order.windows(2)) {
+            assert!(
+                pair[0] < pair[1],
+                "{} must come before {}",
+                tools[0],
+                tools[1]
+            );
         }
     }
 

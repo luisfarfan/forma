@@ -43,12 +43,14 @@ Destructive or mass edits return APPROVAL_REQUIRED with a plan: show it to the u
 plan_commit only after they confirm.\n\
 Image to font flow:\n\
 1. image_inspect: look at the annotated image and decide which letter each candidate is.\n\
-2. image_trace the candidates into glyphs, then trace_compare to check the fit.\n\
-3. geometry_check / geometry_fix, then glyph_measure to learn the stroke style.\n\
-4. spacing_auto, kerning_auto, then kerning_check.\n\
-5. glyph_compose for accented letters from marks; glyph_stroke + remove_overlap to draw digits, \
-punctuation and marks in the measured style.\n\
-6. preview_text, charset_check, validate, export_font, document_save.";
+2. image_trace the candidates into glyphs, trace_compare to check the fit, geometry_check / \
+geometry_fix.\n\
+3. glyph_measure to learn the stroke style; glyph_stroke + remove_overlap to draw digits, \
+punctuation and marks in it.\n\
+4. glyph_compose for accented letters from the base letters and the marks.\n\
+5. spacing_auto (composites follow their bases), kerning_auto, then kerning_check; \
+preview_text to look.\n\
+6. charset_check, validate, export_font, document_save.";
 
 type Client = RunningService<RoleClient, ClientConfig>;
 

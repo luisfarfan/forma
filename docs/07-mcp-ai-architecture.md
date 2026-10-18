@@ -225,10 +225,11 @@ Convenciones: `snake_case`, prefijo de dominio, ≤ 40 caracteres, orden determi
 Flujo recomendado (las instrucciones del servidor lo resumen):
 
 1. `image_inspect` sobre la imagen: devuelve la imagen anotada con el número de cada candidato. El agente la mira y decide qué letra es cada número.
-2. `image_trace` con las asignaciones `{candidate, name, unicodes}`: crea los glifos y devuelve el IoU de cada uno; `trace_compare` permite revisar uno y `nodes_edit` corregirlo.
-3. `glyph_measure` sobre una letra trazada, para sacar el ancho y las tapas; `glyph_create` + `glyph_stroke` para los glifos que faltan (cifras, signos), y `glyph_compose` para las acentuadas.
-4. `spacing_auto`, luego `kerning_auto` y `kerning_check` con el mismo conjunto de glifos.
-5. `charset_check`, `geometry_check`/`remove_overlap`, `validate` y `export_font`.
+2. `image_trace` con las asignaciones `{candidate, name, unicodes}`: crea los glifos y devuelve el IoU de cada uno; `trace_compare` permite revisar uno y `nodes_edit` corregirlo; `geometry_check`/`geometry_fix` los limpia.
+3. `glyph_measure` sobre una letra trazada, para sacar el ancho y las tapas; `glyph_create` + `glyph_stroke` (y `remove_overlap` si hace falta) para los glifos que faltan: cifras, signos y marcas.
+4. `glyph_compose` para las acentuadas, con las letras base y las marcas ya dibujadas.
+5. `spacing_auto`: los compuestos siguen a su base reespaciada (avance y marcas) y las marcas de avance 0 no se tocan. Luego `kerning_auto` y `kerning_check` con el mismo conjunto de glifos (por defecto, sin las marcas de avance 0); `preview_text` para mirar muestras.
+6. `charset_check`, `validate`, `export_font` y `document_save`.
 
 **Advertencia de derechos:** `image_inspect` e `image_trace` solo deben usarse con imágenes sobre las que la persona tiene derechos. Las imágenes de terceros no se versionan en el repositorio.
 
@@ -241,6 +242,8 @@ Flujo recomendado (las instrucciones del servidor lo resumen):
 - `kerning_auto` con `replace` y un subconjunto `glyphs` solo borra los pares que involucran esos glifos (o sus grupos).
 - `image_inspect` lista como máximo 200 candidatos en el texto; la imagen anotada los muestra todos (hasta 500).
 - `image_trace`, `spacing_auto` y `kerning_auto` no se pueden usar dentro de `edit_batch`; se llaman por separado.
+- `component_set` con la misma lista no cambia nada (`tx: null`); mover los mismos componentes es una escritura, y solo cambiar qué glifos dibujan (o quitarlos) es destructivo.
+- `glyph_stroke` y `remove_overlap` tienen un presupuesto de trabajo para la unión: más de 50 000 segmentos, o más de 100 000 pares de segmentos cuyas cajas se solapan (cota de los cruces), es `LIMIT_EXCEEDED` con `{limit, actual}`.
 - Una llamada mutante que no cambia nada devuelve `tx: null` y no avanza la `rev`.
 
 **Representación de contornos para agentes:** se aceptan dos formas equivalentes:
@@ -334,7 +337,7 @@ flowchart LR
 | Unitario | Cada handler del registro (vía API Rust) | `cargo test`, 3 SO |
 | Contrato | Snapshot de `tools/list`; validación de que cada `outputSchema` acepta las salidas reales (propiedad); paridad registro ↔ MCP ↔ CLI | CI por PR |
 | Integración stdio | Arranca el binario `forma mcp` con el cliente de rmcp (`TokioChildProcess`), **en ambos modos de ciclo de vida** (`Initialize` = era 2025, como Codex; `Discover` = 2026-07-28) [V]; ejecuta escenarios y verifica resultados y errores | CI por PR en **macOS, Windows y Ubuntu 24.04** |
-| Escenario Hito 2 | Imagen de prueba propia → `image_inspect` → `image_trace` → `glyph_stroke`/`glyph_compose` → `spacing_auto` → `kerning_auto` → `kerning_check` (0 colisiones) → `charset_check` (100 %) → `validate` → `export_font` → verificación externa (OTS, `hb-shape`, fontTools, fontspector, Chrome) | CI por PR, en los dos ciclos de vida |
+| Escenario Hito 2 | Imagen de prueba propia → `image_inspect` → `image_trace` → `glyph_stroke` → `glyph_compose` → `spacing_auto` (los compuestos siguen a su base) → `kerning_auto` → `kerning_check` (0 colisiones) → `charset_check` (100 %) → `validate` → `export_font` → verificación externa (OTS, `hb-shape`, fontTools, fontspector, Chrome) | CI por PR, en los dos ciclos de vida |
 | Escenario Hito 1 | Crear fuente → glifos desde `svg_path` → espaciado → `geometry_check`/`geometry_fix` → `validate` → `export_font` TTF → verificación externa (OTS, `hb-shape`, fontTools) | CI por PR |
 | Concurrencia | Cliente "usuario" simulado (por IPC) y cliente MCP editando a la vez → conflictos detectados, sin pérdida de cambios | CI por PR (desde que exista IPC) |
 | Aprobaciones | Operaciones masivas o destructivas sin token → `APPROVAL_REQUIRED`; token caducado, reutilizado o de otro actor → rechazado | CI por PR |

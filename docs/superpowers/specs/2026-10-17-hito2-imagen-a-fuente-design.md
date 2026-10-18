@@ -143,6 +143,7 @@ Usa algoritmos propios a partir de principios publicados. No se copia código de
   - El ancho de trazo de `H` es la mediana del ancho de las pasadas de tinta en la mitad media de la altura de mayúsculas.
   - Cada lado de cada glifo se resuelve por **bisección** hasta igualar el blanco objetivo, con tolerancia de 0,5 unidades. Los márgenes negativos se recortan a 0 y el resultado lo marca con indicadores `clamped`.
   - Propiedad: un glifo simétrico recibe márgenes simétricos. Valores con la fuente de prueba: `H` 48/48, `O` 29/29, `A` 18/18.
+  - *(Enmendado en la ola final.)* Se saltan los glifos de avance 0 (marcas combinantes: conservan avance y contornos) y los compuestos (solo componentes). En la misma transacción, `spacing_auto` realinea cada compuesto de componentes solo trasladados cuya primera base se reespació: el avance cambia lo mismo que el de la base y cada otro componente se mueve `δlsb(base) − δlsb(su glifo)`, así la marca queda donde estaba sobre la base. Los glifos mixtos (contornos y componentes) se espacian como los demás, sobre su contorno completo.
 - **Kerning automático.**
   - *(Enmendado con lo implementado.)* Para el par (L, R) el hueco por línea es `g(y) = (avance_L − der_L(y)) + izq_R(y)` en las líneas de la rejilla donde ambos tienen tinta.
   - El **hueco óptico** por línea es el máximo de dos medidas: el blanco propio de cada glifo recortado como en el espaciado, y `g(y)` recortado a 0,4 × el ancho de trazo de `H` más allá del punto más cercano del par. La media se pondera con el mismo `edge_weight` (0,25) que el espaciado. Con solo el recorte del espaciado, todos los pares darían ≈ 0 (incluido AV), porque el espaciado ya igualó esos blancos; con el máximo, un par con un lado recto mide como en el espaciado y un canal que el par nunca cierra (AV, To, AT) cuenta entero.
@@ -152,6 +153,7 @@ Usa algoritmos propios a partir de principios publicados. No se copia código de
   - **Reglas de clase y excepciones:** el kern de clase (primera × segunda) es la mediana de los objetivos de sus miembros (con cantidad par, de las dos centrales la más cercana a 0) y se descarta si |v| < `min`. Un miembro recibe una excepción glifo-glifo si su objetivo difiere del de clase en más de 10 unidades, o si el valor de clase rompería la guardia para él. Como el modelo no admite pares de valor 0, una excepción de 0 guarda su kern sin filtrar o +1. Las excepciones ganan sobre las clases en `Kerning::effective`.
   - El resultado es determinista (orden por nombre, independiente del orden de entrada y de los duplicados). Los valores son enteros, no nulos y ≤ 2 × UPM; máximo 500 glifos por llamada.
 - **Colisiones.** Para todos los pares (o un subconjunto), se calcula la distancia mínima entre contornos con avance y kerning aplicados. Hay colisión si es menor que 0 (toque o solapamiento).
+- *(Enmendado en la ola final.)* El conjunto por defecto de `kerning_auto` y `kerning_check` excluye las marcas de avance 0 (se montan sobre otra letra, nunca al lado); con `glyphs` se pueden incluir. La rejilla se sigue calculando con el mismo conjunto, `.notdef` incluido.
 
 ### 6.3 `forma-geometry` (ampliada)
 - **`fit`:** ajuste de cúbicas a puntos (algoritmo de Schneider, implementación propia) con error máximo configurable. Lo usan `forma-trace` y el trazo.
@@ -165,6 +167,7 @@ Usa algoritmos propios a partir de principios publicados. No se copia código de
   - `remove_overlap(paths) -> Vec<Path>`: unión con relleno no-cero vía **linesweeper** 0.5, detrás del trait `PathOps`, para poder cambiar a Skia PathOps si fallara.
   - Después se normaliza la dirección y se agregan extremos.
   - Error `INVALID_GEOMETRY` si linesweeper falla.
+  - *(Enmendado en la ola final.)* Presupuesto de trabajo antes de unir: como máximo 50 000 segmentos y 100 000 pares de segmentos cuyas cajas se solapan (contados de forma exacta en `O(n log n)`; son una cota de los cruces, de los que crece la memoria del barrido). Si se supera, `GeometryError::TooComplex`, que el motor devuelve como `LIMIT_EXCEEDED` con `{limit, actual}`.
 - **`decompose`:** convierte los componentes de una capa en contornos con su transformación, de forma recursiva.
 
 ### 6.4 Crates existentes
@@ -214,13 +217,16 @@ Todos están disponibles en `edit_batch`.
 
 ## 8. Flujo de la demo (instrucciones del servidor)
 
+*(Enmendado en la ola final: el orden anterior componía después de espaciar.)*
+
 ```
 image_inspect → (el agente mira la imagen anotada y asigna A…Z) → image_trace
   → trace_compare → geometry_check/geometry_fix
-  → glyph_measure (estilo) → spacing_auto → kerning_auto → kerning_check
+  → glyph_measure (estilo) → glyph_stroke + remove_overlap (cifras, signos, marcas)
   → glyph_compose (Á É Í Ó Ú Ü Ñ con acutecomb/dieresiscomb/tildecomb)
-  → glyph_stroke + remove_overlap (cifras, signos, marcas) → preview_text (muestras)
-  → charset_check → validate → export_font (TTF + WOFF2) → document_save
+  → spacing_auto (los compuestos siguen a su base) → kerning_auto → kerning_check
+  → preview_text (muestras) → charset_check → validate → export_font (TTF + WOFF2)
+  → document_save
 ```
 
 ## 9. Seguridad y límites
@@ -230,6 +236,7 @@ image_inspect → (el agente mira la imagen anotada y asigna A…Z) → image_tr
   - ≤ 500 candidatos por imagen;
   - ≤ 200 asignaciones por `image_trace`;
   - esqueleto ≤ 10 000 nodos;
+  - unión (`glyph_stroke`, `remove_overlap`) ≤ 50 000 segmentos y ≤ 100 000 pares de segmentos con cajas solapadas;
   - `kerning_check` ≤ 250 000 pares por llamada.
 - El contenido de la imagen y los nombres son datos, nunca instrucciones.
 - El decodificador de imágenes es un objetivo nuevo del fuzzing nocturno (bytes arbitrarios → error o resultado, nunca pánico, cuelgue ni agotamiento de memoria).
@@ -302,3 +309,5 @@ El cuerpo del documento se corrigió donde ya no coincidía con el código. Aqu�
 4. **§6.2, kerning (Tarea 13).** Hueco óptico como máximo de dos recortes, guardia sobre la rejilla común con `kerning_check`, `min_distance` configurable y reglas de agrupación, clase y excepción tal como se describen en el cuerpo.
 5. **§12.** El conteo es 50 herramientas (35 + 15), no 49.
 6. **Formato y contrato.** `Layer.components`, `Font.kerning`, los indicadores de `FontDiff`/`GlyphDiff`, el patrón de `EntityKey` y los componentes de `glyph_get` crecen de forma aditiva en el snapshot de `tools/list` (véase `docs/qa/hito2/decisiones.md`).
+7. **§6.2 y §8, compuestos y marcas (ola final).** La revisión de toda la rama encontró que, al componer antes de espaciar (el orden de los dos escenarios de aceptación), cada compuesto conservaba el avance viejo (Aacute 740 frente a A 674) y su marca quedaba descentrada entre −60 y −150 unidades, y que `spacing_auto` espaciaba las marcas de avance 0. Ahora las marcas se saltan, los compuestos siguen a su base en la misma transacción (campo `realigned`), `SetComponents` con la misma lista no toca nada y solo es destructivo si cambian las bases, y el kerning por defecto excluye las marcas. El flujo de §8 compone antes de espaciar.
+8. **§6.3 y §9, presupuesto de la unión (ola final).** 1 000 trazos que se cruzan todos costaban 9,7 s y 4,4 GB (release) y el límite de 10 000 nodos de esqueleto permitía mucho más. El presupuesto de §6.3 lo corta antes del barrido (0,2 s, 13 MB).
