@@ -239,7 +239,7 @@ fn pipeline(
     let traced = run.json(
         "image_trace",
         "image_trace",
-        json!({ "doc": doc, "base_rev": rev, "path": image, "assignments": assigned }),
+        json!({ "doc": doc, "base_rev": rev, "path": image, "assignments": assigned, "detail": "full" }),
     )?;
     let mut glyphs = Vec::new();
     for entry in traced["traced"].as_array().cloned().unwrap_or_default() {

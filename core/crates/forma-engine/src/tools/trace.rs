@@ -710,7 +710,7 @@ fn image_trace(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
         doc: &call.doc,
         base_rev: Rev(call.base_rev),
         dry_run: call.dry_run,
-        label: format!("Trace {} glyphs from an image", entries.len()),
+        label: format!("Trace {} glyphs from an image", traced_total),
         steps: Steps::of(&font, cmds)?,
     };
     mutate(engine, actor, edit, |engine, result| {

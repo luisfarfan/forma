@@ -2932,7 +2932,7 @@ expression: "lists[0]"
             "description": "The origin and review state of a glyph's design.",
             "properties": {
               "approved_geometry": {
-                "description": "The design approved, as [`Glyph::geometry_hash`]; set by approving.",
+                "description": "The design approved, as `forma_geometry::design_hash`; set by\napproving.",
                 "type": [
                   "string",
                   "null"

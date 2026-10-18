@@ -193,6 +193,7 @@ impl Document {
             font = next;
             touched.extend(keys);
         }
+        crate::apply::mark_design_changes(&self.font, &mut font, &touched)?;
 
         self.check_conflicts(&touched, base_rev)?;
 

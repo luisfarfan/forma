@@ -523,7 +523,7 @@ pub(crate) fn glyph_review_commands(
         match op.decision {
             ReviewDecision::Approve => {
                 next.review = Review::Approved;
-                next.approved_geometry = Some(glyph.geometry_hash());
+                next.approved_geometry = Some(forma_geometry::design_hash(font, glyph));
             }
             ReviewDecision::Reject => {
                 next.review = Review::Rejected;

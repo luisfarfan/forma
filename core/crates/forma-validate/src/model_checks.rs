@@ -50,8 +50,8 @@ fn check_review(font: &Font) -> Vec<Finding> {
                 ));
             }
             if provenance.review == Review::Approved
-                && let Some(approved) = &provenance.approved_geometry
-                && *approved != glyph.geometry_hash()
+                && provenance.approved_geometry.as_deref()
+                    != Some(forma_geometry::design_hash(font, glyph).as_str())
             {
                 findings.push(Finding::new(
                     "glyph.approval_stale",

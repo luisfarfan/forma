@@ -42,6 +42,7 @@ mod boolean;
 mod checks;
 mod components;
 mod convert;
+mod design;
 mod direction;
 mod fit;
 mod stroke;
@@ -52,6 +53,7 @@ pub use boolean::{Linesweeper, MAX_UNION_PAIRS, MAX_UNION_SEGMENTS, PathOps, rem
 pub use checks::{GeometryIssue, IssueKind, check_paths, fix_paths};
 pub use components::{flatten_layer, layer_bbox};
 pub use convert::{bbox, from_bezpath, to_bezpath};
+pub use design::{design_hash, same_design};
 pub use direction::{contour_depths, directed_area, normalize_direction, signed_area};
 pub use fit::{fit_cubics, simplify_path};
 pub use stroke::{Cap, Skeleton, SkeletonNode, StrokeStyle, stroke};

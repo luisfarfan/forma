@@ -4,8 +4,17 @@
 mod common;
 
 use common::{base_font, glyph, id_of};
-use forma_edit::{Command, GlyphRef, NodeAction, apply};
+use std::collections::BTreeSet;
+
+use forma_edit::{Command, EditError, GlyphRef, NodeAction, mark_design_changes};
 use forma_model::{EntityKey, Font, PathId, Provenance, ProvenanceDetail, Review, Source};
+
+/// One command as a transaction: applied, then the review rule.
+fn apply(font: &Font, cmd: &Command) -> Result<(Font, BTreeSet<EntityKey>), EditError> {
+    let (mut next, touched) = forma_edit::apply(font, cmd)?;
+    mark_design_changes(font, &mut next, &touched)?;
+    Ok((next, touched))
+}
 
 fn approved(font: &Font, name: &str) -> Provenance {
     let mut provenance = Provenance::pending(
@@ -21,7 +30,7 @@ fn approved(font: &Font, name: &str) -> Provenance {
         },
     );
     provenance.review = Review::Approved;
-    provenance.approved_geometry = Some(glyph(font, name).geometry_hash());
+    provenance.approved_geometry = Some(forma_geometry::design_hash(font, glyph(font, name)));
     provenance
 }
 
@@ -126,7 +135,7 @@ fn metrics_and_rename_keep_approval() {
         g.provenance
             .as_ref()
             .and_then(|p| p.approved_geometry.clone()),
-        Some(g.geometry_hash()),
+        Some(forma_geometry::design_hash(&current, g)),
         "moving the outline sideways keeps the design hash"
     );
 }
@@ -146,4 +155,30 @@ fn glyphs_without_provenance_are_left_alone() {
     };
     let (next, _) = apply(&font, &cmd).expect("move");
     assert!(glyph(&next, "B").provenance.is_none());
+}
+
+#[test]
+fn a_rejection_stands_after_a_design_change() {
+    let font = with_approved_a();
+    let mut rejected = glyph(&font, "A").provenance.clone().expect("provenance");
+    rejected.review = Review::Rejected;
+    rejected.approved_geometry = None;
+    let cmd = Command::SetProvenance {
+        glyph: GlyphRef::Name("A".into()),
+        provenance: Some(rejected),
+    };
+    let font = apply(&font, &cmd).expect("reject").0;
+    let edit = Command::NodesEdit {
+        glyph: GlyphRef::Name("A".into()),
+        master: None,
+        path_id: PathId(0),
+        action: NodeAction::Move {
+            indices: vec![1],
+            dx: 4.0,
+            dy: 0.0,
+        },
+    };
+    let (next, _) = apply(&font, &edit).expect("move");
+    assert_eq!(review_of(&next, "A"), (Review::Rejected, true));
+    assert!(!glyph(&next, "A").is_exported());
 }

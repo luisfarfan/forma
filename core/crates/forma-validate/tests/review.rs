@@ -52,7 +52,7 @@ fn approval_stale_when_design_changed_outside_the_editor() {
     let mut font = clean_font();
     let id = id_of(&font, "H");
     let mut p = provenance(Source::Traced, Review::Approved);
-    p.approved_geometry = Some(font.glyphs[&id].geometry_hash());
+    p.approved_geometry = Some(forma_geometry::design_hash(&font, &font.glyphs[&id]));
     set(&mut font, "H", p);
     assert!(checks(&font).is_empty());
     edit_glyph(&mut font, id, |glyph| {

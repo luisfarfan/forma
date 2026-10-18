@@ -326,3 +326,75 @@ fn deleting_reports_loses_nothing() {
     );
     assert_eq!(before["glyph"], after["glyph"]);
 }
+
+#[test]
+fn approved_composite_survives_respacing() {
+    let (mut engine, dir, image) = setup_with(Policy::Auto, false);
+    let doc = traced_doc(&mut engine, dir.path(), &image);
+    let base = rev(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "glyph_create",
+        json!({ "doc": doc, "base_rev": base, "name": "acutecomb", "advance_width": 0,
+            "svg_path": "M0 800 L60 800 L120 900 L60 900 Z" }),
+    );
+    let base = rev(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "glyph_compose",
+        json!({ "doc": doc, "base_rev": base, "name": "Aacute", "base": "A",
+            "marks": [{ "glyph": "acutecomb", "position": "above" }] }),
+    );
+    assert_eq!(
+        provenance(&mut engine, &doc, "Aacute")["source"],
+        "composed"
+    );
+    let base = rev(&mut engine, &doc);
+    ok(
+        &mut engine,
+        "glyph_review",
+        json!({ "doc": doc, "base_rev": base, "glyphs": ["Aacute", "A"], "decision": "approve" }),
+    );
+    let base = rev(&mut engine, &doc);
+    let spaced = ok(
+        &mut engine,
+        "spacing_auto",
+        json!({ "doc": doc, "base_rev": base, "references": ["A", "B"], "tightness": 1.4 }),
+    );
+    assert!(spaced["realigned"].as_u64().unwrap_or(0) >= 1, "{spaced}");
+    assert_eq!(
+        provenance(&mut engine, &doc, "Aacute")["review"],
+        "approved"
+    );
+    assert_eq!(provenance(&mut engine, &doc, "A")["review"], "approved");
+    let checked = ok(
+        &mut engine,
+        "validate",
+        json!({ "doc": doc, "detail": "full" }),
+    );
+    let stale = checked["report"]["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .any(|f| f["check"] == "glyph.approval_stale");
+    assert!(!stale, "{checked}");
+}
+
+#[cfg(unix)]
+#[test]
+fn reports_refuse_a_linked_folder() {
+    let (mut engine, dir, image) = setup_with(Policy::Auto, false);
+    let doc = traced_doc(&mut engine, dir.path(), &image);
+    let reports = dir.path().join(".forma-reports");
+    std::fs::remove_dir_all(&reports).ok();
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    std::os::unix::fs::symlink(elsewhere.path(), &reports).expect("symlink");
+    let checked = ok(&mut engine, "validate", json!({ "doc": doc }));
+    assert!(checked["report_path"].is_null(), "{checked}");
+    assert!(
+        checked["report_note"]
+            .as_str()
+            .is_some_and(|n| n.contains("link"))
+    );
+    assert_eq!(std::fs::read_dir(elsewhere.path()).expect("dir").count(), 0);
+}

@@ -524,7 +524,7 @@ fn provenance_roundtrips_both_formats() {
         },
     );
     provenance.review = Review::Approved;
-    provenance.approved_geometry = Some(glyph.geometry_hash());
+    provenance.approved_geometry = Some("ab".repeat(32));
     glyph.provenance = Some(provenance);
     glyphs.insert(a, Arc::new(glyph));
     font.glyphs = Arc::new(glyphs);
@@ -560,4 +560,36 @@ fn non_finite_provenance_is_refused_on_save() {
         save(&font, &dir.path().join("doc.forma")),
         Err(StoreError::Invalid(_))
     ));
+}
+
+#[test]
+fn unreadable_old_document_is_not_replaced_without_a_backup() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("doc.forma");
+    std::fs::write(&path, b"this is not a database at all, but it is something").unwrap();
+    let error = save(&sample_v2_font(), &path).unwrap_err();
+    assert!(matches!(error, StoreError::Io(_)), "{error:?}");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"this is not a database at all, but it is something"
+    );
+}
+
+#[test]
+fn backup_of_a_package_path_with_a_trailing_separator_is_a_sibling() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("doc.formapackage");
+    copy_dir(&fixtures_v2().join("doc.formapackage"), &path);
+    let mut with_slash = path.clone().into_os_string();
+    with_slash.push(std::path::MAIN_SEPARATOR_STR);
+    let with_slash = PathBuf::from(with_slash);
+    let font = load(&with_slash).unwrap();
+    save(&font, &with_slash).unwrap();
+    assert!(
+        dir.path()
+            .join("doc.formapackage.v2.bak")
+            .join("manifest.json")
+            .is_file()
+    );
+    assert!(!path.join(".v2.bak").exists());
 }

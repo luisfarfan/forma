@@ -97,22 +97,62 @@ impl ReportRef {
     }
 }
 
-/// The folder that holds the reports of `doc`: next to its file, or in the
-/// first allowed root for a document never saved.
+/// Whether `dir`, canonicalized, lies inside one of the engine's (canonical)
+/// allowed roots.
+fn inside_roots(engine: &Engine, dir: &Path) -> Option<PathBuf> {
+    let canonical = dunce::canonicalize(dir).ok()?;
+    engine
+        .roots
+        .iter()
+        .any(|root| canonical.starts_with(root))
+        .then_some(canonical)
+}
+
+/// The folder that holds the reports of `doc`: next to its file when that
+/// folder is inside an allowed root, else in the first allowed root.
 fn reports_folder(engine: &Engine, doc: Option<&DocHandle>) -> Option<(PathBuf, String, u64)> {
-    let (base, id, rev) = match doc.and_then(|handle| engine.docs.get(handle)) {
-        Some(open) => {
-            let base = open
-                .source_path
+    let (next_to_file, id, rev) = match doc.and_then(|handle| engine.docs.get(handle)) {
+        Some(open) => (
+            open.source_path
                 .as_deref()
                 .and_then(Path::parent)
-                .map(Path::to_path_buf)
-                .or_else(|| engine.roots.first().cloned())?;
-            (base, open.font().id.to_string(), open.rev().0)
-        }
-        None => (engine.roots.first().cloned()?, "no-document".to_owned(), 0),
+                .map(Path::to_path_buf),
+            open.font().id.to_string(),
+            open.rev().0,
+        ),
+        None => (None, "no-document".to_owned(), 0),
     };
+    let base = next_to_file
+        .and_then(|dir| inside_roots(engine, &dir))
+        .or_else(|| engine.roots.first().cloned())?;
     Some((base.join(REPORTS_DIR).join(&id), id, rev))
+}
+
+/// Creates `folder` (and the reports folder above it, with a `.gitignore`
+/// that keeps reports out of version control), refusing symbolic links: a
+/// link could send reports, and their pruning, outside the allowed roots.
+fn prepare_folder(folder: &Path) -> Result<(), String> {
+    let reports = folder.parent().ok_or("no reports folder")?;
+    for dir in [reports, folder] {
+        match fs::symlink_metadata(dir) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                return Err(format!(
+                    "'{}' is a link or not a folder; no report was written",
+                    crate::engine::path_text(dir)
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(dir)
+                    .map_err(|e| format!("cannot create the reports folder: {e}"))?;
+                if dir == reports {
+                    let _ = fs::write(dir.join(".gitignore"), "*\n");
+                }
+            }
+            Err(error) => return Err(format!("cannot use the reports folder: {error}")),
+        }
+    }
+    Ok(())
 }
 
 /// Writes the report of a call of `tool` with `args` about `doc`, holding
@@ -157,8 +197,8 @@ pub(crate) fn write_report(
             ),
         }));
     }
-    if let Err(error) = fs::create_dir_all(&folder) {
-        return ReportRef::note(format!("cannot create the reports folder: {error}"));
+    if let Err(note) = prepare_folder(&folder) {
+        return ReportRef::note(note);
     }
     let stamp: String = created
         .chars()
@@ -185,14 +225,30 @@ pub(crate) fn write_report(
     ReportRef::note("too many reports in the same second")
 }
 
-/// The sort key of a report file name `r<rev>-<tool>-<stamp>-<n>.json`: its
-/// time stamp and sequence number, then the name.
-fn age_key(name: &str) -> (String, u32, String) {
-    let stem = name.trim_end_matches(".json");
+/// The parts of a report file name `r<rev>-<tool>-<stamp>-<n>.json`
+/// (`<stamp>` like `20261018T074217Z`, `<tool>` lowercase letters, digits
+/// and underscores): its tool and its age (time stamp, sequence number);
+/// `None` for any other name, which pruning never touches.
+fn parse_name(name: &str) -> Option<(String, (String, u32))> {
+    let stem = name.strip_suffix(".json")?.strip_prefix('r')?;
     let mut parts = stem.rsplitn(3, '-');
-    let n = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
-    let stamp = parts.next().unwrap_or_default().to_owned();
-    (stamp, n, name.to_owned())
+    let n: u32 = parts.next()?.parse().ok()?;
+    let stamp = parts.next()?;
+    let rest = parts.next()?;
+    let (rev, tool) = rest.split_once('-')?;
+    let stamp_ok = stamp.len() == 16
+        && stamp.ends_with('Z')
+        && stamp.as_bytes()[8] == b'T'
+        && stamp
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| i == 8 || i == 15 || b.is_ascii_digit());
+    let tool_ok = !tool.is_empty()
+        && tool
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    (stamp_ok && tool_ok && !rev.is_empty() && rev.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| (tool.to_owned(), (stamp.to_owned(), n)))
 }
 
 /// Keeps the newest [`MAX_REPORTS_PER_TOOL`] reports of `tool` in `folder`
@@ -202,25 +258,23 @@ fn prune(folder: &Path, tool: &str) {
     let Ok(entries) = fs::read_dir(folder) else {
         return;
     };
-    let mut files: Vec<(String, u64)> = entries
+    // Only regular files named like reports are ever counted or deleted.
+    let mut files: Vec<(String, String, (String, u32), u64)> = entries
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
+            let (owner, age) = parse_name(&name)?;
             let len = entry.metadata().ok()?.len();
-            (name.starts_with('r') && name.ends_with(".json")).then_some((name, len))
+            Some((name, owner, age, len))
         })
         .collect();
-    files.sort_by_key(|(name, _)| age_key(name));
-    let marker = format!("-{tool}-");
-    let of_tool = files
-        .iter()
-        .filter(|(name, _)| name.contains(&marker))
-        .count();
+    files.sort_by(|a, b| (&a.2, &a.0).cmp(&(&b.2, &b.0)));
+    let of_tool = files.iter().filter(|f| f.1 == tool).count();
     let mut excess = of_tool.saturating_sub(MAX_REPORTS_PER_TOOL);
-    let mut total: u64 = files.iter().map(|(_, len)| len).sum();
-    for (name, len) in &files {
-        let over_count = excess > 0 && name.contains(&marker);
+    let mut total: u64 = files.iter().map(|f| f.3).sum();
+    for (name, owner, _, len) in &files {
+        let over_count = excess > 0 && owner == tool;
         if !over_count && total <= MAX_REPORT_DIR_BYTES {
             continue;
         }
@@ -242,21 +296,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn age_key_orders_by_stamp_then_sequence() {
+    fn names_parse_and_order_by_stamp_then_sequence() {
         let mut names = vec![
             "r9-validate-20261018T101500Z-1.json",
             "r2-validate-20261018T101500Z-0.json",
-            "r5-validate-20261018T091500Z-3.json",
+            "r5-image_trace-20261018T091500Z-3.json",
         ];
-        names.sort_by_key(|name| age_key(name));
+        names.sort_by_key(|name| parse_name(name).map(|(_, age)| age));
         assert_eq!(
             names,
             [
-                "r5-validate-20261018T091500Z-3.json",
+                "r5-image_trace-20261018T091500Z-3.json",
                 "r2-validate-20261018T101500Z-0.json",
                 "r9-validate-20261018T101500Z-1.json",
             ]
         );
+        assert_eq!(
+            parse_name("r5-image_trace-20261018T091500Z-3.json").map(|(t, _)| t),
+            Some("image_trace".to_owned())
+        );
+        for other in [
+            "results.json",
+            "r1-validate-notastamp000000-0.json",
+            "rx-validate-20261018T101500Z-0.json",
+            "r1-Validate-20261018T101500Z-0.json",
+            "r1-validate-20261018T101500Z-0.txt",
+        ] {
+            assert!(parse_name(other).is_none(), "{other}");
+        }
     }
 
     #[test]
