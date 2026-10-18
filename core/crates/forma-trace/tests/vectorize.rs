@@ -691,3 +691,74 @@ fn traced_discs_keep_their_radius() {
         "radius off by {mean} px: {radius_error:?}"
     );
 }
+
+/// Paints a rectangle with anti-aliased edges (fractional bounds).
+fn soft_rect(img: &mut RgbImage, x0: f64, y0: f64, x1: f64, y1: f64, ink: bool) {
+    for y in 0..img.height() {
+        for x in 0..img.width() {
+            let cover = |a: f64, b: f64, p: u32| {
+                let (lo, hi) = (f64::from(p), f64::from(p) + 1.0);
+                (b.min(hi) - a.max(lo)).clamp(0.0, 1.0)
+            };
+            let c = cover(x0, x1, x) * cover(y0, y1, y);
+            if c <= 0.0 {
+                continue;
+            }
+            let px = img.get_pixel(x, y).0;
+            let target = if ink { ORANGE } else { [0, 0, 0] };
+            let mix =
+                |i: usize| (f64::from(px[i]) * (1.0 - c) + f64::from(target[i]) * c).round() as u8;
+            img.put_pixel(x, y, Rgb([mix(0), mix(1), mix(2)]));
+        }
+    }
+}
+
+#[test]
+fn slit_1px_preserved() {
+    // A block with a 1-pixel slit cut in from the right, anti-aliased: the
+    // Hito 2 tracer closed such slits (the E of the demo alphabet).
+    let mut img = canvas(140, 160);
+    soft_rect(&mut img, 20.3, 20.4, 110.6, 140.2, true);
+    soft_rect(&mut img, 50.2, 79.6, 112.0, 80.7, false);
+    let g = trace_one(&img);
+    assert!(g.quality.topology_ok, "{:?}", g.quality);
+    assert!(g.quality.features.is_empty(), "{:?}", g.quality.features);
+    assert!(!g.needs_review, "{:?}", g.reasons);
+    // The slit is in the outline: some node lies inside its band.
+    let scale = g.placement.scale;
+    let slit_y = (g.placement.origin_px.1 - 80.15) * scale;
+    let inside = g
+        .paths
+        .iter()
+        .flat_map(|p| &p.nodes)
+        .any(|n| (n.y - slit_y).abs() < 0.8 * scale && n.x < (110.0 - 20.0) * scale);
+    assert!(inside, "no node in the slit: {:?}", g.paths);
+}
+
+#[test]
+fn a_tapering_serif_is_not_stretched_into_a_spike() {
+    // A stem whose top flares into a thin, tapering tip: the corner of the
+    // tip must stay where the ink is (the Hito 2 tracer extended it by
+    // meeting its almost parallel edges far beyond the ink).
+    let mut img = canvas(160, 200);
+    soft_rect(&mut img, 60.3, 40.2, 90.7, 180.4, true);
+    for k in 0..30 {
+        let t = f64::from(k);
+        soft_rect(&mut img, 90.0 + t, 40.2, 91.0 + t, 46.0 - t * 0.18, true);
+    }
+    let g = trace_one(&img);
+    assert!(g.quality.hausdorff_max_px <= 2.0, "{:?}", g.quality);
+    let b = bbox(&g.paths).expect("bbox");
+    let scale = g.placement.scale;
+    assert!(b.width() <= (121.0 - 60.0 + 1.0) * scale, "{b:?}");
+}
+
+#[test]
+fn every_attempt_judges_against_the_same_reference() {
+    let g = trace_one(&circle_image());
+    assert_eq!(
+        g.attempt, "subpixel",
+        "a clean circle passes the first attempt"
+    );
+    assert!(g.reasons.is_empty());
+}

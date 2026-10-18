@@ -1080,6 +1080,7 @@ dependencies = [
  "forma-geometry",
  "forma-model",
  "forma-render",
+ "forma-trace",
  "image",
  "kurbo",
  "serde",

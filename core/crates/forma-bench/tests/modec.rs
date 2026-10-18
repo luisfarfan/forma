@@ -45,18 +45,29 @@ fn mode_c_builds_a_valid_font_from_the_specimen() {
 #[test]
 fn rows_that_do_not_match_are_reported_not_guessed() {
     let dir = tempfile::tempdir().expect("tempdir");
-    // The H has three pieces: the row has more candidates than characters.
-    let case = build_case("multi_piece_h").expect("case");
-    let result = run_case(&case, &dir.path().join("multi_piece_h")).expect("run");
+    // Two letters touch: fewer candidates than characters, never split.
+    let case = build_case("touching_pair").expect("case");
+    let result = run_case(&case, &dir.path().join("touching_pair")).expect("run");
     assert_eq!(result["layout_matched"], false);
     assert_eq!(result["assigned"], 0);
     assert_eq!(result["pipeline_ok"], false);
     let unmatched = result["unmatched"].as_array().expect("unmatched");
-    assert_eq!(unmatched[0]["reason"], "count");
+    assert_eq!(unmatched[0]["match"]["kind"], "mismatch");
     assert!(
-        unmatched[0]["candidates"].as_u64().expect("candidates")
-            > unmatched[0]["characters"].as_u64().expect("characters")
+        unmatched[0]["match"]["found"].as_u64().expect("found")
+            < unmatched[0]["match"]["expected"]
+                .as_u64()
+                .expect("expected")
     );
+}
+
+#[test]
+fn a_letter_in_several_pieces_is_grouped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let case = build_case("multi_piece_h").expect("case");
+    let result = run_case(&case, &dir.path().join("multi_piece_h")).expect("run");
+    assert_eq!(result["layout_matched"], true, "{result}");
+    assert_eq!(result["pipeline_ok"], true, "{result}");
 }
 
 #[test]

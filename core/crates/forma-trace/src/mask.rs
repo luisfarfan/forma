@@ -71,18 +71,34 @@ impl Mix {
     }
 }
 
-/// Binary ink mask (0 or 255) at `upsample` times the image size (reduced if
-/// needed; see [`Mask`] dimensions). The soft membership is upsampled
-/// bilinearly and thresholded at 50 %.
-pub(crate) fn binary_mask(
+/// The soft ink membership of every pixel of an image, at its own
+/// resolution: 0 (background or another colour) to 1 (ink), row-major.
+#[derive(Clone, Debug)]
+pub(crate) struct Coverage {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<f32>,
+}
+
+impl Coverage {
+    /// The coverage of pixel `(x, y)`; 0 outside the image.
+    pub(crate) fn at(&self, x: i64, y: i64) -> f32 {
+        if x < 0 || y < 0 || x >= i64::from(self.width) || y >= i64::from(self.height) {
+            return 0.0;
+        }
+        self.data[y as usize * self.width as usize + x as usize]
+    }
+}
+
+/// The soft ink membership of each pixel of `image` (see [`Mix::soft`]);
+/// all zeros when the ink cannot be told from the background.
+pub(crate) fn coverage(
     image: &RgbImage,
     background: [u8; 3],
     ink: [u8; 3],
     tolerance: f64,
-    upsample: u32,
-) -> Mask {
+) -> Coverage {
     let (w, h) = image.dimensions();
-    let u = effective_upsample(w, h, upsample);
     let mix = Mix {
         bg: to_f(background),
         ink: to_f(ink),
@@ -91,22 +107,37 @@ pub(crate) fn binary_mask(
         span: dist2(lab(background), lab(ink)).sqrt(),
         tolerance,
     };
+    let mut data = vec![0f32; w as usize * h as usize];
+    if mix.span > tolerance {
+        for (i, px) in image.pixels().enumerate() {
+            data[i] = mix.soft(px.0);
+        }
+    }
+    Coverage {
+        width: w,
+        height: h,
+        data,
+    }
+}
+
+/// Binary ink mask (0 or 255) at `upsample` times the image size (reduced if
+/// needed; see [`Mask`] dimensions). The soft membership (see [`coverage`])
+/// is upsampled bilinearly and thresholded at 50 %.
+pub(crate) fn binary_mask(soft: &Coverage, upsample: u32) -> Mask {
+    let (w, h) = (soft.width, soft.height);
+    let u = effective_upsample(w, h, upsample);
     let (mw, mh) = (w * u, h * u);
-    if mix.span <= tolerance || w == 0 || h == 0 {
+    if w == 0 || h == 0 {
         return Mask {
             width: mw,
             height: mh,
             data: vec![0; mw as usize * mh as usize],
         };
     }
-    let mut s = vec![0f32; w as usize * h as usize];
-    for (i, px) in image.pixels().enumerate() {
-        s[i] = mix.soft(px.0);
-    }
     let at = |x: i64, y: i64| -> f32 {
         let xi = x.clamp(0, i64::from(w) - 1) as usize;
         let yi = y.clamp(0, i64::from(h) - 1) as usize;
-        s[yi * w as usize + xi]
+        soft.data[yi * w as usize + xi]
     };
     let uf = u as f32;
     let mut data = vec![0u8; mw as usize * mh as usize];

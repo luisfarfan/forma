@@ -84,6 +84,33 @@ const EXTREMUM_OVERSHOOT: f64 = 0.5;
 /// Extrema this close to a segment end (in curve parameter) are not split.
 const EXTREMUM_T_MIN: f64 = 0.01;
 const EXTREMUM_T_MAX: f64 = 0.99;
+/// How closely a contour is refitted: the profile of one attempt of the
+/// trace (see `crate::vectorize`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Fit {
+    /// The width (sigma) of the smoothing between corners, in original
+    /// pixels; 0 does not smooth.
+    pub smooth_px: f64,
+    /// The largest refit tolerance, in original pixels.
+    pub max_fit_px: f64,
+    /// How far, in original pixels, a corner may be moved from the traced
+    /// edge to where its edges meet (to undo the rounding of anti-aliasing);
+    /// 0 keeps corners on the edge. The traced edge is the evidence: a tip
+    /// the image draws round (a tapering serif, a ball) is never stretched
+    /// into a spike beyond it.
+    pub corner_limit_px: f64,
+}
+
+impl Fit {
+    /// The profile of the Hito 2 tracer: for the stepped edges of the
+    /// upsampled mask.
+    pub(crate) const STEPPED: Fit = Fit {
+        smooth_px: SMOOTH_PX,
+        max_fit_px: MAX_FIT_PX,
+        corner_limit_px: 2.5,
+    };
+}
+
 /// Contours enclosing less than this many square font units are noise.
 const MIN_AREA: f64 = 1.0;
 /// Points closer than this are the same point.
@@ -317,7 +344,7 @@ struct Corner {
 ///
 /// Pixel steps do not turn at that scale at all. See [`place`] for where
 /// the corner goes.
-fn corners(samples: &Samples, reach: f64) -> Vec<Corner> {
+fn corners(samples: &Samples, reach: f64, limit: f64) -> Vec<Corner> {
     let n = samples.pts.len();
     let turn: Vec<f64> = (0..n).map(|i| samples.turn(i, reach)).collect();
     // How many samples either side the `reach` window spans (samples are
@@ -354,9 +381,18 @@ fn corners(samples: &Samples, reach: f64) -> Vec<Corner> {
                 let after = samples.ahead(found[k], found[(k + 1) % m]);
                 before.min(after) / 3.0
             };
-            place(samples, found[k], reach, room)
+            place(samples, found[k], reach, room, limit)
         })
         .collect()
+}
+
+/// The distance from `p` to the nearest sample of the traced outline.
+fn off_outline(samples: &Samples, p: Point) -> f64 {
+    samples
+        .pts
+        .iter()
+        .map(|q| q.distance(p))
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Where the corner at sample `i` goes: where the edges on both sides meet,
@@ -365,7 +401,7 @@ fn corners(samples: &Samples, reach: f64) -> Vec<Corner> {
 /// and `r / sin(θ/2)` short of the apex). The edges are read beyond the
 /// rounding, from `d` to `2d` away, with `d = reach / tan(θ/2)` (at least
 /// `reach`, at most `room`), `θ` estimated from the edges themselves.
-fn place(samples: &Samples, i: usize, reach: f64, room: f64) -> Corner {
+fn place(samples: &Samples, i: usize, reach: f64, room: f64, limit: f64) -> Corner {
     let s = samples.arc[i];
     let here = samples.pts[i];
     let edges = |d: f64| {
@@ -396,7 +432,8 @@ fn place(samples: &Samples, i: usize, reach: f64, room: f64) -> Corner {
         d = span(interior(d));
     }
     let ((a0, a1), (b0, b1)) = edges(d);
-    let point = intersect(a0, a1, b0, b1).filter(|p| p.distance(here) <= 2.0 * d);
+    let point = intersect(a0, a1, b0, b1)
+        .filter(|p| p.distance(here) <= 2.0 * d && off_outline(samples, *p) <= limit);
     match point {
         Some(point) => Corner {
             at: i,
@@ -513,6 +550,89 @@ fn gaussian(points: &[Point], sigma: f64, closed: bool) -> Vec<Point> {
 /// ripple by a fraction of a pixel, and a sag that small is not a curve),
 /// else cubics; the segments come with their start's smooth flag.
 fn fit_stretch(points: &[Point], tolerance: f64, px: f64, closed: bool) -> Vec<(Seg, bool)> {
+    fit_checked(points, tolerance, px, closed, 0)
+}
+
+/// How many times a stretch is halved before its points become lines.
+const MAX_SPLITS: usize = 8;
+
+/// How far, in multiples of the tolerance (at least one original pixel),
+/// a fitted curve may stray from the polyline of its points. A least-squares
+/// fit is close to its points but may loop away between them (a cubic
+/// fitted to a hairpin); such a fit is refused.
+const STRAY_FACTOR: f64 = 3.0;
+
+/// The largest distance from points along `segs` to the polyline `points`.
+fn stray(segs: &[(Seg, bool)], points: &[Point]) -> f64 {
+    let mut worst = 0.0f64;
+    for (seg, _) in segs {
+        let Seg::Cubic(c) = seg else { continue };
+        for k in 1..16 {
+            let p = c.eval(f64::from(k) / 16.0);
+            let d = points
+                .windows(2)
+                .map(|w| {
+                    let ab = w[1] - w[0];
+                    let len2 = ab.hypot2();
+                    if len2 <= EPSILON {
+                        return p.distance(w[0]);
+                    }
+                    let t = ((p - w[0]).dot(ab) / len2).clamp(0.0, 1.0);
+                    p.distance(w[0] + ab * t)
+                })
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max(d);
+        }
+    }
+    worst
+}
+
+/// [`fit_stretch`], refusing fits that stray from the points (see
+/// [`STRAY_FACTOR`]): the stretch is halved and each half fitted, down to
+/// lines through its points.
+fn fit_checked(
+    points: &[Point],
+    tolerance: f64,
+    px: f64,
+    closed: bool,
+    depth: usize,
+) -> Vec<(Seg, bool)> {
+    let segs = fit_plain(points, tolerance, px, closed);
+    let allowed = (STRAY_FACTOR * tolerance).max(px);
+    if points.len() < 4 || stray(&segs, points) <= allowed {
+        return segs;
+    }
+    if depth >= MAX_SPLITS {
+        // Lines through the points: never far from them.
+        let mut lines: Vec<(Seg, bool)> = points
+            .windows(2)
+            .filter(|w| w[0].distance(w[1]) > EPSILON)
+            .map(|w| (Seg::Line(w[0], w[1]), false))
+            .collect();
+        if closed
+            && let (Some(&a), Some(&b)) = (points.last(), points.first())
+            && a.distance(b) > EPSILON
+        {
+            lines.push((Seg::Line(a, b), false));
+        }
+        return lines;
+    }
+    // A closed loop is opened at its start; halves are open stretches.
+    let mid = points.len() / 2;
+    let mut first = fit_checked(&points[..=mid], tolerance, px, false, depth + 1);
+    let mut second = fit_checked(&points[mid..], tolerance, px, false, depth + 1);
+    if closed
+        && let (Some(&a), Some(&b)) = (points.last(), points.first())
+        && a.distance(b) > EPSILON
+    {
+        second.push((Seg::Line(a, b), false));
+    }
+    first.append(&mut second);
+    first
+}
+
+/// The fit of [`fit_stretch`], unchecked.
+fn fit_plain(points: &[Point], tolerance: f64, px: f64, closed: bool) -> Vec<(Seg, bool)> {
     let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
         return Vec::new();
     };
@@ -555,7 +675,7 @@ fn error_floor(px: f64, upsample: u32) -> f64 {
 /// where smoothing moved the samples, as it does on the steps of hard-edged
 /// pixels ([`NOISE_FACTOR`] times the median displacement, which a few real
 /// features do not sway), up to [`MAX_FIT_PX`] pixels.
-fn tolerance(raw: &[Point], smoothed: &[Point], px: f64, floor: f64) -> f64 {
+fn tolerance(raw: &[Point], smoothed: &[Point], px: f64, floor: f64, max_fit_px: f64) -> f64 {
     let mut moved: Vec<f64> = raw
         .iter()
         .zip(smoothed)
@@ -566,25 +686,26 @@ fn tolerance(raw: &[Point], smoothed: &[Point], px: f64, floor: f64) -> f64 {
     }
     moved.sort_by(f64::total_cmp);
     let median = moved[moved.len() / 2];
-    (NOISE_FACTOR * median).min(MAX_FIT_PX * px).max(floor)
+    (NOISE_FACTOR * median).min(max_fit_px * px).max(floor)
 }
 
 /// Replaces the traced cubics with a fit that ignores pixel steps: corners
 /// are kept, the stretches between them are smoothed and refitted (see
 /// [`corners`], [`smooth`], [`fit_stretch`]). `px` is the size of an
 /// original pixel in font units.
-fn refit(segs: &[Seg], px: f64, floor: f64) -> (Vec<Seg>, Vec<bool>) {
+fn refit(segs: &[Seg], px: f64, floor: f64, fit: Fit) -> (Vec<Seg>, Vec<bool>) {
     let samples = sample(segs, px);
     if samples.pts.len() < 3 || samples.length <= EPSILON {
         return (Vec::new(), Vec::new());
     }
     let reach = (CORNER_SCALE_PX * px).min(samples.length / 8.0);
-    let sigma = SMOOTH_PX * SAMPLES_PER_PIXEL;
-    let corners = corners(&samples, reach);
+    let sigma = fit.smooth_px * SAMPLES_PER_PIXEL;
+    let limit = fit.corner_limit_px * px;
+    let corners = corners(&samples, reach, limit);
     let n = samples.pts.len();
     let out: Vec<(Seg, bool)> = if corners.is_empty() {
         let smoothed = smooth(&samples.pts, sigma, true);
-        let tolerance = tolerance(&samples.pts, &smoothed, px, floor);
+        let tolerance = tolerance(&samples.pts, &smoothed, px, floor, fit.max_fit_px);
         fit_stretch(&smoothed, tolerance, px, true)
     } else {
         let m = corners.len();
@@ -611,7 +732,7 @@ fn refit(segs: &[Seg], px: f64, floor: f64) -> (Vec<Seg>, Vec<bool>) {
             }
             stretch.push(to.point);
             let smoothed = smooth(&stretch, sigma, false);
-            let tolerance = tolerance(&stretch, &smoothed, px, floor);
+            let tolerance = tolerance(&stretch, &smoothed, px, floor, fit.max_fit_px);
             let segs = fit_stretch(&smoothed, tolerance, px, false);
             let line = match segs.as_slice() {
                 [(Seg::Line(..), _)] => best_line(&stretch[1..stretch.len() - 1]),
@@ -631,7 +752,9 @@ fn refit(segs: &[Seg], px: f64, floor: f64) -> (Vec<Seg>, Vec<bool>) {
                 let Some(meet) = intersect(p, p + u, q, q + v) else {
                     continue;
                 };
-                if meet.distance(corners[k].point) > 2.0 * corners[k].reach {
+                if meet.distance(corners[k].point) > 2.0 * corners[k].reach
+                    || off_outline(&samples, meet) > limit
+                {
                     continue;
                 }
                 if let [(Seg::Line(a, _), _)] = fitted[before].segs.as_slice() {
@@ -658,6 +781,7 @@ pub(crate) fn contour(
     points: &[Point],
     px: f64,
     upsample: u32,
+    fit: Fit,
 ) -> Result<Option<Path>, TraceError> {
     let floor = error_floor(px, upsample);
     let mut segs: Vec<Seg> = points
@@ -671,7 +795,7 @@ pub(crate) fn contour(
     if end.distance(start) > EPSILON {
         segs.push(Seg::Line(end, start));
     }
-    let (mut segs, smooth) = refit(&segs, px, floor);
+    let (mut segs, smooth) = refit(&segs, px, floor, fit);
     if segs.len() < 2 {
         return Ok(None);
     }
@@ -886,7 +1010,7 @@ mod tests {
         ];
         let points = mid_edge_polygon(&corners);
         assert_ne!(points[0], corners[0], "starts mid-edge");
-        let path = contour(&points, 5.0, 4).unwrap().unwrap();
+        let path = contour(&points, 5.0, 4, Fit::STEPPED).unwrap().unwrap();
         assert_eq!(path.nodes.len(), 4, "{:?}", path.nodes);
         assert!(path.nodes.iter().all(|n| n.kind == NodeKind::Line));
         // The start moved to the lowest, then leftmost, corner.

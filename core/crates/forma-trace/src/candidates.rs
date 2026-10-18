@@ -5,7 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::decode::MAX_IMAGE_PIXELS;
-use crate::mask::{binary_mask, effective_upsample};
+use forma_render::Mask;
+
+use crate::mask::{Coverage, binary_mask, coverage, effective_upsample};
 use crate::palette::{PaletteEntry, background, palette, pick_ink};
 use crate::{MAX_CANDIDATES, TraceError};
 
@@ -34,6 +36,21 @@ pub struct TraceOptions {
     pub tolerance: f64,
     /// Upsampling factor of the mask used to find shapes.
     pub upsample: u32,
+    /// How the edge of the ink is read.
+    #[serde(default)]
+    pub extractor: Extractor,
+    /// How closely the outline follows it.
+    #[serde(default)]
+    pub fidelity: Fidelity,
+    /// The coverage level of the edge, 0.3 to 0.7; 0.5 by default. A higher
+    /// level opens slits that the image's blur half closed, a lower one
+    /// keeps faint ink.
+    #[serde(default = "default_isoline")]
+    pub isoline: f64,
+}
+
+const fn default_isoline() -> f64 {
+    0.5
 }
 
 impl Default for TraceOptions {
@@ -42,8 +59,37 @@ impl Default for TraceOptions {
             color: None,
             tolerance: 25.0,
             upsample: 4,
+            extractor: Extractor::default(),
+            fidelity: Fidelity::default(),
+            isoline: default_isoline(),
         }
     }
+}
+
+/// How the edge of the ink is read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum Extractor {
+    /// The isoline of the ink's coverage, at sub-pixel precision (marching
+    /// squares; see `crate::subpixel`).
+    #[default]
+    Subpixel,
+    /// The pixel edges of the 4x upsampled mask (the Hito 2 tracer).
+    EdgeWalk,
+}
+
+/// How closely the outline follows the edge of the ink.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Fidelity {
+    /// Within half an image pixel, keeping irregularities the image holds
+    /// steadily (they are part of the drawing).
+    #[default]
+    Faithful,
+    /// Within one image pixel, smoothing irregularities smaller than that.
+    Clean,
 }
 
 /// A pixel rectangle; `x1` and `y1` are exclusive.
@@ -284,6 +330,20 @@ fn group_rows(pieces: &[Piece]) -> Vec<(u32, u32, Vec<Piece>)> {
 /// the memory-safety cap (1 000 000) before the noise filter, and
 /// [`TraceError::TooManyCandidates`] above [`MAX_CANDIDATES`].
 pub fn analyze(image: &RgbImage, opts: &TraceOptions) -> Result<Analysis, TraceError> {
+    analyze_parts(image, opts).map(|parts| parts.analysis)
+}
+
+/// What [`analyze`] computes on the way: the analysis, the soft coverage
+/// at the image's resolution and the binary mask at `upsample` times it.
+pub(crate) struct Parts {
+    pub analysis: Analysis,
+    pub coverage: Coverage,
+    pub mask: Mask,
+    pub upsample: u32,
+}
+
+/// [`analyze`], keeping the coverage and the mask.
+pub(crate) fn analyze_parts(image: &RgbImage, opts: &TraceOptions) -> Result<Parts, TraceError> {
     let (width, height) = image.dimensions();
     let pixels = u64::from(width) * u64::from(height);
     if pixels > MAX_IMAGE_PIXELS {
@@ -299,9 +359,23 @@ pub fn analyze(image: &RgbImage, opts: &TraceOptions) -> Result<Analysis, TraceE
         candidates: Vec::new(),
         note: None,
     };
+    let empty = |analysis: Analysis| Parts {
+        analysis,
+        coverage: Coverage {
+            width: 0,
+            height: 0,
+            data: Vec::new(),
+        },
+        mask: Mask {
+            width: 0,
+            height: 0,
+            data: Vec::new(),
+        },
+        upsample: 1,
+    };
     if pixels == 0 {
         analysis.note = Some("no ink found: the image is empty".into());
-        return Ok(analysis);
+        return Ok(empty(analysis));
     }
     analysis.background = background(image);
     analysis.palette = palette(image);
@@ -312,13 +386,13 @@ pub fn analyze(image: &RgbImage, opts: &TraceOptions) -> Result<Analysis, TraceE
         opts.color,
     ) else {
         analysis.note = Some("no ink found: the image has a single color".into());
-        return Ok(analysis);
+        return Ok(empty(analysis));
     };
     analysis.ink = ink;
     let u = effective_upsample(width, height, opts.upsample);
-    let mask = binary_mask(image, analysis.background, ink, opts.tolerance, u);
+    let soft = coverage(image, analysis.background, ink, opts.tolerance);
+    let mask = binary_mask(&soft, u);
     let raw = components(&mask, u)?;
-    drop(mask);
     let mut areas: Vec<f64> = raw.iter().map(|p| p.area as f64).collect();
     let median_piece = median(&mut areas);
     let solid: Vec<Piece> = raw
@@ -374,7 +448,7 @@ pub fn analyze(image: &RgbImage, opts: &TraceOptions) -> Result<Analysis, TraceE
     let total: usize = kept.iter().map(|(_, c)| c.len()).sum();
     if total == 0 {
         analysis.note = Some("no ink found: no shape has the ink color".into());
-        return Ok(analysis);
+        return Ok(empty(analysis));
     }
     if total > MAX_CANDIDATES {
         return Err(TraceError::TooManyCandidates(total));
@@ -410,5 +484,10 @@ pub fn analyze(image: &RgbImage, opts: &TraceOptions) -> Result<Analysis, TraceE
             });
         }
     }
-    Ok(analysis)
+    Ok(Parts {
+        analysis,
+        coverage: soft,
+        mask,
+        upsample: u,
+    })
 }

@@ -4905,13 +4905,32 @@ Turn candidates of an image (see image_inspect) into glyphs of `doc`: for each o
   "$defs": {
     "Assignment": {
       "additionalProperties": false,
-      "description": "One candidate assigned to a glyph.",
+      "description": "One candidate (or several) assigned to a glyph.",
       "properties": {
         "candidate": {
-          "description": "The candidate number, as shown by `image_inspect`.",
+          "default": null,
+          "description": "The candidate number, as shown by `image_inspect`. Give this or\n`candidates`.",
           "format": "uint",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "candidates": {
+          "default": null,
+          "description": "Several candidates traced together into one glyph: a letter drawn in\nseparate pieces, all in the same row. Give this or `candidate`.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "name": {
           "description": "The glyph name; the glyph is created if it does not exist.",
@@ -4938,7 +4957,6 @@ Turn candidates of an image (see image_inspect) into glyphs of `doc`: for each o
         }
       },
       "required": [
-        "candidate",
         "name"
       ],
       "type": "object"
@@ -4954,6 +4972,36 @@ Turn candidates of an image (see image_inspect) into glyphs of `doc`: for each o
         {
           "const": "full",
           "description": "Longer lists (up to 200 entries or 32 KB each).",
+          "type": "string"
+        }
+      ]
+    },
+    "Extractor": {
+      "description": "How the edge of the ink is read.",
+      "oneOf": [
+        {
+          "const": "subpixel",
+          "description": "The isoline of the ink's coverage, at sub-pixel precision (marching\nsquares; see `crate::subpixel`).",
+          "type": "string"
+        },
+        {
+          "const": "edge-walk",
+          "description": "The pixel edges of the 4x upsampled mask (the Hito 2 tracer).",
+          "type": "string"
+        }
+      ]
+    },
+    "Fidelity": {
+      "description": "How closely the outline follows the edge of the ink.",
+      "oneOf": [
+        {
+          "const": "faithful",
+          "description": "Within half an image pixel, keeping irregularities the image holds\nsteadily (they are part of the drawing).",
+          "type": "string"
+        },
+        {
+          "const": "clean",
+          "description": "Within one image pixel, smoothing irregularities smaller than that.",
           "type": "string"
         }
       ]
@@ -5003,6 +5051,41 @@ Turn candidates of an image (see image_inspect) into glyphs of `doc`: for each o
       "default": false,
       "description": "Only plan the call: change nothing and return `{rev, plan}`, the plan of what the call would do, with a `plan_token` that plan_commit can run once the user confirms.",
       "type": "boolean"
+    },
+    "extractor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Extractor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "How the ink's edge is read: `subpixel` (the default) or `edge-walk`\n(the tracer of FORMA 0.0.2, tried last anyway)."
+    },
+    "fidelity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Fidelity"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "How closely the outline follows the ink: `faithful` (the default:\nwithin half an image pixel, keeping irregularities the drawing holds)\nor `clean` (within one pixel, smoothing smaller irregularities)."
+    },
+    "isoline": {
+      "default": null,
+      "description": "The coverage level of the edge, 0.3 to 0.7 (0.5 by default): higher\nopens a slit the image's blur half closed, lower keeps faint ink.",
+      "format": "double",
+      "maximum": 0.7,
+      "minimum": 0.3,
+      "type": [
+        "number",
+        "null"
+      ]
     },
     "master": {
       "anyOf": [

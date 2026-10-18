@@ -398,3 +398,65 @@ fn reports_refuse_a_linked_folder() {
     );
     assert_eq!(std::fs::read_dir(elsewhere.path()).expect("dir").count(), 0);
 }
+
+/// An image of a letter drawn in two pieces side by side (an H whose right
+/// stem does not touch the bar), then an I.
+fn two_piece_image(dir: &Path) -> PathBuf {
+    let mut img = image::RgbImage::from_pixel(260, 160, image::Rgb([255, 255, 255]));
+    let mut fill = |x0: u32, y0: u32, x1: u32, y1: u32| {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                img.put_pixel(x, y, image::Rgb([20, 20, 20]));
+            }
+        }
+    };
+    fill(20, 20, 36, 140); // left stem
+    fill(36, 72, 80, 88); // bar
+    fill(84, 20, 100, 140); // right stem, 4 px from the bar
+    fill(160, 20, 176, 140); // I
+    let path = dir.join("two_pieces.png");
+    img.save(&path).expect("save");
+    path
+}
+
+#[test]
+fn trace_candidates_makes_one_glyph_of_several_pieces() {
+    let (mut engine, dir, _image) = setup_with(Policy::Auto, false);
+    let image = two_piece_image(dir.path());
+    let created = ok(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": "Test" }),
+    );
+    let doc = created["doc"].as_str().expect("doc").to_owned();
+    let base = rev(&mut engine, &doc);
+    let both = call(
+        &mut engine,
+        "image_trace",
+        json!({ "doc": doc, "base_rev": base, "path": image,
+            "assignments": [{ "candidate": 0, "candidates": [0, 1], "name": "H" }] }),
+    )
+    .expect_err("both given");
+    assert_eq!(both.code, ErrorCode::InvalidArgument);
+    let traced = ok(
+        &mut engine,
+        "image_trace",
+        json!({ "doc": doc, "base_rev": base, "path": image,
+            "assignments": [{ "candidates": [0, 1], "name": "H" }, { "candidate": 2, "name": "I" }] }),
+    );
+    assert_eq!(traced["traced_total"], 2, "{traced}");
+    assert_eq!(traced["traced"][0]["candidates"], json!([0, 1]));
+    let p = provenance(&mut engine, &doc, "H");
+    assert_eq!(p["detail"]["candidates"], json!([0, 1]));
+    assert_eq!(p["thresholds_version"], 1);
+    let glyph = ok(
+        &mut engine,
+        "glyph_get",
+        json!({ "doc": doc, "glyph": "H" }),
+    );
+    assert_eq!(
+        glyph["glyph"]["paths"].as_array().map(Vec::len),
+        Some(2),
+        "two pieces"
+    );
+}

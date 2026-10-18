@@ -16,6 +16,7 @@ forma-engine = { path = "../forma-engine" }
 forma-model = { path = "../forma-model" }
 forma-geometry = { path = "../forma-geometry" }
 forma-render = { path = "../forma-render" }
+forma-trace = { path = "../forma-trace" }
 kurbo = { workspace = true }
 # Development tool only: the outlines of the OFL fonts of the corpus.
 skrifa = { workspace = true }

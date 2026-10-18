@@ -48,3 +48,40 @@ Veredicto: cambios solicitados. Hubo 0 hallazgos críticos, 4 importantes y 10 m
   - Un compuesto aprobado cuyo glifo base cambia no se devuelve a revisión automáticamente: `validate` lo detecta como `approval_stale`.
   - Una base rechazada sigue dibujándose dentro de los compuestos que la usan: `validate` da `glyph.rejected_used_by_component` (error).
   - En `summary`, el `total` de `validate` cuenta los tipos listados (errores y avisos).
+
+## Bloque C — Trazado fiel (Tasks 11–13)
+
+14. **Causa raíz de los picos en las serifas** (detectada con el corpus M): la restauración de esquinas de `cleanup` extendía las tangentes de las puntas finas y afiladas hasta encontrarlas lejos de la tinta. Por ejemplo, la `I` de EB Garamond a 200 px se trazaba 400 unidades de ancho en lugar de 326. *Corrección:* una esquina solo se mueve hasta donde se encuentran sus bordes si ese punto queda a ≤ `corner_limit_px` (2 px en el perfil fiel) del borde trazado. La imagen es la evidencia.
+15. **Segunda causa de picos: los ajustes por mínimos cuadrados** (`fit_cubics` en `cleanup` y `simplify_path` en `forma-geometry`, del Hito 2). Pasan cerca de sus puntos, pero pueden escaparse entre ellos: en la cuña de la `N` de Fraunces llegaban a y=2596. *Corrección:* toda curva ajustada se verifica contra la geometría que reemplaza (a ≤ 3× la tolerancia y al menos 1 px en `cleanup`; a ≤ 2× el error en `simplify_path`). Si se escapa, el tramo se divide (`cleanup`) o se deja como estaba (`simplify_path`).
+16. **`hausdorff_max_px` (2 px) pasa a ser bloqueante** (en §4 de la especificación era solo un aviso). Un pico fino casi no cambia el IoU ni el p95, pero es un defecto visual evidente.
+17. **Escalera de reintentos** (enmienda de §5.3). La referencia es siempre la isolínea de la imagen al nivel elegido (0,5 por defecto), porque cambiar la isolínea en un reintento cambiaría la verdad y no el ajuste. Los reintentos solo cambian el ajuste, en este orden:
+    1. `subpixel`: suavizado 0,75 px, tolerancia 0,5 px, esquinas a ≤ 2 px.
+    2. `subpixel-tight`: 0,4 px / 0,3 px / 1 px.
+    3. `subpixel-exact`: sin suavizado, 0,2 px, sin extensión de esquinas.
+    4. `edge-walk`: el trazador del Hito 2.
+
+    `isoline` (0,3–0,7) sigue disponible como opción explícita de quien traza. Si ningún intento pasa, se conserva el menos grave (primero sin desvíos grandes, luego la topología, luego los rasgos) y el glifo queda `needs_review` con los motivos.
+18. **Bordes duros** (imágenes sin antialiasing, `edge_softness` < 0,25): los escalones de los píxeles son ruido de medio píxel. Se empieza por un perfil que los suaviza (`subpixel-stepped`), y el ancho mínimo de rasgo para estos bordes es 1,5 px. *Límite conocido:* una ranura de 1 px en una imagen de bordes duros no se distingue de un escalón.
+19. **"Ranura medio cerrada" solo como contrahueco:** comparar las isolíneas 0,5 y 0,65 marca falsos positivos en todas las esquinas agudas antialiasadas (305 glifos de M). Solo marca `needs_review` un **contrahueco** que aparece en el nivel estricto y no en el 0,5 (evidencia topológica: `inline_outline` en O). Las demás diferencias quedan en `faint`, como dato informativo.
+20. **Orientación de las isolíneas por anidamiento** (profundidad par: exterior; impar: contrahueco), no por muestreo puntual. El muestreo se equivocaba cuando la isolínea bilineal se curva dentro de una celda: en la `R` del specimen, el contrahueco de la referencia aparecía relleno.
+21. **Agrupación por layout** (`forma_trace::match_rows`): programación dinámica con los dos mejores resultados por estado. El trazo típico se estima como 4 × la mediana de la transformada de distancia de la tinta. Las restricciones duras y la ambigüedad son las de §5.3.
+
+### Corpus, modo C: antes (Hito 2) y después (bloque C)
+
+| Nivel | Pipelines correctos | IoU media contra la verdad | Peor IoU contra la verdad | Huecos correctos | `needs_review` | Errores topológicos sin detectar |
+|---|---|---|---|---|---|---|
+| S | 1/1 → 1/1 | 0,994 → 0,995 | 0,978 → 0,984 | 8/8 → 8/8 | 0/8 | 0 |
+| L | 8/11 → 9/11 | 0,998 → 0,998 | 0,986 → 0,982 | 30/31 → 35/35 | 0/35 | 0 |
+| O | 5/7 → 6/7 | 0,981 → 0,984 | 0,946 → 0,953 | 29/30 → 35/36 | 1/36 | 0 |
+| M (36 casos) | 36/36 | 0,883 → 0,971 | 0,154 → 0,750 | 929/936 → 935/936 | 96/936 | 0 |
+| M-hand (12) | 12/12 | 0,957 → 0,980 | 0,424 → 0,897 | 312/312 | 3/312 | 0 |
+
+**Lectura de la tabla:**
+- **L:** los dos casos que siguen sin pasar están bien informados. En `touching_pair` las letras se tocan, y no se separan (fuera de alcance). En `uneven_light` el análisis ve una sola forma; es un límite conocido de la paleta con iluminación muy desigual, pendiente.
+- **`needs_review` en M:** 85 de los 96 casos son de c60, letras de 60 px donde el IoU está dominado por el borde y las serifas miden un píxel. Se calibra en la Task 18b.
+- **Alfabeto privado** (local, sin publicar imágenes):
+
+  | Letra | Hito 2 | Bloque C |
+  |---|---|---|
+  | E | IoU 0,936, ranura cerrada | IoU 0,994, ranura conservada, sin revisión |
+  | H | no se podía asignar como un glifo | candidatos 7+8 agrupados automáticamente, IoU 0,9925, sin revisión |

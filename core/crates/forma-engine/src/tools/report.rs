@@ -61,8 +61,8 @@ pub const SUMMARY_ENTRIES: usize = 20;
 pub const SUMMARY_LIST_BYTES: usize = 4 * 1024;
 
 /// The version of the quality thresholds recorded in reports and
-/// provenance; 0 until the thresholds are versioned.
-pub const THRESHOLDS_VERSION: u32 = 0;
+/// provenance.
+pub const THRESHOLDS_VERSION: u32 = forma_trace::THRESHOLDS.version;
 
 impl Detail {
     /// The most entries and bytes of JSON of a list at this detail.

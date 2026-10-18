@@ -77,51 +77,58 @@ fn codepoint(ch: char) -> String {
 
 /// The assignments of the candidates to the characters of the layout, and the
 /// rows that did not match.
-fn assignments(summary: &Value, layout: &[String]) -> (Vec<Value>, Vec<Value>, usize, bool) {
-    let empty = Vec::new();
-    let candidates = summary["candidates"].as_array().unwrap_or(&empty);
-    let truncated = summary["candidates_truncated"].as_bool().unwrap_or(false);
-    let rows = candidates
-        .iter()
-        .filter_map(|c| c["row"].as_u64())
-        .max()
-        .map_or(0, |m| m as usize + 1);
+/// The assignments of a case: its layout matched with the image's rows
+/// (see [`forma_trace::match_rows`]); rows that do not match exactly or
+/// with a clear grouping of pieces are reported and left unassigned.
+fn assignments(image: &[u8], layout: &[String]) -> (Vec<Value>, Vec<Value>, usize, bool) {
     let mut assigned = Vec::new();
     let mut unmatched = Vec::new();
-    if rows != layout.len() || truncated {
+    let opts = forma_trace::TraceOptions::default();
+    let Ok(decoded) = forma_trace::decode(image) else {
+        unmatched.push(json!({ "reason": "decode" }));
+        return (assigned, unmatched, 0, false);
+    };
+    let Ok(analysis) = forma_trace::analyze(&decoded, &opts) else {
+        unmatched.push(json!({ "reason": "analyze" }));
+        return (assigned, unmatched, 0, false);
+    };
+    let stroke = forma_trace::typical_stroke_px(&decoded, &opts).unwrap_or(0.0);
+    let candidates = analysis.candidates.len();
+    if analysis.rows.len() != layout.len() {
         unmatched.push(json!({
             "reason": "row_count",
-            "image_rows": rows,
+            "image_rows": analysis.rows.len(),
             "layout_rows": layout.len(),
         }));
-        return (assigned, unmatched, candidates.len(), false);
+        return (assigned, unmatched, candidates, false);
     }
-    for (r, text) in layout.iter().enumerate() {
-        let mut in_row: Vec<&Value> = candidates
-            .iter()
-            .filter(|c| c["row"].as_u64() == Some(r as u64))
-            .collect();
-        in_row.sort_by_key(|c| c["index"].as_u64().unwrap_or(0));
-        let chars: Vec<char> = text.chars().collect();
-        if in_row.len() != chars.len() {
-            unmatched.push(json!({
-                "reason": "count",
-                "row": r,
-                "candidates": in_row.len(),
-                "characters": chars.len(),
-            }));
-            continue;
-        }
-        for (c, ch) in in_row.iter().zip(chars) {
-            assigned.push(json!({
-                "candidate": c["index"],
-                "name": ch.to_string(),
-                "unicodes": [codepoint(ch)],
-            }));
+    let expected: Vec<usize> = layout.iter().map(|r| r.chars().count()).collect();
+    for (r, (text, matched)) in layout
+        .iter()
+        .zip(forma_trace::match_rows(&analysis, &expected, stroke))
+        .enumerate()
+    {
+        let groups = match matched {
+            forma_trace::RowMatch::Exact { groups } | forma_trace::RowMatch::Grouped { groups } => {
+                groups
+            }
+            other => {
+                unmatched.push(json!({ "row": r, "match": other }));
+                continue;
+            }
+        };
+        for (group, ch) in groups.iter().zip(text.chars()) {
+            let mut a = json!({ "name": ch.to_string(), "unicodes": [codepoint(ch)] });
+            if group.len() == 1 {
+                a["candidate"] = json!(group[0]);
+            } else {
+                a["candidates"] = json!(group);
+            }
+            assigned.push(a);
         }
     }
     let ok = unmatched.is_empty();
-    (assigned, unmatched, candidates.len(), ok)
+    (assigned, unmatched, candidates, ok)
 }
 
 /// The traced outline of `name`, mapped over the true outline: same center
@@ -220,8 +227,8 @@ fn pipeline(
         json!({ "family_name": "Bench" }),
     )?;
     let doc = created["doc"].as_str().unwrap_or_default().to_owned();
-    let inspected = run.json("image_inspect", "image_inspect", json!({ "path": image }))?;
-    let (assigned, unmatched, candidates, matched) = assignments(&inspected, &case.layout);
+    run.json("image_inspect", "image_inspect", json!({ "path": image }))?;
+    let (assigned, unmatched, candidates, matched) = assignments(&case.image, &case.layout);
     let layout_chars: usize = case.layout.iter().map(|r| r.chars().count()).sum();
     let mut out = json!({
         "candidates": candidates,
@@ -248,6 +255,10 @@ fn pipeline(
             "name": name,
             "iou": entry["iou"],
             "nodes": entry["nodes"],
+            "hausdorff_p95_px": entry["hausdorff_p95_px"],
+            "topology_ok": entry["topology_ok"],
+            "needs_review": entry["needs_review"],
+            "reasons": entry["reasons"],
         });
         if let Some(truth) = case.truth.as_ref().and_then(|t| t.glyphs.get(&name)) {
             measure_against_truth(run, &doc, &name, truth, &mut g);
@@ -374,6 +385,11 @@ fn summarize(glyphs: &[Value]) -> Value {
         "iou_truth_min": min(&truth_ious),
         "holes_correct": holes_ok,
         "holes_checked": with_holes,
+        "needs_review": glyphs.iter().filter(|g| g["needs_review"] == json!(true)).count(),
+        "undetected_topology_errors": glyphs
+            .iter()
+            .filter(|g| g["holes_match"] == json!(false) && g["needs_review"] != json!(true))
+            .count(),
     })
 }
 

@@ -39,9 +39,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use visioncortex::{BinaryImage, CompoundPathElement, PathSimplifyMode};
 
-use crate::candidates::{Analysis, PxRect, TraceOptions, analyze};
-use crate::mask::{binary_mask, effective_upsample};
-use crate::{TraceError, cleanup, fidelity};
+use crate::candidates::{Analysis, Extractor, Fidelity, PxRect, TraceOptions, analyze_parts};
+use crate::cleanup::Fit;
+use crate::mask::Coverage;
+use crate::quality::{FeatureIssue, QualityReport, THRESHOLDS, ToPixels};
+use crate::subpixel::{Field, edge_softness, isolines};
+use crate::{TraceError, cleanup, fidelity, quality};
 
 /// Mask pixels of padding around the cut-out, so that counters never touch
 /// its border (`visioncortex` ignores holes that do).
@@ -76,8 +79,11 @@ pub struct Placement {
 /// One vectorized candidate.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TracedGlyph {
-    /// The candidate's index in the analysis.
+    /// The (first) candidate's index in the analysis.
     pub candidate: usize,
+    /// Every candidate traced into this glyph (several for a letter drawn
+    /// in separate pieces).
+    pub candidates: Vec<usize>,
     /// Clean contours in font units: outer contours counter-clockwise,
     /// counters clockwise, nodes at the extrema, on a 1-unit grid.
     pub paths: Vec<Path>,
@@ -91,11 +97,25 @@ pub struct TracedGlyph {
     pub iou: f64,
     /// How the contours map back to the image.
     pub placement: Placement,
+    /// How faithful the contours are (spec §4).
+    pub quality: QualityReport,
+    /// The attempt that produced them (see [`trace_groups`]).
+    pub attempt: String,
+    /// Whether a person (or an agent) should look at the glyph: it fails a
+    /// quality gate, or the image holds a feature too faint to be sure of.
+    pub needs_review: bool,
+    /// Why, in words; empty when nothing needs a look.
+    pub reasons: Vec<String>,
+    /// Features of the ink that only show at a stricter level (a slit the
+    /// image's blur half closed, an anti-aliased corner); informative. A
+    /// counter that only shows there makes the glyph `needs_review`.
+    pub faint: Vec<FeatureIssue>,
 }
 
 /// The analysis of an image and its binary mask.
 pub(crate) struct Prepared {
     pub analysis: Analysis,
+    pub coverage: Coverage,
     pub mask: Mask,
     pub upsample: u32,
 }
@@ -146,22 +166,14 @@ pub(crate) fn check_cap_height(cap_height_units: f64) -> Result<(), TraceError> 
     }
 }
 
-/// Analyzes `image` and builds its binary mask.
+/// Analyzes `image`, keeping its coverage and binary mask.
 pub(crate) fn prepare(image: &RgbImage, opts: &TraceOptions) -> Result<Prepared, TraceError> {
-    let analysis = analyze(image, opts)?;
-    let (w, h) = image.dimensions();
-    let upsample = effective_upsample(w, h, opts.upsample);
-    let mask = binary_mask(
-        image,
-        analysis.background,
-        analysis.ink,
-        opts.tolerance,
-        upsample,
-    );
+    let parts = analyze_parts(image, opts)?;
     Ok(Prepared {
-        analysis,
-        mask,
-        upsample,
+        analysis: parts.analysis,
+        coverage: parts.coverage,
+        mask: parts.mask,
+        upsample: parts.upsample,
     })
 }
 
@@ -235,9 +247,43 @@ pub(crate) fn candidate_ink(
     index: usize,
     cap_height_units: f64,
 ) -> Result<CandidateInk, TraceError> {
+    group_ink(prepared, &[index], cap_height_units)
+}
+
+/// The ink of the candidates `indices` traced as one glyph: the pieces
+/// inside the union of their boxes that do not continue outside it, without
+/// specks. They must be of the same row, whose cap height sets the scale.
+pub(crate) fn group_ink(
+    prepared: &Prepared,
+    indices: &[usize],
+    cap_height_units: f64,
+) -> Result<CandidateInk, TraceError> {
     let analysis = &prepared.analysis;
-    check_index(analysis, index)?;
+    let Some(&index) = indices.first() else {
+        return Err(TraceError::InvalidArgument("no candidate to trace".into()));
+    };
+    for &i in indices {
+        check_index(analysis, i)?;
+    }
     let candidate = &analysis.candidates[index];
+    if let Some(&other) = indices
+        .iter()
+        .find(|&&i| analysis.candidates[i].row != candidate.row)
+    {
+        return Err(TraceError::InvalidArgument(format!(
+            "candidates {index} and {other} are in different rows; a glyph's pieces must be \
+             in one row"
+        )));
+    }
+    let union = indices.iter().fold(candidate.bbox, |b, &i| {
+        let c = analysis.candidates[i].bbox;
+        PxRect {
+            x0: b.x0.min(c.x0),
+            y0: b.y0.min(c.y0),
+            x1: b.x1.max(c.x1),
+            y1: b.y1.max(c.y1),
+        }
+    });
     let row = analysis
         .rows
         .get(candidate.row)
@@ -252,7 +298,7 @@ pub(crate) fn candidate_ink(
     let scale = cap_height_units / row_height;
     let u = prepared.upsample as usize;
     let mask = &prepared.mask;
-    let b = candidate.bbox;
+    let b = union;
     let region = (
         (b.x0 as usize * u).min(mask.width as usize),
         (b.y0 as usize * u).min(mask.height as usize),
@@ -388,46 +434,187 @@ fn midline(walk: &[Point]) -> Vec<Point> {
     out
 }
 
-/// Vectorizes the candidate's ink into clean contours in font units.
-fn vectorize(ink: &CandidateInk, lsb: f64) -> Result<Vec<Path>, TraceError> {
-    let u = f64::from(ink.upsample);
+/// The edge of the candidate's ink as closed polygons in original pixels:
+/// the isoline of its own coverage at `level` ([`Extractor::Subpixel`]) or
+/// the midlines of the mask's pixel-edge walks ([`Extractor::EdgeWalk`]).
+fn edge_loops(
+    prepared: &Prepared,
+    ink: &CandidateInk,
+    extractor: Extractor,
+    level: f64,
+) -> Result<Vec<Vec<Point>>, TraceError> {
+    match extractor {
+        Extractor::EdgeWalk => {
+            let u = f64::from(ink.upsample);
+            Ok(boundaries(ink)?
+                .into_iter()
+                .map(|ring| {
+                    ring.into_iter()
+                        .map(|p| Point::new((ink.x0 as f64 + p.x) / u, (ink.y0 as f64 + p.y) / u))
+                        .collect()
+                })
+                .collect())
+        }
+        _ => Ok(isolines(&own_field(prepared, ink), level as f32)),
+    }
+}
+
+/// The candidate's own coverage field (see [`Field::own`]).
+fn own_field(prepared: &Prepared, ink: &CandidateInk) -> Field {
+    let mask = &prepared.mask;
+    let (mw, mh) = (i64::from(mask.width), i64::from(mask.height));
+    let mask_ink = |mx: i64, my: i64| -> bool {
+        mx >= 0 && my >= 0 && mx < mw && my < mh && mask.data[(my * mw + mx) as usize] != 0
+    };
+    Field::own(&prepared.coverage, &mask_ink, ink)
+}
+
+/// Vectorizes edge polygons (original pixels) into clean contours in font
+/// units.
+fn vectorize(
+    ink: &CandidateInk,
+    loops: &[Vec<Point>],
+    lsb: f64,
+    fit: Fit,
+    upsample: u32,
+) -> Result<Vec<Path>, TraceError> {
     let to_units = |p: &Point| -> Point {
-        let px = (ink.x0 as f64 + p.x) / u;
-        let py = (ink.y0 as f64 + p.y) / u;
         Point::new(
-            (px - ink.ink_left_px) * ink.scale + lsb,
-            (ink.baseline_px - py) * ink.scale,
+            (p.x - ink.ink_left_px) * ink.scale + lsb,
+            (ink.baseline_px - p.y) * ink.scale,
         )
     };
     let mut contours = Vec::new();
-    for boundary in boundaries(ink)? {
-        let points: Vec<Point> = boundary.iter().map(to_units).collect();
-        if let Some(path) = cleanup::contour(&points, ink.scale, ink.upsample)? {
+    for ring in loops {
+        let points: Vec<Point> = ring.iter().map(to_units).collect();
+        if let Some(path) = cleanup::contour(&points, ink.scale, upsample, fit)? {
             contours.push(path);
         }
     }
     Ok(cleanup::finish(contours))
 }
 
-/// Vectorizes the candidates `indices` of `image` into clean contours in font
-/// units.
+/// One way of tracing a candidate: how its edge is read and how closely the
+/// outline follows it.
+struct Attempt {
+    name: &'static str,
+    extractor: Extractor,
+    fit: Fit,
+}
+
+/// Edges softer than this (see [`edge_softness`]) are anti-aliased; harder
+/// ones are pixel steps, smoothed as noise.
+const SOFT_EDGES: f64 = 0.25;
+
+/// The attempts of [`trace_groups`], in order: the first that passes every
+/// quality gate wins. Hard-edged ink (`hard`) starts by smoothing its pixel
+/// steps away, which are noise half a pixel high, not drawing.
+fn attempts(opts: &TraceOptions, hard: bool) -> Vec<Attempt> {
+    let faithful = Attempt {
+        name: "subpixel",
+        extractor: Extractor::Subpixel,
+        fit: Fit {
+            smooth_px: 0.75,
+            max_fit_px: 0.5,
+            corner_limit_px: 2.0,
+        },
+    };
+    let tight = Attempt {
+        name: "subpixel-tight",
+        extractor: Extractor::Subpixel,
+        fit: Fit {
+            smooth_px: 0.4,
+            max_fit_px: 0.3,
+            corner_limit_px: 1.0,
+        },
+    };
+    let exact = Attempt {
+        name: "subpixel-exact",
+        extractor: Extractor::Subpixel,
+        fit: Fit {
+            smooth_px: 0.0,
+            max_fit_px: 0.2,
+            corner_limit_px: 0.0,
+        },
+    };
+    let walk = Attempt {
+        name: "edge-walk",
+        extractor: Extractor::EdgeWalk,
+        fit: Fit::STEPPED,
+    };
+    let clean = Attempt {
+        name: "subpixel-clean",
+        extractor: Extractor::Subpixel,
+        fit: Fit {
+            smooth_px: 1.5,
+            max_fit_px: 1.0,
+            corner_limit_px: 2.5,
+        },
+    };
+    let stepped = Attempt {
+        name: "subpixel-stepped",
+        extractor: Extractor::Subpixel,
+        fit: Fit {
+            corner_limit_px: 2.0,
+            ..Fit::STEPPED
+        },
+    };
+    let mut list = match (opts.fidelity, hard) {
+        (_, true) => vec![stepped, faithful, tight, exact],
+        (Fidelity::Clean, false) => vec![clean, faithful, tight, exact],
+        _ => vec![faithful, tight, exact],
+    };
+    if opts.extractor == Extractor::EdgeWalk {
+        list.insert(0, walk);
+    } else {
+        list.push(walk);
+    }
+    list
+}
+
+/// One traced attempt with its verdict.
+struct Outcome {
+    attempt: &'static str,
+    paths: Vec<Path>,
+    shift: f64,
+    iou: f64,
+    quality: QualityReport,
+    failures: Vec<String>,
+}
+
+/// Vectorizes the candidates `indices` of `image`, each into its own glyph;
+/// see [`trace_groups`].
 ///
-/// For each candidate: the scale is `cap_height_units` over the cap height of
-/// its row in pixels; the binary mask is cut out around its box (keeping only
-/// its own pieces) with a 2-pixel margin at the mask resolution; the pixel
-/// edges of the pieces are walked with `visioncortex`, each walk is reduced
-/// to its midline (the polygon through the middle of its runs, which lies on
-/// the mask's 50 % edge) and mapped to font units with y up: `x = (px - x0) * scale + lsb`, `y = (baseline_px - py) *
-/// scale`, where `x0` is the left edge of the ink and
-/// `lsb = round(0.05 * units_per_em)`. The contours are then cleaned up:
-/// cut at their corners, smoothed and refitted between them so that pixel
-/// steps do not become nodes, split at their extrema, simplified to within
-/// 1.5 units, given the PostScript direction (outer contours
-/// counter-clockwise, counters clockwise), with nodes at the extrema, on a
-/// 1-unit grid, without duplicate points, and marked `smooth` where the
-/// tangents differ by at most 3°. Finally the fidelity is measured: the IoU
-/// of [`crate::compare`], with the contours where they were traced (lsb on
-/// the ink's left edge) rather than aligned by their bounding box.
+/// # Errors
+///
+/// As [`trace_groups`].
+pub fn trace(
+    image: &RgbImage,
+    opts: &TraceOptions,
+    indices: &[usize],
+    cap_height_units: f64,
+    units_per_em: u16,
+) -> Result<Vec<TracedGlyph>, TraceError> {
+    let groups: Vec<Vec<usize>> = indices.iter().map(|&i| vec![i]).collect();
+    trace_groups(image, opts, &groups, cap_height_units, units_per_em)
+}
+
+/// Vectorizes each group of candidates of `image` (one or several pieces of
+/// the same row) into clean contours in font units, one glyph per group.
+///
+/// For each group: the scale is `cap_height_units` over the cap height of
+/// its row in pixels; the reference edge is the isoline of the group's own
+/// ink coverage at `opts.isoline` (see [`crate::subpixel`]). The outline is
+/// traced by a series of attempts ([`Extractor::Subpixel`] at decreasing
+/// smoothing, then [`Extractor::EdgeWalk`]); each is cleaned up (corners,
+/// smoothing and refit, extrema, PostScript direction, 1-unit grid, smooth
+/// nodes; see [`crate::cleanup`]), placed with its left edge on
+/// `lsb = round(0.05 * units_per_em)`, and judged against the reference
+/// ([`QualityReport`], [`THRESHOLDS`]). The first attempt that passes every
+/// gate wins; if none does, the best one is kept and the glyph
+/// `needs_review`, with the reasons. Features that only show at a stricter
+/// level (`isoline + 0.15`) are reported in `faint` and also call for a
+/// review.
 ///
 /// Deterministic: equal inputs give equal outputs.
 ///
@@ -436,64 +623,170 @@ fn vectorize(ink: &CandidateInk, lsb: f64) -> Result<Vec<Path>, TraceError> {
 /// * [`TraceError::CandidateOutOfRange`] if an index is not a candidate of
 ///   the image's analysis;
 /// * [`TraceError::InvalidArgument`] if `cap_height_units` is not a positive
-///   number;
-/// * the errors of [`analyze`], and [`TraceError::Vectorize`],
+///   number, a group is empty or mixes rows;
+/// * the errors of [`crate::analyze`], and [`TraceError::Vectorize`],
 ///   [`TraceError::Geometry`] or [`TraceError::Render`] if a step fails.
-pub fn trace(
+pub fn trace_groups(
     image: &RgbImage,
     opts: &TraceOptions,
-    indices: &[usize],
+    groups: &[Vec<usize>],
     cap_height_units: f64,
     units_per_em: u16,
 ) -> Result<Vec<TracedGlyph>, TraceError> {
     check_cap_height(cap_height_units)?;
+    if !(0.3..=0.7).contains(&opts.isoline) {
+        return Err(TraceError::InvalidArgument(format!(
+            "the isoline must be within 0.3 to 0.7, got {}",
+            opts.isoline
+        )));
+    }
     let prepared = prepare(image, opts)?;
-    for &index in indices {
-        check_index(&prepared.analysis, index)?;
+    for group in groups {
+        for &index in group {
+            check_index(&prepared.analysis, index)?;
+        }
     }
     let lsb = (SIDE_BEARING_EM * f64::from(units_per_em)).round();
-    let mut out = Vec::with_capacity(indices.len());
-    for &index in indices {
-        let ink = candidate_ink(&prepared, index, cap_height_units)?;
-        let traced = vectorize(&ink, lsb)?;
-        // Cleanup moves the outline's left edge by a fraction of a pixel:
-        // shift it (by whole units, keeping the grid) back onto the side
-        // bearing, and the placement with it.
-        // The bounding box of curves carries rounding noise (an extremum
-        // node at 50 may come out as 49.999999999999993): snap what is that
-        // close to the grid.
-        let bounds = forma_geometry::bbox(&traced).map(|r| {
-            let snap = |v: f64| {
-                if (v - v.round()).abs() < 1e-6 {
-                    v.round()
-                } else {
-                    v
-                }
+    let mut out = Vec::with_capacity(groups.len());
+    for group in groups {
+        let ink = group_ink(&prepared, group, cap_height_units)?;
+        let field = own_field(&prepared, &ink);
+        let reference = isolines(&field, opts.isoline as f32);
+        let stricter = isolines(&field, (opts.isoline + 0.15) as f32);
+        let hard = edge_softness(&field, opts.isoline as f32) < SOFT_EDGES;
+        let (faint, faint_counters) = if hard {
+            // A hard edge has no blur to half close a slit.
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                quality::faint_features(&reference, &stricter, THRESHOLDS.feature_width_px)?,
+                quality::faint_counters(&reference, &stricter)?,
+            )
+        };
+        let mut best: Option<Outcome> = None;
+        for attempt in attempts(opts, hard) {
+            let loops = if attempt.extractor == Extractor::Subpixel {
+                reference.clone()
+            } else {
+                edge_loops(&prepared, &ink, attempt.extractor, opts.isoline)?
             };
-            kurbo::Rect::new(snap(r.x0), r.y0, snap(r.x1), r.y1)
-        });
-        let shift = bounds.map_or(0.0, |r| (lsb - r.x0).round());
-        let paths = transform_paths(
-            &traced,
-            &Transform {
-                dx: shift,
-                ..Transform::IDENTITY
-            },
-        );
+            let upsample = if attempt.extractor == Extractor::EdgeWalk {
+                ink.upsample
+            } else {
+                4
+            };
+            let traced = vectorize(&ink, &loops, lsb, attempt.fit, upsample)?;
+            let outcome = judge(&ink, &reference, traced, lsb, attempt.name, hard)?;
+            let passed = outcome.failures.is_empty();
+            let better = best
+                .as_ref()
+                .is_none_or(|b| severity(&outcome) < severity(b));
+            if better {
+                best = Some(outcome);
+            }
+            if passed {
+                break;
+            }
+        }
+        let Some(chosen) = best else {
+            return Err(TraceError::Vectorize(
+                "no attempt traced the candidate".into(),
+            ));
+        };
+        let bounds = forma_geometry::bbox(&chosen.paths);
         let ink_width = bounds.map_or(0.0, |r| r.width());
-        let iou = fidelity::evaluate(&ink, &paths, fidelity::Anchor::At(lsb + shift), false)?.0;
+        let mut reasons = chosen.failures.clone();
+        for f in &faint_counters {
+            reasons.push(format!(
+                "a counter of {:.0} square px shows at a stricter level at ({:.0}, {:.0}): the \
+                 image may have filled it; trace with a higher isoline to open it",
+                f.area_px2, f.at_px[0], f.at_px[1]
+            ));
+        }
         out.push(TracedGlyph {
-            candidate: index,
-            paths,
+            candidate: group[0],
+            candidates: group.clone(),
+            paths: chosen.paths,
             ink_width,
             advance_width: ink_width + 2.0 * lsb,
-            iou,
+            iou: chosen.iou,
             placement: Placement {
                 scale: ink.scale,
-                origin_px: (ink.ink_left_px - shift / ink.scale, ink.baseline_px),
+                origin_px: (ink.ink_left_px - chosen.shift / ink.scale, ink.baseline_px),
                 lsb,
             },
+            quality: chosen.quality,
+            attempt: chosen.attempt.to_owned(),
+            needs_review: !reasons.is_empty(),
+            reasons,
+            faint,
         });
     }
     Ok(out)
+}
+
+/// How bad an attempt that fails is, to keep the least bad when none
+/// passes: a spot far off the ink first (a spike is worse than anything
+/// else), then the topology, then lost or invented features, then the
+/// remaining gates, then the typical distance.
+fn severity(outcome: &Outcome) -> (bool, bool, usize, usize, i64) {
+    let q = &outcome.quality;
+    (
+        q.hausdorff_max_px > 2.0 * THRESHOLDS.hausdorff_max_px,
+        !q.topology_ok,
+        q.features.len(),
+        outcome.failures.len(),
+        (q.hausdorff_p95_px * 1000.0).round() as i64,
+    )
+}
+
+/// Places traced contours with their left edge on `lsb` and judges them
+/// against the reference edge.
+fn judge(
+    ink: &CandidateInk,
+    reference: &[Vec<Point>],
+    traced: Vec<Path>,
+    lsb: f64,
+    attempt: &'static str,
+    hard: bool,
+) -> Result<Outcome, TraceError> {
+    // Cleanup moves the outline's left edge by a fraction of a pixel:
+    // shift it (by whole units, keeping the grid) back onto the side
+    // bearing, and the placement with it. The bounding box of curves
+    // carries rounding noise (an extremum node at 50 may come out as
+    // 49.999999999999993): snap what is that close to the grid.
+    let bounds = forma_geometry::bbox(&traced).map(|r| {
+        let snap = |v: f64| {
+            if (v - v.round()).abs() < 1e-6 {
+                v.round()
+            } else {
+                v
+            }
+        };
+        kurbo::Rect::new(snap(r.x0), r.y0, snap(r.x1), r.y1)
+    });
+    let shift = bounds.map_or(0.0, |r| (lsb - r.x0).round());
+    let paths = transform_paths(
+        &traced,
+        &Transform {
+            dx: shift,
+            ..Transform::IDENTITY
+        },
+    );
+    let iou = fidelity::evaluate(ink, &paths, fidelity::Anchor::At(lsb + shift), false)?.0;
+    let to = ToPixels {
+        scale: ink.scale,
+        lsb,
+        origin: (ink.ink_left_px - shift / ink.scale, ink.baseline_px),
+    };
+    let quality = quality::evaluate(reference, &paths, &to, iou, &THRESHOLDS, hard)?;
+    let failures = quality.failures(&THRESHOLDS);
+    Ok(Outcome {
+        attempt,
+        paths,
+        shift,
+        iou,
+        quality,
+        failures,
+    })
 }

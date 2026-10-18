@@ -677,3 +677,45 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn simplify_never_loops_away_from_a_hairpin() {
+    // A narrow wedge of many short lines (the inner corner where the
+    // diagonal of an N meets its stem): a least-squares fit through its
+    // vertices may loop far away; the simplified contour must stay near.
+    let mut nodes = Vec::new();
+    for k in 0..40 {
+        let t = f64::from(k);
+        nodes.push(Node {
+            x: 600.0 + t * 1.5,
+            y: 400.0 + t * 2.0 + (t * 0.7).sin() * 0.8,
+            kind: NodeKind::Line,
+            smooth: false,
+        });
+    }
+    for k in (0..40).rev() {
+        let t = f64::from(k);
+        nodes.push(Node {
+            x: 600.0 + t * 1.5 + 4.0,
+            y: 400.0 + t * 2.0 - 3.0,
+            kind: NodeKind::Line,
+            smooth: false,
+        });
+    }
+    let path = Path {
+        id: PathId(0),
+        closed: true,
+        nodes,
+    };
+    let before = forma_geometry::bbox(std::slice::from_ref(&path)).expect("bbox");
+    let simplified = simplify_path(&path, 1.5).expect("simplify");
+    let after = forma_geometry::bbox(std::slice::from_ref(&simplified)).expect("bbox");
+    assert!(
+        after.y1 <= before.y1 + 3.0 && after.y0 >= before.y0 - 3.0,
+        "{after:?} vs {before:?}"
+    );
+    assert!(
+        after.x1 <= before.x1 + 3.0 && after.x0 >= before.x0 - 3.0,
+        "{after:?} vs {before:?}"
+    );
+}

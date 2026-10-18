@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use forma_edit::{Command, GlyphRef};
 use forma_model::{Actor, EntityKey, Font, MasterId, Provenance, ProvenanceDetail, Rev, Source};
-use forma_trace::{Candidate, PaletteEntry, Row, TraceError, TraceOptions, TracedGlyph};
+use forma_trace::{
+    Candidate, Extractor, Fidelity, PaletteEntry, Row, TraceError, TraceOptions, TracedGlyph,
+};
 use image::RgbImage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -134,12 +136,19 @@ pub struct ImageInspectArgs {
     pub tolerance: Option<f64>,
 }
 
-/// One candidate assigned to a glyph.
+/// One candidate (or several) assigned to a glyph.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Assignment {
-    /// The candidate number, as shown by `image_inspect`.
-    pub candidate: usize,
+    /// The candidate number, as shown by `image_inspect`. Give this or
+    /// `candidates`.
+    #[serde(default)]
+    pub candidate: Option<usize>,
+    /// Several candidates traced together into one glyph: a letter drawn in
+    /// separate pieces, all in the same row. Give this or `candidate`.
+    #[serde(default)]
+    #[schemars(length(min = 1, max = 16))]
+    pub candidates: Option<Vec<usize>>,
     /// The glyph name; the glyph is created if it does not exist.
     pub name: String,
     /// The code points of the glyph; none by default.
@@ -205,6 +214,57 @@ pub struct ImageTraceOpArgs {
     /// (`report_path`); `full` lists up to 200 entries.
     #[serde(default)]
     pub detail: Detail,
+    /// How closely the outline follows the ink: `faithful` (the default:
+    /// within half an image pixel, keeping irregularities the drawing holds)
+    /// or `clean` (within one pixel, smoothing smaller irregularities).
+    #[serde(default)]
+    pub fidelity: Option<Fidelity>,
+    /// How the ink's edge is read: `subpixel` (the default) or `edge-walk`
+    /// (the tracer of FORMA 0.0.2, tried last anyway).
+    #[serde(default)]
+    pub extractor: Option<Extractor>,
+    /// The coverage level of the edge, 0.3 to 0.7 (0.5 by default): higher
+    /// opens a slit the image's blur half closed, lower keeps faint ink.
+    #[serde(default)]
+    #[schemars(range(min = 0.3, max = 0.7))]
+    pub isoline: Option<f64>,
+}
+
+impl Assignment {
+    /// The candidates of the glyph.
+    ///
+    /// # Errors
+    ///
+    /// `INVALID_ARGUMENT` unless exactly one of `candidate` and
+    /// `candidates` is given, and `candidates` lists 1 to 16 distinct
+    /// numbers.
+    pub fn group(&self) -> Result<Vec<usize>, ToolError> {
+        match (&self.candidate, &self.candidates) {
+            (Some(one), None) => Ok(vec![*one]),
+            (None, Some(many)) if !many.is_empty() && many.len() <= 16 => {
+                let mut seen = std::collections::BTreeSet::new();
+                if many.iter().all(|c| seen.insert(*c)) {
+                    Ok(many.clone())
+                } else {
+                    Err(ToolError::invalid_argument(format!(
+                        "'{}': `candidates` lists a candidate twice",
+                        self.name
+                    )))
+                }
+            }
+            _ => Err(ToolError::invalid_argument(format!(
+                "'{}': give exactly one of `candidate` and `candidates` (1 to 16 numbers)",
+                self.name
+            ))),
+        }
+    }
+
+    /// The first candidate (for messages).
+    fn first(&self) -> usize {
+        self.candidate
+            .or_else(|| self.candidates.as_ref().and_then(|c| c.first().copied()))
+            .unwrap_or(0)
+    }
 }
 
 impl OpArgs for ImageTraceOpArgs {
@@ -216,12 +276,26 @@ impl OpArgs for ImageTraceOpArgs {
 pub struct TracedEntry {
     /// The glyph name.
     pub name: String,
-    /// The candidate number it came from.
+    /// The candidate number it came from (the first, for several).
     pub candidate: usize,
+    /// Every candidate it came from, when there are several.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<usize>,
     /// The overlap of the traced outline with the image (1 is perfect).
     pub iou: f64,
     /// The outline nodes of the glyph.
     pub nodes: usize,
+    /// 95th percentile distance from the outline to the ink's edge, in
+    /// image pixels.
+    pub hausdorff_p95_px: f64,
+    /// Whether the outline has the ink's pieces and counters.
+    pub topology_ok: bool,
+    /// Whether someone should look at it before it is final.
+    pub needs_review: bool,
+    /// Why, when it needs a look (a counter lost, a slit closed, the
+    /// outline far from the ink...).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
 }
 
 /// Result of `image_trace`.
@@ -247,6 +321,8 @@ pub struct ImageTraceResult {
     pub traced: Vec<TracedEntry>,
     /// The lowest, median and highest overlap of the traced glyphs.
     pub iou_stats: [f64; 3],
+    /// How many traced glyphs need a look (see `needs_review`).
+    pub needs_review_total: usize,
     /// How many glyphs were traced.
     pub traced_total: usize,
     /// Where the complete detail went.
@@ -435,13 +511,15 @@ fn attributed(assignment: &Assignment, error: TraceError) -> ToolError {
     let mut mapped = from_trace_error(error);
     mapped.message = format!(
         "candidate {} (assigned to '{}') cannot be traced: {}",
-        assignment.candidate, assignment.name, mapped.message
+        assignment.first(),
+        assignment.name,
+        mapped.message
     );
     let mut details = match std::mem::take(&mut mapped.details) {
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
-    details.insert("candidate".into(), json!(assignment.candidate));
+    details.insert("candidate".into(), json!(assignment.first()));
     details.insert("name".into(), json!(assignment.name));
     mapped.with_details(Value::Object(details))
 }
@@ -456,8 +534,8 @@ fn trace_assigned(
     cap: f64,
     units_per_em: u16,
 ) -> Result<Vec<TracedGlyph>, ToolError> {
-    attribute_failure(assignments, |indices| {
-        forma_trace::trace(image, opts, indices, cap, units_per_em)
+    attribute_failure(assignments, |groups| {
+        forma_trace::trace_groups(image, opts, groups, cap, units_per_em)
     })
 }
 
@@ -465,24 +543,30 @@ fn trace_assigned(
 /// causes is reported with that candidate's index and assigned name.
 fn attribute_failure(
     assignments: &[Assignment],
-    mut trace: impl FnMut(&[usize]) -> Result<Vec<TracedGlyph>, TraceError>,
+    mut trace: impl FnMut(&[Vec<usize>]) -> Result<Vec<TracedGlyph>, TraceError>,
 ) -> Result<Vec<TracedGlyph>, ToolError> {
-    let indices: Vec<usize> = assignments.iter().map(|a| a.candidate).collect();
-    let error = match trace(&indices) {
+    let groups: Vec<Vec<usize>> = assignments
+        .iter()
+        .map(Assignment::group)
+        .collect::<Result<_, _>>()?;
+    let error = match trace(&groups) {
         Ok(traced) => return Ok(traced),
         Err(error) => error,
     };
     if let TraceError::CandidateOutOfRange { index, .. } = &error
-        && let Some(assignment) = assignments.iter().find(|a| a.candidate == *index)
+        && let Some(k) = groups.iter().position(|g| g.contains(index))
     {
-        return Err(attributed(assignment, error));
+        return Err(attributed(&assignments[k], error));
     }
     if matches!(
         error,
-        TraceError::Vectorize(_) | TraceError::Geometry(_) | TraceError::Render(_)
+        TraceError::Vectorize(_)
+            | TraceError::Geometry(_)
+            | TraceError::Render(_)
+            | TraceError::InvalidArgument(_)
     ) {
-        for assignment in assignments {
-            if let Err(single) = trace(&[assignment.candidate]) {
+        for (assignment, group) in assignments.iter().zip(&groups) {
+            if let Err(single) = trace(std::slice::from_ref(group)) {
                 return Err(attributed(assignment, single));
             }
         }
@@ -490,14 +574,21 @@ fn attribute_failure(
     Err(from_trace_error(error))
 }
 
-/// At most `keep` entries: all of them when they fit, else those with the
-/// lowest overlap (the ones to look at), still in assignment order.
+/// At most `keep` entries: all of them when they fit, else the ones to look
+/// at (those that need a review, then the lowest overlap), still in
+/// assignment order.
 fn lowest_iou_in_order(entries: Vec<TracedEntry>, keep: usize) -> Vec<TracedEntry> {
     if entries.len() <= keep {
         return entries;
     }
     let mut order: Vec<usize> = (0..entries.len()).collect();
-    order.sort_by(|&a, &b| entries[a].iou.total_cmp(&entries[b].iou).then(a.cmp(&b)));
+    order.sort_by(|&a, &b| {
+        entries[b]
+            .needs_review
+            .cmp(&entries[a].needs_review)
+            .then(entries[a].iou.total_cmp(&entries[b].iou))
+            .then(a.cmp(&b))
+    });
     let mut chosen: Vec<usize> = order.into_iter().take(keep).collect();
     chosen.sort_unstable();
     chosen
@@ -544,14 +635,14 @@ fn traced_px_rect(glyph: &TracedGlyph) -> [f64; 4] {
 fn traced_provenance(image_sha256: &str, glyph: &TracedGlyph) -> Provenance {
     Provenance::pending(
         Source::Traced,
-        0,
+        forma_trace::THRESHOLDS.version,
         ProvenanceDetail::Traced {
             image_sha256: image_sha256.to_owned(),
-            candidates: vec![glyph.candidate],
+            candidates: glyph.candidates.clone(),
             px_rect: traced_px_rect(glyph),
             iou_mask: glyph.iou.clamp(0.0, 1.0),
-            hausdorff_p95_px: None,
-            topology_ok: None,
+            hausdorff_p95_px: Some(glyph.quality.hausdorff_p95_px),
+            topology_ok: Some(glyph.quality.topology_ok),
         },
     )
 }
@@ -679,7 +770,21 @@ fn image_trace(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
             )));
         }
     }
-    let opts = trace_options(op.color.as_deref(), op.tolerance)?;
+    let mut opts = trace_options(op.color.as_deref(), op.tolerance)?;
+    if let Some(fidelity) = op.fidelity {
+        opts.fidelity = fidelity;
+    }
+    if let Some(extractor) = op.extractor {
+        opts.extractor = extractor;
+    }
+    if let Some(isoline) = op.isoline {
+        if !(0.3..=0.7).contains(&isoline) {
+            return Err(ToolError::invalid_argument(format!(
+                "`isoline` must be between 0.3 and 0.7, not {isoline}"
+            )));
+        }
+        opts.isoline = isoline;
+    }
     let (image, image_sha256) = read_image_hashed(engine, &op.path)?;
     let font = Arc::clone(engine.doc(&call.doc)?.font());
     let master = find_master(&font, op.master)?;
@@ -692,15 +797,25 @@ fn image_trace(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
         .zip(&traced)
         .map(|(assignment, glyph)| TracedEntry {
             name: assignment.name.clone(),
-            candidate: assignment.candidate,
+            candidate: glyph.candidate,
+            candidates: if glyph.candidates.len() > 1 {
+                glyph.candidates.clone()
+            } else {
+                Vec::new()
+            },
             iou: glyph.iou,
             nodes: glyph.paths.iter().map(|path| path.nodes.len()).sum(),
+            hausdorff_p95_px: glyph.quality.hausdorff_p95_px,
+            topology_ok: glyph.quality.topology_ok,
+            needs_review: glyph.needs_review,
+            reasons: glyph.reasons.clone(),
         })
         .collect();
     let cmds = trace_commands(&font, op.master, &op.assignments, &traced, &image_sha256);
     let detail = op.detail;
     let body = serde_json::json!({ "traced": &entries });
     let traced_total = entries.len();
+    let needs_review_total = entries.iter().filter(|e| e.needs_review).count();
     let iou_stats = iou_stats(&entries);
     let (keep, _) = detail.list_budget();
     let entries = lowest_iou_in_order(entries, keep);
@@ -725,6 +840,7 @@ fn image_trace(engine: &mut Engine, actor: &Actor, args: Value) -> Result<ToolOu
             journal_warning: result.journal_warning,
             traced: entries,
             iou_stats,
+            needs_review_total,
             traced_total,
             report: file,
         })
@@ -800,7 +916,8 @@ mod tests {
 
     fn assigned(candidate: usize, name: &str) -> Assignment {
         Assignment {
-            candidate,
+            candidate: Some(candidate),
+            candidates: None,
             name: name.into(),
             unicodes: Vec::new(),
         }
@@ -811,7 +928,7 @@ mod tests {
         let assignments = [assigned(2, "A"), assigned(7, "Bee"), assigned(9, "C")];
         // The batch fails; only candidate 7 fails on its own.
         let error = attribute_failure(&assignments, |indices| {
-            if indices.contains(&7) {
+            if indices.iter().flatten().any(|&c| c == 7) {
                 Err(TraceError::Vectorize("no contour".into()))
             } else {
                 Ok(Vec::new())
@@ -826,7 +943,7 @@ mod tests {
 
         // A geometry failure maps to INVALID_GEOMETRY, still attributed.
         let error = attribute_failure(&assignments, |indices| {
-            if indices.contains(&9) {
+            if indices.iter().flatten().any(|&c| c == 9) {
                 Err(TraceError::Geometry("bad".into()))
             } else {
                 Ok(Vec::new())

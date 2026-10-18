@@ -109,7 +109,7 @@ fn edt_line(f: &[f64], d: &mut [f64], v: &mut [usize], z: &mut [f64]) {
 
 /// The squared Euclidean distance from each pixel to the nearest background
 /// pixel (0 on the background).
-fn distance_transform(inside: &[bool], width: usize, height: usize) -> Vec<f64> {
+pub(crate) fn distance_transform(inside: &[bool], width: usize, height: usize) -> Vec<f64> {
     let n = width.max(height);
     let mut f = vec![0.0; n];
     let mut d = vec![0.0; n];

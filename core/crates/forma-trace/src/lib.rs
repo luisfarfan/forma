@@ -11,19 +11,26 @@ mod cleanup;
 mod decode;
 mod error;
 mod fidelity;
+mod layout;
 mod mask;
 mod measure;
 mod palette;
+mod quality;
+mod subpixel;
 mod vectorize;
 
 pub use annotate::annotated_png;
-pub use candidates::{Analysis, Candidate, PxRect, Row, TraceOptions, analyze};
+pub use candidates::{
+    Analysis, Candidate, Extractor, Fidelity, PxRect, Row, TraceOptions, analyze,
+};
 pub use decode::{MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, decode};
 pub use error::TraceError;
 pub use fidelity::{Comparison, compare};
+pub use layout::{RowMatch, match_rows, typical_stroke_px};
 pub use measure::{StyleMeasure, measure};
 pub use palette::PaletteEntry;
-pub use vectorize::{Placement, TracedGlyph, trace};
+pub use quality::{FeatureIssue, QualityReport, QualityThresholds, THRESHOLDS};
+pub use vectorize::{Placement, TracedGlyph, trace, trace_groups};
 
 /// The most candidates an analysis may report.
 pub const MAX_CANDIDATES: usize = 500;

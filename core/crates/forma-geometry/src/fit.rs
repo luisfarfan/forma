@@ -605,7 +605,44 @@ fn refit_run(run: &[Seg], context: &RunContext, end: &Node) -> Option<Vec<OutSeg
     if cubics.is_empty() || 3 * cubics.len() >= node_cost(run) {
         return None;
     }
+    // A least-squares fit stays close to the points it was fitted to but may
+    // loop away between them (few, widely spaced points; a hairpin): keep
+    // the run as it was unless every new curve stays near the old outline.
+    let original = flatten_run(run, context.max_error * FLATTEN_SHARE);
+    if max_stray(&cubics, &original) > STRAY_FACTOR * context.max_error {
+        return None;
+    }
     Some(cubics_to_segments(&cubics, end))
+}
+
+/// How far a simplified curve may stray from the outline it replaces, in
+/// multiples of the error budget (the fit itself only bounds the distance
+/// at its points).
+const STRAY_FACTOR: f64 = 2.0;
+
+/// The largest distance from points along `cubics` to the polyline
+/// `points`.
+fn max_stray(cubics: &[CubicBez], points: &[Point]) -> f64 {
+    let mut worst = 0.0f64;
+    for c in cubics {
+        for k in 1..32 {
+            let p = c.eval(f64::from(k) / 32.0);
+            let d = points
+                .windows(2)
+                .map(|w| {
+                    let ab = w[1] - w[0];
+                    let len2 = ab.hypot2();
+                    if len2 <= 1e-18 {
+                        return p.distance(w[0]);
+                    }
+                    let t = ((p - w[0]).dot(ab) / len2).clamp(0.0, 1.0);
+                    p.distance(w[0] + ab * t)
+                })
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max(d);
+        }
+    }
+    worst
 }
 
 fn segment_shape(segment: &Segment) -> Result<Shape, GeometryError> {
