@@ -120,6 +120,64 @@ pub struct Row {
     pub baseline_px: f64,
     /// Bottommost pixel of any candidate in the row.
     pub bottom: f64,
+    /// How the cap line and baseline slope across the row (pixels down per
+    /// pixel right; 0 for level rows): a photo taken a little askew tilts
+    /// them. `cap_px` and `baseline_px` are their heights at `center_x`.
+    #[serde(default)]
+    pub slope: f64,
+    /// Where `cap_px` and `baseline_px` are measured along the row.
+    #[serde(default)]
+    pub center_x: f64,
+}
+
+impl Row {
+    /// The baseline at `x`, in pixels.
+    #[must_use]
+    pub fn baseline_at(&self, x: f64) -> f64 {
+        self.baseline_px + self.slope * (x - self.center_x)
+    }
+}
+
+/// The slope of a row's lines: the median slope between pairs of its
+/// pieces' bottoms (Theil–Sen: descenders and dots are outvoted); `0` with
+/// fewer than [`SLOPE_MIN_PIECES`] pieces, beyond [`MAX_ROW_SLOPE`], or
+/// when the drop across the row is within what overshoots explain.
+fn row_slope(pieces: &[Piece]) -> f64 {
+    // The largest pieces carry the lines; dust only costs time (the pairs
+    // grow with the square of the pieces).
+    let mut largest: Vec<&Piece> = pieces.iter().collect();
+    largest.sort_by_key(|p| std::cmp::Reverse((p.area, p.x0, p.y0)));
+    largest.truncate(SLOPE_PIECES);
+    let points: Vec<(f64, f64)> = largest
+        .iter()
+        .map(|p| ((f64::from(p.x0) + f64::from(p.x1)) / 2.0, p.bottom))
+        .collect();
+    if points.len() < SLOPE_MIN_PIECES {
+        return 0.0;
+    }
+    let mut slopes = Vec::new();
+    for (i, a) in points.iter().enumerate() {
+        for b in &points[i + 1..] {
+            let dx = b.0 - a.0;
+            if dx.abs() > 1.0 {
+                slopes.push((b.1 - a.1) / dx);
+            }
+        }
+    }
+    let slope = median(&mut slopes);
+    // Overshoots and descenders move bottoms by a few pixels: only a drop
+    // across the row larger than that is a tilt.
+    let (lo, hi) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+        (lo.min(p.0), hi.max(p.0))
+    });
+    let mut heights: Vec<f64> = largest.iter().map(|p| p.bottom - p.top).collect();
+    let cap = median(&mut heights);
+    let drop = slope.abs() * (hi - lo);
+    if slope.abs() <= MAX_ROW_SLOPE && drop >= TILT_MIN_CAPS * cap {
+        slope
+    } else {
+        0.0
+    }
 }
 
 /// One shape found in the image, in original pixel coordinates.
@@ -240,6 +298,20 @@ fn find(parent: &mut [usize], mut i: usize) -> usize {
     i
 }
 
+/// The fewest pieces a row's slope is measured on.
+const SLOPE_MIN_PIECES: usize = 5;
+/// A row is tilted only if its baseline drops at least this share of the
+/// cap height from end to end.
+const TILT_MIN_CAPS: f64 = 0.06;
+/// The most pieces a row's slope is measured on (the largest).
+const SLOPE_PIECES: usize = 200;
+/// The steepest slope a row's lines are taken to have (about 6°); steeper is
+/// not a tilted photo but a layout this reading does not know.
+const MAX_ROW_SLOPE: f64 = 0.1;
+/// A row shorter than this share of the typical row is minor...
+const MINOR_ROW: f64 = 0.75;
+/// ...and joins a neighbour closer than this share of the typical row.
+const MINOR_ROW_GAP: f64 = 0.15;
 /// The most pieces of one row that are merged; the smallest beyond are dust.
 const MAX_ROW_PIECES: usize = 2000;
 
@@ -317,7 +389,53 @@ fn group_rows(pieces: &[Piece]) -> Vec<(u32, u32, Vec<Piece>)> {
         }
     }
     rows.sort_by_key(|(lo, hi, _)| (*lo, *hi));
-    rows
+    merge_minor_rows(rows)
+}
+
+/// Merges each minor row (much shorter than the image's typical row: the
+/// tilde above an Ñ, the half of a row of punctuation that rises above the
+/// baseline or falls below it) into the neighbouring row it overlaps or
+/// nearly touches. Full rows are separated by clear space and never merge.
+fn merge_minor_rows(mut rows: Vec<(u32, u32, Vec<Piece>)>) -> Vec<(u32, u32, Vec<Piece>)> {
+    loop {
+        if rows.len() < 2 {
+            return rows;
+        }
+        let mut heights: Vec<f64> = rows.iter().map(|(lo, hi, _)| f64::from(hi - lo)).collect();
+        let typical = median(&mut heights);
+        let gap = |a: &(u32, u32, Vec<Piece>), b: &(u32, u32, Vec<Piece>)| {
+            f64::from(b.0) - f64::from(a.1)
+        };
+        // The minor row closest to a neighbour, and that neighbour.
+        let mut best: Option<(f64, usize, usize)> = None;
+        for i in 0..rows.len() {
+            if f64::from(rows[i].1 - rows[i].0) >= MINOR_ROW * typical {
+                continue;
+            }
+            let near = [
+                i.checked_sub(1).map(|j| (gap(&rows[j], &rows[i]), j)),
+                (i + 1 < rows.len()).then(|| (gap(&rows[i], &rows[i + 1]), i + 1)),
+            ];
+            for (g, j) in near.into_iter().flatten() {
+                if g < MINOR_ROW_GAP * typical && best.is_none_or(|(b, _, _)| g < b) {
+                    best = Some((g, i, j));
+                }
+            }
+        }
+        let Some((_, i, j)) = best else {
+            return rows;
+        };
+        let (lo, hi) = (i.min(j), i.max(j));
+        let (_, _, members) = rows.remove(hi);
+        let row = &mut rows[lo];
+        row.0 = row
+            .0
+            .min(members.iter().map(|p| p.y0).min().unwrap_or(row.0));
+        row.1 = row
+            .1
+            .max(members.iter().map(|p| p.y1).max().unwrap_or(row.1));
+        row.2.extend(members);
+    }
 }
 
 /// Finds the glyph candidates of `image`. Deterministic.
@@ -478,9 +596,22 @@ pub(crate) fn analyze_parts(image: &RgbImage, opts: &TraceOptions) -> Result<Par
         // The cap line and baseline at the mask's resolution: whole-pixel
         // boxes would round every top up and every bottom down, making the
         // cap height up to two pixels too tall.
-        let mut tops: Vec<f64> = large_per_row[orig].iter().map(|p| p.top).collect();
-        let mut bottoms: Vec<f64> = large_per_row[orig].iter().map(|p| p.bottom).collect();
+        // On a tilted row the lines are measured as they run, at the
+        // row's centre.
+        let large = &large_per_row[orig];
+        let slope = row_slope(large);
+        let mut xs: Vec<f64> = large
+            .iter()
+            .map(|p| (f64::from(p.x0) + f64::from(p.x1)) / 2.0)
+            .collect();
+        let center_x = median(&mut xs);
+        let level =
+            |p: &Piece, y: f64| y - slope * ((f64::from(p.x0) + f64::from(p.x1)) / 2.0 - center_x);
+        let mut tops: Vec<f64> = large.iter().map(|p| level(p, p.top)).collect();
+        let mut bottoms: Vec<f64> = large.iter().map(|p| level(p, p.bottom)).collect();
         analysis.rows.push(Row {
+            slope,
+            center_x,
             index: ri,
             top: cands
                 .iter()

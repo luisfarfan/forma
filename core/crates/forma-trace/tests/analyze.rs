@@ -411,3 +411,66 @@ fn a_column_of_dust_is_analyzed_quickly() {
     );
     assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
 }
+
+/// Bars 30 px wide and `cap` tall, every 60 px from x = 40, standing on a
+/// baseline that drops `drop` px per bar.
+fn bars(img: &mut RgbImage, n: u32, top: u32, cap: u32, drop: u32) {
+    for i in 0..n {
+        let y = top + i * drop;
+        rect(img, 40 + i * 60, y, 70 + i * 60, y + cap, ORANGE);
+    }
+}
+
+#[test]
+fn a_tilted_row_has_a_sloping_baseline() {
+    // A photo taken a little askew: the baseline drops 4 px per letter.
+    let mut img = canvas(700, 300);
+    bars(&mut img, 10, 60, 100, 4);
+    let a = analyze(&img, &TraceOptions::default()).expect("analyzes");
+    assert_eq!(a.rows.len(), 1, "{:?}", a.rows);
+    let row = &a.rows[0];
+    assert!((row.slope - 4.0 / 60.0).abs() < 0.01, "{row:?}");
+    // At the last bar's centre the baseline is that bar's bottom.
+    assert!(
+        (row.baseline_at(40.0 + 9.0 * 60.0 + 15.0) - 196.0).abs() < 1.5,
+        "{row:?}"
+    );
+}
+
+#[test]
+fn a_level_row_stays_level() {
+    let mut img = canvas(700, 300);
+    bars(&mut img, 10, 60, 100, 0);
+    // An O that overshoots the baseline does not tilt the row.
+    disc(&mut img, 660.0, 112.0, 52.0, ORANGE);
+    let a = analyze(&img, &TraceOptions::default()).expect("analyzes");
+    assert_eq!(a.rows[0].slope, 0.0, "{:?}", a.rows);
+}
+
+#[test]
+fn a_tilde_and_a_split_row_of_punctuation_join_their_rows() {
+    // An alphabet sheet: rows of letters (one with a tilde over a letter),
+    // then a row of punctuation where some signs rise above the baseline
+    // and some fall below it, barely overlapping each other.
+    let mut img = canvas(700, 760);
+    bars(&mut img, 8, 60, 100, 0);
+    rect(&mut img, 220, 40, 270, 52, ORANGE);
+    bars(&mut img, 8, 220, 100, 0);
+    bars(&mut img, 8, 380, 100, 0);
+    for i in 0..4 {
+        rect(&mut img, 40 + i * 60, 560, 52 + i * 60, 630, ORANGE);
+    }
+    for i in 4..8 {
+        rect(&mut img, 40 + i * 60, 625, 52 + i * 60, 700, ORANGE);
+    }
+    let a = analyze(&img, &TraceOptions::default()).expect("analyzes");
+    assert_eq!(a.rows.len(), 4, "{:?}", a.rows);
+    let in_row = |r: usize| a.candidates.iter().filter(|c| c.row == r).count();
+    assert_eq!(
+        (in_row(0), in_row(1), in_row(2), in_row(3)),
+        // The tilde makes one shape with the letter under it, as Ñ does.
+        (8, 8, 8, 8),
+        "{:?}",
+        a.candidates
+    );
+}

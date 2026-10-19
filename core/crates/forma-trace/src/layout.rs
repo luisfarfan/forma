@@ -339,6 +339,8 @@ mod tests {
                 top: 10.0,
                 cap_px: 10.0,
                 baseline_px: 110.0,
+                slope: 0.0,
+                center_x: 0.0,
                 bottom: 110.0,
             }],
             candidates: boxes
@@ -450,6 +452,8 @@ mod tests {
             top: 150.0,
             cap_px: 150.0,
             baseline_px: 190.0,
+            slope: 0.0,
+            center_x: 0.0,
             bottom: 190.0,
         });
         a.candidates[1].row = 1;

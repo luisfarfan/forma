@@ -39,7 +39,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use visioncortex::{BinaryImage, CompoundPathElement, PathSimplifyMode};
 
-use crate::candidates::{Analysis, Extractor, Fidelity, PxRect, TraceOptions, analyze_parts};
+use crate::candidates::{Analysis, Extractor, Fidelity, PxRect, Row, TraceOptions, analyze_parts};
 use crate::cleanup::Fit;
 use crate::mask::Coverage;
 use crate::quality::{Allowance, FeatureIssue, QualityReport, THRESHOLDS, ToPixels};
@@ -291,7 +291,7 @@ pub(crate) fn group_ink(
         .rows
         .get(candidate.row)
         .ok_or_else(|| TraceError::Vectorize(format!("candidate {index} has no row")))?;
-    let row_height = row.baseline_px - row.cap_px;
+    let row_height = scale_height(analysis, row);
     if !(row_height.is_finite() && row_height > 0.0) {
         return Err(TraceError::Vectorize(format!(
             "row {} has no cap height",
@@ -347,7 +347,7 @@ pub(crate) fn group_ink(
         pixels,
         ink_left_px: (region.0 + left) as f64 / u as f64,
         bbox: b,
-        baseline_px: row.baseline_px,
+        baseline_px: row.baseline_at((f64::from(b.x0) + f64::from(b.x1)) / 2.0),
         scale,
     })
 }
@@ -802,6 +802,35 @@ pub fn trace_groups(
     }
     Ok(out)
 }
+
+/// The height a row's glyphs are scaled by: its own cap height, unless it
+/// is far from the image's typical one (a row of punctuation has no cap
+/// height of its own: its dots and dashes would be blown up to capitals),
+/// then the typical one. Rows of letters and figures keep their own, so a
+/// row written larger or smaller is traced at its size.
+fn scale_height(analysis: &Analysis, row: &Row) -> f64 {
+    let own = row.baseline_px - row.cap_px;
+    let mut heights: Vec<f64> = analysis
+        .rows
+        .iter()
+        .map(|r| r.baseline_px - r.cap_px)
+        .filter(|h| h.is_finite() && *h > 0.0)
+        .collect();
+    if heights.len() < 2 {
+        return own;
+    }
+    heights.sort_by(f64::total_cmp);
+    let typical = heights[heights.len() / 2];
+    if (own / typical - 1.0).abs() <= ROW_HEIGHT_TOLERANCE {
+        own
+    } else {
+        typical
+    }
+}
+
+/// How far a row's cap height may be from the typical one and still set
+/// its own scale.
+const ROW_HEIGHT_TOLERANCE: f64 = 0.2;
 
 /// What a glyph is judged with besides the thresholds (see [`Allowance`]).
 fn allowance_for(opts: &TraceOptions, hard: bool, scale: f64) -> Allowance {
