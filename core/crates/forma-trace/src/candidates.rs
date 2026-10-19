@@ -240,6 +240,9 @@ fn find(parent: &mut [usize], mut i: usize) -> usize {
     i
 }
 
+/// The most pieces of one row that are merged; the smallest beyond are dust.
+const MAX_ROW_PIECES: usize = 2000;
+
 /// Merges the pieces of one row whose horizontal overlap is at least
 /// [`MERGE_OVERLAP`] of the narrower one: sweep by x with union-find.
 fn merge_row(mut pieces: Vec<Piece>) -> Vec<Piece> {
@@ -423,11 +426,28 @@ pub(crate) fn analyze_parts(image: &RgbImage, opts: &TraceOptions) -> Result<Par
             rows[i].2.push(p);
         }
     }
+    // A row of more pieces than any drawing has is dust: only its largest
+    // pieces are merged (the merge compares pieces pairwise, and dust never
+    // becomes a candidate anyway).
+    let mut dust = 0usize;
     let merged: Vec<(usize, Vec<Piece>)> = rows
         .into_iter()
         .enumerate()
-        .map(|(i, (_, _, members))| (i, merge_row(members)))
+        .map(|(i, (_, _, mut members))| {
+            if members.len() > MAX_ROW_PIECES {
+                members.sort_by_key(|p| std::cmp::Reverse((p.area, p.x0, p.y0)));
+                dust += members.len() - MAX_ROW_PIECES;
+                members.truncate(MAX_ROW_PIECES);
+            }
+            (i, merge_row(members))
+        })
         .collect();
+    if dust > 0 {
+        analysis.note = Some(format!(
+            "{dust} specks of dust were ignored: rows with more than {MAX_ROW_PIECES} pieces keep \
+             only their largest"
+        ));
+    }
     let mut areas: Vec<f64> = merged
         .iter()
         .flat_map(|(_, c)| c.iter().map(|p| p.area as f64))

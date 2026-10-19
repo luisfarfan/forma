@@ -394,3 +394,20 @@ fn annotated_png_is_a_png() {
     assert_eq!(back.dimensions(), img.dimensions());
     assert_ne!(back, img);
 }
+
+#[test]
+fn a_column_of_dust_is_analyzed_quickly() {
+    // Found by the nightly fuzzer (image_decode, 2026-10-19): a 16 × 57 616
+    // JPEG whose rows hold up to 129 485 specks made the pairwise merge of a
+    // row take more than ten seconds. Rows keep their 2000 largest pieces.
+    let bytes = include_bytes!("fixtures/fuzz/dust-column.jpg");
+    let image = decode(bytes).expect("decodes");
+    let started = std::time::Instant::now();
+    let analysis = analyze(&image, &TraceOptions::default()).expect("analyzes");
+    assert!(
+        analysis.note.as_deref().is_some_and(|n| n.contains("dust")),
+        "{:?}",
+        analysis.note
+    );
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+}
