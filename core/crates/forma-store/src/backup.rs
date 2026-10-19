@@ -113,7 +113,8 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
             copy_tree(&entry.path(), &target)?;
         } else if kind.is_file() {
             fs::copy(entry.path(), &target)?;
-            fs::File::open(&target)?.sync_all()?;
+            // Write access: Windows refuses to flush a file opened read-only.
+            fs::OpenOptions::new().write(true).open(&target)?.sync_all()?;
         }
     }
     Ok(())

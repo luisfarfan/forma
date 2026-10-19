@@ -485,7 +485,7 @@ async fn full_kerning(client: &Client, doc: &str, model: &[ModelGlyph]) -> Value
         let got = call(
             client,
             "kerning_get",
-            json!({ "doc": doc, "glyphs": [glyph.name] }),
+            json!({ "doc": doc, "glyphs": [glyph.name], "detail": "full" }),
         )
         .await
         .ok();

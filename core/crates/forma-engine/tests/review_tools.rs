@@ -214,7 +214,8 @@ fn summary_is_default_and_report_has_the_detail() {
     );
     let path = spaced["report_path"].as_str().expect("report_path");
     assert!(
-        Path::new(path).starts_with(dir.path().canonicalize().expect("canon")),
+        // As the engine canonicalizes: without Windows' `\\?\` prefix.
+        Path::new(path).starts_with(dunce::canonicalize(dir.path()).expect("canon")),
         "{path}"
     );
     let text = std::fs::read_to_string(path).expect("report");
