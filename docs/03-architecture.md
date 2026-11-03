@@ -7,7 +7,7 @@
 ## 1. Principios
 
 1. **Un solo núcleo y un solo registro de comandos.** Toda la lógica tipográfica vive en Rust. Cada operación del editor se declara una vez en el **registro de comandos**, del que derivan la UI, la CLI, el servidor MCP, el agente integrado y, más adelante, Python. Ninguna fachada contiene reglas del dominio.
-2. **Multiplataforma por construcción.** El núcleo no depende de ningún SO. Lo específico de plataforma (ventanas, entrada, menús, diálogos, IPC, llavero, empaquetado) vive en el shell y en `forma-platform`. La CI ejecuta todo en macOS, Windows y Linux.
+2. **Multiplataforma por construcción.** El núcleo no depende de ningún SO. Lo específico de plataforma (ventanas, entrada, menús, diálogos, IPC, llavero, empaquetado) vive en el shell y en `forma-platform`. La CI ejecuta todo en macOS hasta el Hito 9 (ADR 0011, macOS primero); Windows y Linux vuelven a la CI en el Hito 9.
 3. **Los agentes son usuarios de primera clase.** Todo lo que puede hacer la UI lo puede hacer un agente por MCP, sin la UI abierta, con las mismas garantías: transacciones, revisiones, undo y aprobaciones.
 4. **Documento inmutable con revisiones.** Cada transacción produce una nueva revisión que comparte estructura con la anterior (`Arc`). Leer un snapshot es barato y seguro desde cualquier hilo, así que compilar, validar, previsualizar y dar respuestas a agentes no bloquea la edición.
 5. **Precisión explícita.** El modelo usa `f64`. El redondeo es una operación explícita y testeada, nunca un efecto colateral de la entrada/salida.
@@ -368,7 +368,7 @@ forma/
   tests/fixtures/       # fuentes de prueba con licencias
   tests/mcp/            # escenarios MCP y snapshots de contrato
   tools/oracle/         # requirements.txt: fontTools, fontmake, opentype-sanitizer (solo dev/CI)
-  .github/workflows/    # CI con matriz macOS · Windows · Ubuntu 24.04
+  .github/workflows/    # CI en macOS (ADR 0011); matriz macOS · Windows · Ubuntu 24.04 desde el Hito 9
 ```
 
 ## 15. ADRs (0001–0009 están en `docs/adr/`; el ADR del toolkit de UI espera al spike del Hito 8)

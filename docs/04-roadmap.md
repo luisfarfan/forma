@@ -2,7 +2,7 @@
 
 > Estado: revisión 4 (motor primero, hitos guiados por fuentes demo y interfaz gráfica al final; ADR 0008) · 2026-10-17. **Hito 1 completado** (CI en verde en los 3 SO, fuzzing nocturno en verde). **Hito 2 en curso** (rama `hito2`).
 > Tamaños relativos: **S** < 2 sem · **M** 2–5 sem · **L** 5–10 sem · **XL** > 10 sem, para un equipo pequeño (1–2 ingenieros + agentes). Son **estimaciones [H]**, no compromisos.
-> **Regla general:** un hito no se cierra sin que pasen sus criterios de aceptación automatizados **en macOS, Windows y Ubuntu 24.04**, y, cuando se indica, una prueba manual con un diseñador.
+> **Regla general:** un hito no se cierra sin que pasen sus criterios de aceptación automatizados **en macOS**, y, cuando se indica, una prueba manual con un diseñador. Hasta el Hito 2 se exigían macOS, Windows y Ubuntu 24.04; desde el 2026-11-02 rige **macOS primero** (ADR 0011), y los tres sistemas vuelven a ser obligatorios en el Hito 9. Donde los criterios de los hitos siguientes dicen "en los 3 SO", hasta el Hito 9 se lee "en macOS".
 > Los criterios de los Hitos 3–9 son **provisionales [H]**: cada hito tendrá su especificación, como la del Hito 2, antes de empezar.
 
 ## Principios de la revisión 4 (ADR 0008)
@@ -18,9 +18,9 @@ Una funcionalidad del editor está terminada solo si:
 2. está expuesta en **MCP** y en la **CLI** (test de paridad), con su schema en el snapshot de contrato;
 3. tiene **escenario de integración MCP** que la ejercita;
 4. (desde el Hito 8, el de la interfaz) tiene **UI**, que usa el mismo comando; al llegar a ese hito, la UI de todo lo construido en los Hitos 2–7 forma parte de su alcance;
-5. pasa en la **CI de los tres SO**.
+5. pasa en la **CI de macOS** (ADR 0011; hasta el Hito 2 se exigían los tres SO, que vuelven en el Hito 9).
 
-Así, MCP y multiplataforma no son trabajo "al final", sino parte de cada entrega. Lo único que va al final es la interfaz gráfica.
+Así, MCP no es trabajo "al final", sino parte de cada entrega. El núcleo sigue sin dependencias de SO para que volver a Windows y Linux sea barato.
 
 ## Vista general
 
@@ -429,6 +429,7 @@ Todos están automatizados en la CI de los 3 SO, salvo el 8, que es la demo manu
 **Fuente demo:** en cada SO, una fuente latina completa (A–Z, a–z, 0–9, puntuación ASCII) creada en la UI, y otra creada **íntegramente por un agente vía MCP**.
 
 **Funcionalidades**
+- **Retomar Windows y Ubuntu 24.04** (ADR 0011): volver a ponerlos en la CI (`ci.yml`, `scripts/acceptance.ps1`) y corregir lo que haya divergido desde el Hito 2.5.
 - Recuperación tras caídas en los 3 SO.
 - Telemetría de crashes opt-in.
 - Instaladores firmados:

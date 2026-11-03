@@ -1,6 +1,6 @@
 # FORMA — Contexto del proyecto para agentes
 
-FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, Linux)**: alternativa a Glyphs 4 y FontLab, con **integración nativa de IA mediante un servidor MCP oficial**. Su objetivo es igualar progresivamente las capacidades centrales de esos editores y superarlos en robustez, validación integrada, control por agentes y experiencia en los tres sistemas.
+FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, Linux)**, desarrollado **macOS primero** hasta el Hito 9 (ADR 0011): alternativa a Glyphs 4 y FontLab, con **integración nativa de IA mediante un servidor MCP oficial**. Su objetivo es igualar progresivamente las capacidades centrales de esos editores y superarlos en robustez, validación integrada, control por agentes y experiencia en los tres sistemas.
 
 **FORMA es open source, sin fines comerciales, bajo `MIT OR Apache-2.0`.**
 
@@ -52,7 +52,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 3. **Concurrencia optimista por entidad:** las herramientas mutantes exigen `base_rev`; si una entidad tocada cambió, se devuelve `REVISION_CONFLICT`. Nunca sobrescribir cambios de otro actor en silencio.
 4. Las operaciones destructivas o masivas siguen el flujo **plan → token → commit**, aplicado en el servidor. No confíes en las anotaciones del cliente MCP.
 5. El documento es inmutable con revisiones (`Arc`). Las tareas en segundo plano trabajan sobre snapshots.
-6. **Núcleo sin dependencias de SO.** Lo específico de plataforma va en `forma-platform` o en el shell. Todo debe compilar y pasar tests en macOS, Windows y Ubuntu 24.04.
+6. **Núcleo sin dependencias de SO.** Lo específico de plataforma va en `forma-platform` o en el shell. **macOS primero (ADR 0011):** hasta el Hito 9, todo debe compilar y pasar tests en macOS. Windows y Ubuntu 24.04 se retoman en el Hito 9, antes de la v1.0; mientras tanto no se escribe código que los excluya.
 7. Coordenadas `f64`; redondeo explícito; ningún renderer que convierta cúbicas en cuadráticas.
 8. Los importadores y exportadores informan de lo que no pueden representar; los datos desconocidos se preservan en `lib`.
 9. Persistencia: transacciones SQLite sin WAL; escritura atómica en `.formapackage`; journal de recuperación; migraciones puras y testeadas.
@@ -76,7 +76,7 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
   - Errores con `thiserror`.
   - `#[non_exhaustive]` en enums públicos que vayan a crecer.
   - Schemas MCP generados con `schemars`, nunca escritos a mano.
-- **Definición de terminado** (ver `docs/04-roadmap.md`): comando del registro + tests + exposición MCP y CLI + escenario MCP + CI verde en los 3 SO (+ UI desde el Hito 8, el de la interfaz).
+- **Definición de terminado** (ver `docs/04-roadmap.md`): comando del registro + tests + exposición MCP y CLI + escenario MCP + CI verde en macOS (ADR 0011; los 3 SO vuelven en el Hito 9) (+ UI desde el Hito 8, el de la interfaz).
 - Fixtures de fuentes: solo propias u OFL, con su licencia en `tests/fixtures/<nombre>/`. **Nunca** fuentes comerciales: tampoco se usan, importan ni reconstruyen en local; solo sirven como referencia visual (mirarlas). Las demos usan dibujos con derechos claros, muestras de dominio público y fuentes OFL (ADR 0008).
 - **Las imágenes de terceros nunca se versionan.** Dibujos, fotos y escaneos ajenos (como el alfabeto de la demo del Hito 2) se quedan en local, fuera del repositorio. Ningún agente las versiona; solo el responsable, con autorización de la autora, su nombre y la licencia que elija. Los tests usan imágenes propias generadas por código.
 - **Licencia:** cada crate declara `license = "MIT OR Apache-2.0"`. Archivos `LICENSE-MIT` y `LICENSE-APACHE` en la raíz.
@@ -109,4 +109,4 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 - REA 6.5.0, con Ghidra 12.1.4 y Hopper disponibles (uso restringido por la política).
 - Instalados para el Hito 1: rustup (toolchain fijada en `rust-toolchain.toml`), venv de oráculos en `tools/oracle/.venv` (fontTools, fontmake, opentype-sanitizer, uharfbuzz), fontspector, cargo-deny, cargo-llvm-cov y `forma` en `~/.cargo/bin`. `cargo` no está en el `PATH` de los shells no interactivos: usar `export PATH="$HOME/.cargo/bin:$PATH"`.
 - **No instalados:** Qt, Slint.
-- La CI de los 3 SO está en `.github/workflows/` (`ci.yml` en cada push y PR; `nightly.yml` con el fuzzing).
+- La CI está en `.github/workflows/`: `ci.yml` corre en macOS en cada push y PR (ADR 0011); `nightly.yml` corre el fuzzing en Ubuntu y la regresión M/M-hand en macOS.

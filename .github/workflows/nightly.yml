@@ -6,6 +6,10 @@ name: Nightly
 # hang or an out-of-memory. cargo-fuzz needs a nightly compiler; it is
 # installed here only and never touches the pinned toolchain of the main CI
 # (rust-toolchain.toml).
+#
+# macOS first (ADR 0011): the fuzzers stay on Ubuntu (they test logic that
+# does not depend on the system, and libFuzzer is at home there); the mode C
+# regression, a quality gate of the product, runs on macOS.
 
 on:
   schedule:
@@ -88,7 +92,7 @@ jobs:
   # push (ci.yml); these take minutes, so they run here.
   bench-m:
     name: mode C regression (M, M-hand)
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 60
     defaults:
       run:
@@ -96,6 +100,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
-        run: rustup show
+        run: |
+          rustup toolchain install
+          rustup show
       - name: Mode C on M and M-hand
         run: cargo test -p forma-bench --release --locked --test regression -- --ignored
