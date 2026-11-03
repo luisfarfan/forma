@@ -65,7 +65,8 @@ pub(crate) const FROM_IMAGE: CommandSpec = CommandSpec {
          pieces, trace with quality gates, compose the profile's accents, space, kern and \
          check. One transaction: one approval if the policy asks, one history_undo. Rows that \
          do not match are listed in `attention`, never guessed, as are glyphs needing a look. \
-         `stages.export` exports afterwards unless glyphs wait for review or a file exists. \
+         `stages.export` exports afterwards unless glyphs wait for review or a file exists; \
+         its `html` writes a page to look at the result (image, glyphs, stages, a text field). \
          The answer is a summary; the detail is in `report_path`. Review with preview_sheet. \
          Destructive: may require approval depending on the server policy.",
         base_rev_note!()
@@ -108,6 +109,27 @@ pub struct ExportStage {
     /// Export even if glyphs wait for review; false by default.
     #[serde(default)]
     pub allow_pending: bool,
+    /// An `.html` page inside an allowed folder to look at the result: the
+    /// image beside what the engine saw in it, every glyph, a text field
+    /// set in the font, the stages and what needs attention. One
+    /// self-contained file that loads nothing. Written even while glyphs
+    /// wait for review (it shows which); never over an existing file.
+    #[serde(default)]
+    pub html: Option<String>,
+    /// The language of the page: `en` (default) or `es`.
+    #[serde(default)]
+    pub lang: PageLang,
+}
+
+/// The language of the page `stages.export.html` writes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PageLang {
+    /// English.
+    #[default]
+    En,
+    /// Spanish.
+    Es,
 }
 
 const fn yes() -> bool {
@@ -284,6 +306,16 @@ struct Planned {
     attention: Vec<AttentionItem>,
     detail: Value,
     pending: usize,
+    /// What the page of the result is made of.
+    seen: Seen,
+}
+
+/// The image and what the engine found in it, for the page of the result.
+struct Seen {
+    image: image::RgbImage,
+    analysis: forma_trace::Analysis,
+    matched: Vec<(Vec<usize>, char)>,
+    master: MasterId,
 }
 
 fn stage(name: &str, status: &str, counts: Value, started: Instant) -> StageSummary {
@@ -1057,6 +1089,12 @@ fn plan(engine: &Engine, font: &Arc<Font>, op: &FontFromImageOpArgs) -> Result<P
         attention,
         detail,
         pending,
+        seen: Seen {
+            image,
+            analysis,
+            matched,
+            master,
+        },
     })
 }
 
@@ -1118,24 +1156,40 @@ fn bounded(mut attention: Vec<AttentionItem>) -> (Vec<AttentionItem>, usize, boo
     (attention, total, total > MAX_ATTENTION)
 }
 
-/// Exports after the change: each format whose file does not exist yet.
+/// What the page of the result shows besides the image.
+struct PageFacts<'a> {
+    stages: &'a [StageSummary],
+    attention: &'a [AttentionItem],
+    layout: &'a [String],
+    args: &'a Value,
+    engine_ms: u64,
+}
+
+/// Exports after the change: each format whose file does not exist yet,
+/// then the page of the result.
 fn export_after(
     engine: &mut Engine,
     actor: &Actor,
     doc: &crate::engine::DocHandle,
     export: &ExportStage,
     pending: usize,
+    seen: &Seen,
+    facts: &PageFacts<'_>,
 ) -> ExportOutcome {
     let mut out = ExportOutcome::default();
-    if pending > 0 && !export.allow_pending {
-        out.skipped = Some(format!(
-            "{pending} glyph(s) need a look or, synthesized, wait for review: review them with \
-             glyph_review (or pass `allow_pending`), then export with export_font"
-        ));
-        return out;
-    }
     let mut skipped = Vec::new();
-    for (format, path) in [("ttf", &export.ttf), ("woff2", &export.woff2)] {
+    let fonts = if pending > 0 && !export.allow_pending {
+        if export.ttf.is_some() || export.woff2.is_some() {
+            skipped.push(format!(
+                "{pending} glyph(s) need a look or, synthesized, wait for review: review them \
+                 with glyph_review (or pass `allow_pending`), then export with export_font"
+            ));
+        }
+        [None, None]
+    } else {
+        [export.ttf.as_ref(), export.woff2.as_ref()]
+    };
+    for (format, path) in ["ttf", "woff2"].into_iter().zip(fonts) {
         let Some(path) = path else { continue };
         let resolved = engine.check_allowed(std::path::Path::new(path), false);
         if resolved.as_ref().is_ok_and(|p| p.exists()) {
@@ -1154,10 +1208,67 @@ fn export_after(
             Err(error) => skipped.push(format!("{path}: {}", error.message)),
         }
     }
+    if let Some(path) = &export.html {
+        match write_page(engine, doc, path, export.lang, pending, seen, facts) {
+            Ok(()) => out.written.push(path.clone()),
+            Err(error) => skipped.push(format!("{path}: {}", error.message)),
+        }
+    }
     if !skipped.is_empty() {
         out.skipped = Some(skipped.join("; "));
     }
     out
+}
+
+/// Writes the page of the result to `path`: an allowed `.html` file that
+/// does not exist yet, under the toolset of export_font.
+fn write_page(
+    engine: &Engine,
+    doc: &crate::engine::DocHandle,
+    path: &str,
+    lang: PageLang,
+    pending: usize,
+    seen: &Seen,
+    facts: &PageFacts<'_>,
+) -> Result<(), ToolError> {
+    let export = crate::registry::find("export_font")
+        .is_some_and(|spec| engine.is_toolset_enabled(spec.toolset));
+    if !export {
+        return Err(ToolError::invalid_argument(
+            "the toolset of export_font is disabled on this server",
+        ));
+    }
+    let target = std::path::Path::new(path);
+    let html = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+    if !html {
+        return Err(ToolError::invalid_argument("the page must end in .html"));
+    }
+    let resolved = engine.check_allowed(target, false)?;
+    if std::fs::symlink_metadata(&resolved).is_ok() {
+        return Err(ToolError::invalid_argument(
+            "it exists; remove it or choose another file",
+        ));
+    }
+    let font = Arc::clone(engine.doc(doc)?.font());
+    let page = crate::tools::page::render(&crate::tools::page::PageInput {
+        font: &font,
+        master: seen.master,
+        image: &seen.image,
+        analysis: &seen.analysis,
+        matched: &seen.matched,
+        layout: facts.layout,
+        stages: facts.stages,
+        attention: facts.attention,
+        pending,
+        engine_ms: facts.engine_ms,
+        args: facts.args,
+        lang,
+    })?;
+    forma_store::write_file_atomic(&resolved, page.as_bytes())
+        .map_err(|error| ToolError::io(format!("cannot write the page: {error}")))
 }
 
 fn font_from_image(
@@ -1176,6 +1287,7 @@ fn font_from_image(
         attention,
         detail,
         pending,
+        seen,
     } = planned;
     let summary = |engine_ms: u64| {
         let (items, total, truncated) = bounded(attention.clone());
@@ -1212,7 +1324,14 @@ fn font_from_image(
         // Committed: export if asked.
         Ok(ToolOutput::Json(mut value)) if value.get("tx").is_some_and(|tx| !tx.is_null()) => {
             if let Some(export) = &call.op.stages.export {
-                let done = export_after(engine, actor, &call.doc, export, pending);
+                let facts = PageFacts {
+                    stages: &stages,
+                    attention: &attention,
+                    layout: &call.op.layout,
+                    args: &args,
+                    engine_ms: engine_ms(),
+                };
+                let done = export_after(engine, actor, &call.doc, export, pending, &seen, &facts);
                 value["export"] = serde_json::to_value(done).unwrap_or(Value::Null);
                 value["rev"] = json!(engine.doc(&call.doc)?.rev().0);
             }

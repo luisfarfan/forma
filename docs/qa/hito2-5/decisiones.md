@@ -294,3 +294,22 @@ Aditivo:
 
 - **`style_extract.kit` (aditivo):** `reproduction`, `stroke_spread`, `terminal_fill_range` y `color_range`. `spread` cambia de definición: ahora es solo el contraste.
 - **`preview_sheet` (resumen de imagen, sin esquema):** la atención por celda pasa de textos a índices de `reasons`, con `attention_more`. Ese resumen solo existe en esta rama.
+
+### Página del resultado (2026-10-19, pedida por el responsable)
+
+67. **`stages.export.html` de `font_from_image`.** Al terminar, el motor escribe una página HTML para mirar el resultado mientras no exista el editor gráfico (Hito 8). Contiene:
+    - la imagen frente a lo que vio el motor: cada forma con el carácter asignado, las formas sin asignar y las líneas de cada fila, inclinadas si la fila lo está;
+    - todos los glifos, dibujados desde sus contornos, con su origen (trazado, sintetizado, compuesto o dibujado) y un borde para los que esperan revisión;
+    - un campo de texto escrito con la propia fuente;
+    - las etapas con sus tiempos, lo que pide atención y los argumentos de la llamada.
+
+    **Decisiones:**
+    - **Lógica en el motor:** el módulo `forma-engine/src/tools/page.rs` es la única lógica, así que la página sale igual por CLI, MCP o un agente.
+    - **Archivo autocontenido:** la imagen va como JPEG de 1400 px como máximo, la fuente como WOFF2 y los glifos como SVG.
+    - **No carga nada:** la página declara `default-src 'none'`. No pide tipografías externas ni hace ninguna petición.
+    - **Datos escapados:** el texto del documento y de la llamada (nombres de glifos, familia, `layout`, motivos) se escapa. Las marcas de la plantilla se llenan en una sola pasada, así que un valor nunca se vuelve a interpretar.
+    - **Sin carpetas a la vista:** la página muestra los archivos solo por su nombre, para que se pueda compartir.
+    - **Se escribe aunque haya glifos pendientes.** Es una vista: no aprueba nada, marca los pendientes y avisa con un recuadro. El TTF y el WOFF2 siguen sujetos a `allow_pending`.
+    - **Nunca sobrescribe:** solo escribe archivos `.html` dentro de las raíces permitidas y solo si el toolset de `export_font` está activo.
+    - **Idioma:** `lang` es `en` (por omisión) o `es`. Los motivos de atención quedan en inglés, como los escribe el motor.
+    - **Contrato `tools/list`:** cambio aditivo. Se agregan los campos opcionales `html` y `lang` en `ExportStage`, el tipo `PageLang` y una frase en la descripción.

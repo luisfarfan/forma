@@ -5653,7 +5653,7 @@ Imagen a fuente: inspeccionar imágenes, trazar glifos, compararlos y medir el e
 
 _Destructiva significa que la llamada puede exigir un plan aprobado: el servidor lo decide midiendo la llamada, no por esta marca._
 
-Turn the image of an alphabet (PNG/JPEG in an allowed folder) into glyphs of `doc` in one operation: match the shapes to `layout` (one string per image row, top to bottom; "" skips a row; `extra` names single shapes by position), group letters drawn in pieces, trace with quality gates, compose the profile's accents, space, kern and check. One transaction: one approval if the policy asks, one history_undo. Rows that do not match are listed in `attention`, never guessed, as are glyphs needing a look. `stages.export` exports afterwards unless glyphs wait for review or a file exists. The answer is a summary; the detail is in `report_path`. Review with preview_sheet. Destructive: may require approval depending on the server policy. Pass the latest `rev` you received as `base_rev`; if an entity this call touches changed after it, the call fails with REVISION_CONFLICT: re-read and retry.
+Turn the image of an alphabet (PNG/JPEG in an allowed folder) into glyphs of `doc` in one operation: match the shapes to `layout` (one string per image row, top to bottom; "" skips a row; `extra` names single shapes by position), group letters drawn in pieces, trace with quality gates, compose the profile's accents, space, kern and check. One transaction: one approval if the policy asks, one history_undo. Rows that do not match are listed in `attention`, never guessed, as are glyphs needing a look. `stages.export` exports afterwards unless glyphs wait for review or a file exists; its `html` writes a page to look at the result (image, glyphs, stages, a text field). The answer is a summary; the detail is in `report_path`. Review with preview_sheet. Destructive: may require approval depending on the server policy. Pass the latest `rev` you received as `base_rev`; if an entity this call touches changed after it, the call fails with REVISION_CONFLICT: re-read and retry.
 
 <details>
 <summary>Esquema de entrada</summary>
@@ -5684,6 +5684,19 @@ Turn the image of an alphabet (PNG/JPEG in an allowed folder) into glyphs of `do
           "default": false,
           "description": "Export even if glyphs wait for review; false by default.",
           "type": "boolean"
+        },
+        "html": {
+          "default": null,
+          "description": "An `.html` page inside an allowed folder to look at the result: the\nimage beside what the engine saw in it, every glyph, a text field\nset in the font, the stages and what needs attention. One\nself-contained file that loads nothing. Written even while glyphs\nwait for review (it shows which); never over an existing file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lang": {
+          "$ref": "#/$defs/PageLang",
+          "default": "en",
+          "description": "The language of the page: `en` (default) or `es`."
         },
         "ttf": {
           "default": null,
@@ -5779,6 +5792,21 @@ Turn the image of an alphabet (PNG/JPEG in an allowed folder) into glyphs of `do
       "description": "Stable identifier of a master.",
       "format": "uuid",
       "type": "string"
+    },
+    "PageLang": {
+      "description": "The language of the page `stages.export.html` writes.",
+      "oneOf": [
+        {
+          "const": "en",
+          "description": "English.",
+          "type": "string"
+        },
+        {
+          "const": "es",
+          "description": "Spanish.",
+          "type": "string"
+        }
+      ]
     },
     "Stages": {
       "additionalProperties": false,

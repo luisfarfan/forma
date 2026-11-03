@@ -27,6 +27,7 @@ pub(crate) mod limits;
 pub mod metrics;
 pub mod mutate;
 pub mod outlines;
+pub(crate) mod page;
 pub mod pipeline;
 pub mod plans;
 pub mod preview;
