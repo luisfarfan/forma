@@ -109,4 +109,4 @@ FORMA es un editor tipográfico profesional **multiplataforma (macOS, Windows, L
 - REA 6.5.0, con Ghidra 12.1.4 y Hopper disponibles (uso restringido por la política).
 - Instalados para el Hito 1: rustup (toolchain fijada en `rust-toolchain.toml`), venv de oráculos en `tools/oracle/.venv` (fontTools, fontmake, opentype-sanitizer, uharfbuzz), fontspector, cargo-deny, cargo-llvm-cov y `forma` en `~/.cargo/bin`. `cargo` no está en el `PATH` de los shells no interactivos: usar `export PATH="$HOME/.cargo/bin:$PATH"`.
 - **No instalados:** Qt, Slint.
-- La CI está en `.github/workflows/`: `ci.yml` corre en macOS en cada push y PR (ADR 0011); `nightly.yml` corre el fuzzing en Ubuntu y la regresión M/M-hand en macOS.
+- La CI está en `.github/workflows/`: `ci.yml` corre en macOS en cada push y PR (ADR 0011); `nightly.yml` corre el fuzzing en Ubuntu, y la regresión M/M-hand y la puerta de cobertura (≥ 80 % por crate) en macOS.

@@ -19,7 +19,8 @@ Hechos observados (2026-10-19 a 2026-11-02):
 2. **FORMA sigue siendo multiplataforma como objetivo.** Windows y Linux se retoman antes de la v1.0: el Hito 9 (distribución) incluye volver a poner los tres sistemas en la CI y corregir lo que haya divergido.
 3. **El núcleo sigue sin dependencias de sistema operativo** (regla 6, primera mitad). Sale casi gratis y mantiene barato el regreso a Windows y Linux. Lo específico de una plataforma sigue yendo en `forma-platform` o en el shell. Lo que deja de exigirse es que compile y pase en Windows y Ubuntu en cada cambio.
 4. **CI:**
-   - `ci.yml` corre solo en `macos-15`. Las verificaciones que hacía solo Ubuntu se trasladan a macOS: fmt, clippy, licencias (`cargo-deny`), fsync real, fontspector, MCP Inspector y la puerta de cobertura.
+   - `ci.yml` corre solo en `macos-15`. Las verificaciones que hacía solo Ubuntu se trasladan a macOS: fmt, clippy, licencias (`cargo-deny`), fsync real, fontspector, Chrome y MCP Inspector.
+   - **La puerta de cobertura pasa a la nightly** (macOS, límite de 300 minutos, sin `forma-bench`). Con la instrumentación, los tests de imagen a fuente tardan unos 36 minutos en un portátil Apple silicon (medido el 2026-11-03: 55 minutos en total, con los 6 crates entre 91 % y 98 %), y en el runner superaron los 58 minutos del PR #3. Sigue siendo obligatoria cada noche, pero no bloquea cada push.
    - Se mantiene la comprobación de compilación para Intel (`x86_64-apple-darwin`).
    - El script `scripts/acceptance.ps1` se conserva sin ejecutar, para retomarlo en el Hito 9.
    - El fuzzing nocturno sigue en Ubuntu: prueba lógica independiente del sistema y no es una verificación de soporte de Linux.
@@ -35,5 +36,5 @@ Hechos observados (2026-10-19 a 2026-11-02):
 
 - Los hitos se cierran con la CI de macOS en verde. Baja el tiempo de cada push y se elimina una fuente de bloqueos.
 - **Riesgo nuevo:** se pueden acumular divergencias en Windows y Linux (rutas, fin de línea, fsync, fuentes del sistema, Chrome). Se mitiga con la regla 6 (núcleo sin dependencias de SO) y con el trabajo de retomarlos en el Hito 9. Se registra en `docs/06-risks.md`.
-- El criterio 6 del Hito 2 (WOFF2 en Chrome sin interfaz) solo se verificaba en Ubuntu. En macOS se activa si el runner lo permite. Si no, queda verificado en local y pendiente para el Hito 9.
+- El criterio 6 del Hito 2 (WOFF2 en Chrome sin interfaz), que solo se verificaba en Ubuntu, se verifica ahora en el runner de macOS (`FORMA_REQUIRE_CHROME=1`; Chrome sin interfaz no necesita pantalla). Primera corrida en verde en el PR #3.
 - Documentos actualizados: `CLAUDE.md`, `docs/04-roadmap.md`, `docs/03-architecture.md` (pruebas) y `docs/06-risks.md`.
