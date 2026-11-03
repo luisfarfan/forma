@@ -529,3 +529,93 @@ fn a_disabled_toolset_disables_its_stage() {
     assert!(kinds(&out).contains(&"stage_disabled".to_owned()), "{out}");
     assert_eq!(glyph_count(&mut engine, &doc), 8);
 }
+
+#[test]
+fn the_page_of_the_result_is_written_even_while_glyphs_wait_for_review() {
+    let (mut engine, dir, image) = setup(Policy::Auto);
+    let doc = ok(
+        &mut engine,
+        "document_create",
+        json!({ "family_name": "<b>Spec</b>" }),
+    )["doc"]
+        .as_str()
+        .expect("doc")
+        .to_owned();
+    let base = rev(&mut engine, &doc);
+    let ttf = dir.path().join("out.ttf");
+    let page = dir.path().join("page.html");
+    let mut a = args(&doc, base, &image);
+    a["stages"] = json!({ "export": { "ttf": ttf, "html": page, "lang": "es" } });
+    let out = ok(&mut engine, "font_from_image", a);
+    assert!(!ttf.exists(), "the font waits for the review: {out}");
+    assert_eq!(out["export"]["written"], json!([page]), "{out}");
+    let html = std::fs::read_to_string(&page).expect("read the page");
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.contains("lang=\"es\""));
+    assert!(
+        html.contains("default-src 'none'"),
+        "the page loads nothing"
+    );
+    assert!(
+        html.contains("data:font/woff2;base64,"),
+        "the font is embedded"
+    );
+    assert!(
+        html.contains("data:image/jpeg;base64,"),
+        "the image is embedded"
+    );
+    assert!(
+        html.contains("&lt;b&gt;Spec&lt;/b&gt;"),
+        "the family is escaped"
+    );
+    assert!(!html.contains("<b>Spec"));
+    // One cell per glyph with an outline, and one box per matched letter.
+    let glyphs = glyph_count(&mut engine, &doc);
+    let cells = html.matches("<div class=\"g").count();
+    assert!(
+        cells > 0 && cells <= glyphs,
+        "{cells} cells for {glyphs} glyphs"
+    );
+    assert!(html.matches("stroke=\"#1f9d48\"").count() >= 8);
+    assert!(
+        html.contains("class=\"g pending\""),
+        "synthesized glyphs are marked"
+    );
+    // The folders of the files stay out of the page.
+    let folder = dir.path().to_string_lossy().into_owned();
+    assert!(!html.contains(&folder), "no folder in the page");
+    assert!(html.contains("specimen.png"));
+}
+
+#[test]
+fn the_page_is_never_written_over_a_file_nor_outside_html() {
+    let (mut engine, dir, image) = setup(Policy::Auto);
+    let doc = new_doc(&mut engine);
+    let base = rev(&mut engine, &doc);
+    let page = dir.path().join("page.html");
+    std::fs::write(&page, b"keep").expect("write");
+    let other = dir.path().join("page.txt");
+    let mut a = args(&doc, base, &image);
+    a["stages"] = json!({ "export": { "html": page } });
+    let out = ok(&mut engine, "font_from_image", a);
+    assert_eq!(std::fs::read(&page).expect("read"), b"keep");
+    assert!(
+        out["export"]["skipped"]
+            .as_str()
+            .is_some_and(|s| s.contains("exists")),
+        "{out}"
+    );
+    // A new document: running again over the same glyphs asks for approval.
+    let doc = new_doc(&mut engine);
+    let base = rev(&mut engine, &doc);
+    let mut a = args(&doc, base, &image);
+    a["stages"] = json!({ "export": { "html": other } });
+    let out = ok(&mut engine, "font_from_image", a);
+    assert!(!other.exists());
+    assert!(
+        out["export"]["skipped"]
+            .as_str()
+            .is_some_and(|s| s.contains(".html")),
+        "{out}"
+    );
+}

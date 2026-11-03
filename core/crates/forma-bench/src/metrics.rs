@@ -97,6 +97,12 @@ pub fn shape_iou(a: &[BezPath], b: &[BezPath]) -> Result<f64, BenchError> {
 /// badly oriented contours do not matter). The shape is magnified so thin
 /// slits are still resolved.
 ///
+/// The shapes are in pixels of the image, and a region of background smaller
+/// than one of them is not a hole: the image cannot show it, and on the
+/// magnified raster it is what a notch with a neck far below a pixel leaves
+/// (traced noise), not a counter. The engine drops ink specks below one image
+/// pixel the same way (`forma_trace` vectorize).
+///
 /// # Errors
 ///
 /// [`BenchError::Geometry`] if a shape is invalid.
@@ -114,12 +120,20 @@ pub fn count_holes(shapes: &[BezPath]) -> Result<usize, BenchError> {
     let height = (frame.height() * scale + 2.0 * pad).ceil().max(1.0) as u32;
     let moved: Vec<BezPath> = shapes.iter().map(|s| map * s.clone()).collect();
     let mask = rasterize(&moved, width, height)?;
-    Ok(holes_in_mask(&mask))
+    // One pixel of the image covers scale² pixels of the raster.
+    let min_area = (scale * scale).floor().max(1.0) as usize;
+    Ok(holes_of_area(&mask, min_area))
 }
 
 /// The enclosed background regions (4-connected) of `mask`.
 #[must_use]
 pub fn holes_in_mask(mask: &Mask) -> usize {
+    holes_of_area(mask, 1)
+}
+
+/// The enclosed background regions (4-connected) of `mask` of at least
+/// `min_area` pixels.
+fn holes_of_area(mask: &Mask, min_area: usize) -> usize {
     let (w, h) = (mask.width as usize, mask.height as usize);
     let ink = |i: usize| mask.data[i] >= INSIDE;
     let mut seen = vec![false; w * h];
@@ -137,8 +151,8 @@ pub fn holes_in_mask(mask: &Mask) -> usize {
             if seen[start] || ink(start) {
                 continue;
             }
-            flood(&mut seen, start, w, h, &ink);
-            if pass > 0 {
+            let area = flood(&mut seen, start, w, h, &ink);
+            if pass > 0 && area >= min_area {
                 holes += 1;
             }
         }
@@ -151,10 +165,19 @@ pub fn holes_in_mask(mask: &Mask) -> usize {
     holes
 }
 
-fn flood(seen: &mut [bool], start: usize, w: usize, h: usize, ink: &impl Fn(usize) -> bool) {
+/// Marks the background region of `start` as seen; returns its area.
+fn flood(
+    seen: &mut [bool],
+    start: usize,
+    w: usize,
+    h: usize,
+    ink: &impl Fn(usize) -> bool,
+) -> usize {
     let mut stack = vec![start];
     seen[start] = true;
+    let mut area = 0;
     while let Some(i) = stack.pop() {
+        area += 1;
         let (x, y) = (i % w, i / w);
         let mut push = |j: usize| {
             if !seen[j] && !ink(j) {
@@ -175,6 +198,7 @@ fn flood(seen: &mut [bool], start: usize, w: usize, h: usize, ink: &impl Fn(usiz
             push(i + w);
         }
     }
+    area
 }
 
 #[cfg(test)]
@@ -198,6 +222,39 @@ mod tests {
         assert_eq!(count_holes(&[solid.clone(), hole]).ok(), Some(1));
         let slit = rect(10.0, 29.5, 50.0, 30.5, false);
         assert_eq!(count_holes(&[solid, slit]).ok(), Some(1));
+    }
+
+    /// One simple contour has no hole, whatever the raster says: a notch
+    /// whose neck is far below a pixel of the image (as traced JPEG noise
+    /// leaves) closes on the magnified raster and leaves a pocket of
+    /// background that is smaller than one pixel of the image.
+    #[test]
+    fn a_pocket_smaller_than_an_image_pixel_is_not_a_hole() {
+        let mut notched = BezPath::new();
+        let points = [
+            (0.0, 0.0),
+            (29.98, 0.0),
+            (29.98, 30.0),
+            (29.75, 30.0),
+            (29.75, 30.5),
+            (30.25, 30.5),
+            (30.25, 30.0),
+            (30.02, 30.0),
+            (30.02, 0.0),
+            (60.0, 0.0),
+            (60.0, 60.0),
+            (0.0, 60.0),
+        ];
+        notched.move_to(points[0]);
+        for p in &points[1..] {
+            notched.line_to(*p);
+        }
+        notched.close_path();
+        assert_eq!(count_holes(std::slice::from_ref(&notched)).ok(), Some(0));
+        // A counter of two by two pixels of the image is still a hole.
+        let solid = rect(0.0, 0.0, 60.0, 60.0, true);
+        let small = rect(29.0, 29.0, 31.0, 31.0, false);
+        assert_eq!(count_holes(&[solid, small]).ok(), Some(1));
     }
 
     #[test]

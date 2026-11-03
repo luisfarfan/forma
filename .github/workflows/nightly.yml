@@ -6,6 +6,11 @@ name: Nightly
 # hang or an out-of-memory. cargo-fuzz needs a nightly compiler; it is
 # installed here only and never touches the pinned toolchain of the main CI
 # (rust-toolchain.toml).
+#
+# macOS first (ADR 0011): the fuzzers stay on Ubuntu (they test logic that
+# does not depend on the system, and libFuzzer is at home there); the mode C
+# regression and the coverage gate, quality gates of the product, run on
+# macOS.
 
 on:
   schedule:
@@ -88,7 +93,7 @@ jobs:
   # push (ci.yml); these take minutes, so they run here.
   bench-m:
     name: mode C regression (M, M-hand)
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 60
     defaults:
       run:
@@ -96,6 +101,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
-        run: rustup show
+        run: |
+          rustup toolchain install
+          rustup show
       - name: Mode C on M and M-hand
         run: cargo test -p forma-bench --release --locked --test regression -- --ignored
+
+  # The coverage gate (80 % of the lines of each core crate,
+  # scripts/coverage_gate.py). It left the per-push CI on 2026-11-03: the
+  # instrumented image-to-font tests take about 36 minutes on an Apple silicon
+  # laptop and outlasted 58 minutes on the runner. forma-bench is not measured
+  # and its corpus runs are left out. Release build, as docs/qa/hito2-5 measured.
+  coverage:
+    name: coverage gate
+    runs-on: macos-15
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools-preview
+          rustup show
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage
+        run: >-
+          cargo llvm-cov --workspace --exclude forma-bench --release --locked
+          --json --summary-only --output-path target/llvm-cov-summary.json
+      - name: Coverage gate (80 % of lines per package)
+        run: >-
+          python3 -I ../scripts/coverage_gate.py target/llvm-cov-summary.json --min 80
+          forma-model forma-edit forma-engine forma-store forma-trace forma-spacing

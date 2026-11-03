@@ -294,3 +294,29 @@ Aditivo:
 
 - **`style_extract.kit` (aditivo):** `reproduction`, `stroke_spread`, `terminal_fill_range` y `color_range`. `spread` cambia de definición: ahora es solo el contraste.
 - **`preview_sheet` (resumen de imagen, sin esquema):** la atención por celda pasa de textos a índices de `reasons`, con `attention_more`. Ese resumen solo existe en esta rama.
+
+### Página del resultado (2026-10-19, pedida por el responsable)
+
+67. **`stages.export.html` de `font_from_image`.** Al terminar, el motor escribe una página HTML para mirar el resultado mientras no exista el editor gráfico (Hito 8). Contiene:
+    - la imagen frente a lo que vio el motor: cada forma con el carácter asignado, las formas sin asignar y las líneas de cada fila, inclinadas si la fila lo está;
+    - todos los glifos, dibujados desde sus contornos, con su origen (trazado, sintetizado, compuesto o dibujado) y un borde para los que esperan revisión;
+    - un campo de texto escrito con la propia fuente;
+    - las etapas con sus tiempos, lo que pide atención y los argumentos de la llamada.
+
+    **Decisiones:**
+    - **Lógica en el motor:** el módulo `forma-engine/src/tools/page.rs` es la única lógica, así que la página sale igual por CLI, MCP o un agente.
+    - **Archivo autocontenido:** la imagen va como JPEG de 1400 px como máximo, la fuente como WOFF2 y los glifos como SVG.
+    - **No carga nada:** la página declara `default-src 'none'`. No pide tipografías externas ni hace ninguna petición.
+    - **Datos escapados:** el texto del documento y de la llamada (nombres de glifos, familia, `layout`, motivos) se escapa. Las marcas de la plantilla se llenan en una sola pasada, así que un valor nunca se vuelve a interpretar.
+    - **Sin carpetas a la vista:** la página muestra los archivos solo por su nombre, para que se pueda compartir.
+    - **Se escribe aunque haya glifos pendientes.** Es una vista: no aprueba nada, marca los pendientes y avisa con un recuadro. El TTF y el WOFF2 siguen sujetos a `allow_pending`.
+    - **Nunca sobrescribe:** solo escribe archivos `.html` dentro de las raíces permitidas y solo si el toolset de `export_font` está activo.
+    - **Idioma:** `lang` es `en` (por omisión) o `es`. Los motivos de atención quedan en inglés, como los escribe el motor.
+    - **Contrato `tools/list`:** cambio aditivo. Se agregan los campos opcionales `html` y `lang` en `ExportStage`, el tipo `PageLang` y una frase en la descripción.
+
+### Puerta nocturna de M (2026-11-02)
+
+68. **Los bolsillos de fondo menores que un píxel de la imagen no son agujeros** (`forma-bench`, `count_holes`). Resuelve el límite de medición de la decisión 33, que había quedado pendiente: la puerta nocturna de M exigía 0 errores sin detectar y nunca pasó desde que se creó (2 en la V de EB Garamond `c60-none` y en la R de Fraunces `c60-jpeg70`).
+    - **Causa verificada:** en el TTF exportado, la R tiene 2 contornos y la V 1, simples, sin autointersecciones (comprobado segmento a segmento). Con contornos simples no puede haber agujeros de más. El benchmark rasteriza hasta 8 veces más fino que la imagen, y una muesca con un cuello muy por debajo de un píxel (ruido trazado) deja un bolsillo de fondo de 1 o 2 píxeles que el conteo 4-conexo tomaba por contrahueco.
+    - **Regla:** un bolsillo de menos de un píxel de la imagen (escala² píxeles del ráster) no cuenta. Es el mismo criterio con el que el motor descarta motas de tinta (`forma-trace`, `vectorize`). Un contrahueco de 2 × 2 píxeles de la imagen sigue contando (test `a_pocket_smaller_than_an_image_pixel_is_not_a_hole`).
+    - **Efecto en M (36 casos):** cambian 5 glifos, todos de un agujero falso a 0 o al número real; 3 de ellos ya estaban marcados para revisión. Huecos correctos: 930 → 935 de 936. Sin detectar: 2 → 0. El único desajuste que queda está marcado para revisión. La verdad, S, L, O y M-hand no cambian, y las dos puertas pasan en macOS.

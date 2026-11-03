@@ -1,10 +1,12 @@
 name: CI
 
-# Milestone 1 (docs/04-roadmap.md): the whole workspace is built and tested on
-# macOS, Windows and Ubuntu, and the font FORMA exports is checked by external
-# oracles on all three. Ubuntu also runs the quality gates (fmt, clippy,
-# licenses, coverage), the real-fsync tests, the MCP Inspector smoke run and
-# fontspector; macOS also checks that the code compiles for Intel.
+# macOS first (ADR 0011): the whole workspace is built and tested on macOS,
+# the font FORMA exports is checked by external oracles (OTS, HarfBuzz,
+# fontTools, fontmake parity, fontspector and Chrome), and the quality gates
+# run (fmt, clippy, licenses), with the real-fsync tests, the MCP Inspector
+# smoke run and a compile check for Intel Macs. The coverage gate runs nightly
+# (nightly.yml): instrumented, the image-to-font tests take hours. Windows and Ubuntu
+# come back in milestone 9 (scripts/acceptance.ps1 is kept for Windows).
 
 on:
   push:
@@ -28,13 +30,9 @@ env:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: test (macos-15)
+    runs-on: macos-15
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, windows-2025, ubuntu-24.04]
     defaults:
       run:
         working-directory: core
@@ -53,37 +51,32 @@ jobs:
         with:
           workspaces: core
 
-      # ---- quality gates (Ubuntu only) ----
+      # ---- quality gates ----
 
       - name: Format
-        if: runner.os == 'Linux'
         run: cargo fmt --check
 
       - name: Clippy
-        if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Install cargo-deny and cargo-llvm-cov
-        if: runner.os == 'Linux'
+      - name: Install cargo-deny
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-llvm-cov
+          tool: cargo-deny
 
       - name: Check licenses
-        if: runner.os == 'Linux'
         run: cargo deny check licenses
 
-      # ---- tests (all three systems) ----
+      # ---- tests ----
 
       # --no-fail-fast: one failing test binary must not hide the results of
-      # the others (a Windows-only failure would otherwise mask the rest).
+      # the others.
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
 
       # Intel Macs are still a supported target: the runner is Apple silicon,
       # so this only checks that everything compiles for x86_64.
       - name: Check the Intel macOS target
-        if: runner.os == 'macOS'
         run: |
           rustup target add x86_64-apple-darwin
           cargo check --workspace --locked --target x86_64-apple-darwin
@@ -96,12 +89,11 @@ jobs:
       # under test. The property tests (1 000 cases each, roadmap criterion 7)
       # take a few minutes with real flushes.
       - name: Test forma-store with real fsync
-        if: runner.os == 'Linux'
         env:
           FORMA_REAL_FSYNC: "1"
         run: cargo test -p forma-store --locked
 
-      # ---- external oracles (all three systems) ----
+      # ---- external oracles ----
       # An agent builds a font over MCP stdio, then OTS, HarfBuzz, fontTools,
       # fontmake (parity) and fontspector check it: scripts/acceptance.*.
 
@@ -116,61 +108,39 @@ jobs:
 
       # taiki-e/install-action has no fontspector, so it is built once with
       # cargo (version pinned, as measured in docs/qa/hito1/fontspector.md) and
-      # the binary is cached. Only Ubuntu installs it, and only Ubuntu
-      # requires it (FORMA_REQUIRE_FONTSPECTOR below): on macOS and Windows the
-      # acceptance script prints SKIPPED for this one oracle.
+      # the binary is cached. FORMA_REQUIRE_FONTSPECTOR below makes a missing
+      # one a failure.
       - name: Restore fontspector
         id: fontspector
-        if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/fontspector
           key: fontspector-1.9.0-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install fontspector
-        if: runner.os == 'Linux' && steps.fontspector.outputs.cache-hit != 'true'
+        if: steps.fontspector.outputs.cache-hit != 'true'
         run: cargo install fontspector --version 1.9.0 --locked
 
-      # verify_hito2.py loads the WOFF2 in headless Chrome. ubuntu-24.04 ships
-      # google-chrome; only if a future image drops it is Google's .deb
-      # installed with apt (Ubuntu's chromium package is snap-only).
-      # FORMA_REQUIRE_CHROME=1 below makes a missing browser a failure rather
-      # than a silent SKIPPED.
-      - name: Check that Chrome is available
-        if: runner.os == 'Linux'
-        run: |
-          if ! google-chrome --version; then
-            curl -fsSL -o "$RUNNER_TEMP/chrome.deb" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-            sudo apt-get install -y "$RUNNER_TEMP/chrome.deb"
-            google-chrome --version
-          fi
-
-      - name: Acceptance (macOS, Linux)
-        if: runner.os != 'Windows'
+      # verify_hito2.py loads the WOFF2 in headless Chrome (milestone 2,
+      # criterion 6); the macOS runner image ships Google Chrome in
+      # /Applications and headless mode needs no display. FORMA_REQUIRE_CHROME
+      # makes a missing browser a failure rather than a silent SKIPPED.
+      - name: Acceptance
         env:
-          FORMA_REQUIRE_FONTSPECTOR: ${{ runner.os == 'Linux' && '1' || '' }}
-          FORMA_REQUIRE_CHROME: ${{ runner.os == 'Linux' && '1' || '' }}
-          # No display on the macOS runner; criterion 6 runs on Linux.
-          FORMA_SKIP_CHROME: ${{ runner.os == 'macOS' && '1' || '' }}
+          FORMA_REQUIRE_FONTSPECTOR: "1"
+          FORMA_REQUIRE_CHROME: "1"
         run: bash ../scripts/acceptance.sh
-
-      - name: Acceptance (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          FORMA_SKIP_CHROME: "1"
-        run: pwsh -NoProfile -File ../scripts/acceptance.ps1
 
       - name: Keep the acceptance artefacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: acceptance-${{ matrix.os }}
+          name: acceptance-macos-15
           path: out/acceptance
           if-no-files-found: ignore
           retention-days: 7
 
-      # ---- MCP Inspector (Ubuntu only) ----
+      # ---- MCP Inspector ----
       # The official client lists the tools of the release binary and calls
       # one (`forma_capabilities`), as an external check that `forma mcp`
       # speaks MCP and executes a tool. The binary is built with `-p forma-cli`
@@ -178,12 +148,10 @@ jobs:
       # forma-store into it.
 
       - uses: actions/setup-node@v4
-        if: runner.os == 'Linux'
         with:
           node-version: "24" # the Inspector needs Node >= 22.19
 
       - name: MCP Inspector smoke run (tools/list and tools/call)
-        if: runner.os == 'Linux'
         run: |
           cargo build --release -p forma-cli --locked
           forma="$GITHUB_WORKSPACE/core/target/release/forma"
@@ -196,24 +164,3 @@ jobs:
             --method tools/call --tool-name forma_capabilities > "$RUNNER_TEMP/tools-call.json"
           cat "$RUNNER_TEMP/tools-call.json"
           python -I -c 'import json, sys; r = json.load(open(sys.argv[1])); assert r.get("isError") is False and "api_version" in r["structuredContent"], r; print("forma_capabilities answered, api_version", r["structuredContent"]["api_version"])' "$RUNNER_TEMP/tools-call.json"
-
-      # ---- coverage (Ubuntu only) ----
-      # Runs the whole workspace test suite instrumented, then requires 80 %
-      # of the lines of each core crate to be covered. The gate is
-      # scripts/coverage_gate.py, which prints one line per package.
-
-      - name: Install llvm-tools
-        if: runner.os == 'Linux'
-        run: rustup component add llvm-tools-preview
-
-      - name: Coverage
-        if: runner.os == 'Linux'
-        run: >-
-          cargo llvm-cov --workspace --locked --json --summary-only
-          --output-path target/llvm-cov-summary.json
-
-      - name: Coverage gate (80 % of lines per package)
-        if: runner.os == 'Linux'
-        run: >-
-          python -I ../scripts/coverage_gate.py target/llvm-cov-summary.json --min 80
-          forma-model forma-edit forma-engine forma-store forma-trace forma-spacing
