@@ -1,6 +1,6 @@
 # 04 — Roadmap
 
-> Estado: revisión 4 (motor primero, hitos guiados por fuentes demo y interfaz gráfica al final; ADR 0008) · 2026-10-17. **Hito 1 completado** (CI en verde en los 3 SO, fuzzing nocturno en verde). **Hito 2 en curso** (rama `hito2`).
+> Estado: revisión 4 (motor primero, hitos guiados por fuentes demo y interfaz gráfica al final; ADR 0008) · 2026-10-17. **Hito 1 completado** (CI en verde en los 3 SO, fuzzing nocturno en verde). **Hito 2 completado** (PR #2). **Hito 2.5 completado** (PR #3). Desde el 2026-11-02 rige macOS primero (ADR 0011).
 > Tamaños relativos: **S** < 2 sem · **M** 2–5 sem · **L** 5–10 sem · **XL** > 10 sem, para un equipo pequeño (1–2 ingenieros + agentes). Son **estimaciones [H]**, no compromisos.
 > **Regla general:** un hito no se cierra sin que pasen sus criterios de aceptación automatizados **en macOS**, y, cuando se indica, una prueba manual con un diseñador. Hasta el Hito 2 se exigían macOS, Windows y Ubuntu 24.04; desde el 2026-11-02 rige **macOS primero** (ADR 0011), y los tres sistemas vuelven a ser obligatorios en el Hito 9. Donde los criterios de los hitos siguientes dicen "en los 3 SO", hasta el Hito 9 se lee "en macOS".
 > Los criterios de los Hitos 3–9 son **provisionales [H]**: cada hito tendrá su especificación, como la del Hito 2, antes de empezar.
@@ -226,7 +226,7 @@ Todos están automatizados en la CI de los 3 SO, salvo el 8, que es la demo manu
 
 ---
 
-## Hito 2.5 — De una imagen a una fuente con mínima intervención de IA  ← **implementado en la rama `hito2-5`; pendiente de CI en los 3 SO y de las decisiones del responsable (`docs/qa/hito2-5/README.md`)**
+## Hito 2.5 — De una imagen a una fuente con mínima intervención de IA  ✔ **completado** (PR #3, CI en macOS según el ADR 0011; decisiones abiertas del responsable en `docs/qa/hito2-5/README.md`)
 
 > Diseño vinculante: `docs/superpowers/specs/2026-10-18-hito2-5-imagen-a-fuente-autonoma-design.md` (aprobado con ajustes el 2026-10-18). Plan: `docs/superpowers/plans/2026-10-18-hito2-5-imagen-a-fuente-autonoma.md`. ADR 0010. Rama `hito2-5`.
 

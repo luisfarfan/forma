@@ -5,7 +5,7 @@ Rama `hito2-5`. Especificación: `docs/superpowers/specs/2026-10-18-hito2-5-imag
 | Documento | Contenido |
 |---|---|
 | `linea-base.md` | la línea base medida (transcripciones del Hito 2) |
-| `decisiones.md` | decisiones 1–60, revisiones independientes de los bloques A, C, D y E, contrato `tools/list` |
+| `decisiones.md` | decisiones 1–68, revisiones independientes de los bloques A, C, D y E, contrato `tools/list` |
 | `calibracion.md` | calibración de las puertas de fidelidad y de la puntuación de estilo |
 | `benchmark.md` | modos A, B y C con agentes y sin ellos, hipótesis de tiempo y costo |
 
@@ -13,7 +13,7 @@ Rama `hito2-5`. Especificación: `docs/superpowers/specs/2026-10-18-hito2-5-imag
 
 | # | Criterio | Estado | Evidencia |
 |---|---|---|---|
-| 1 | **Calidad sin regresión.** En S, M y L, B ≥ A en IoU, topología y validez; 0 contraformas perdidas sin detectar en L y O; rasgos finos ≥ 1 px conservados o informados; irregularidad de O ≥ 80 % | Cumplido | `forma-bench/tests/regression.rs` (S, L y O en cada CI; M y M-hand cada noche), `baseline.json`, `quality::counterexamples`, `calibracion.md` §1 y §3 |
+| 1 | **Calidad sin regresión.** En S, M y L, B ≥ A en IoU, topología y validez; 0 contraformas perdidas sin detectar en L y O; rasgos finos ≥ 1 px conservados o informados; irregularidad de O ≥ 80 % | Cumplido | `forma-bench/tests/regression.rs` (S, L y O en cada CI; M y M-hand cada noche; la de M pasa desde la decisión 68), `baseline.json`, `quality::counterexamples`, `calibracion.md` §1 y §3 |
 | 2 | **E y H del alfabeto privado sin intervención;** ninguna unión accidental | Cumplido (local) | `benchmark.md`, corrida B del alfabeto: la E con IoU 0,996 y la ranura conservada; la H agrupada [7, 8] con IoU 0,994 |
 | 3 | **Síntesis:** todo sintetizado marcado y pendiente; lo aceptado ≥ 0,75; lo demás `needs_design` | Cumplido | `auto_policy_never_approves_synthesized`, `forma-synth/tests/synth.rs`, `calibracion.md` §2 |
 | 4 | **Automatización:** C produce fuentes válidas sin IA; B sin coordenadas escritas por el agente | Cumplido | `mode_c_builds_a_valid_font_from_the_specimen`, la puerta de regresión, llamadas de las corridas B |
@@ -25,7 +25,7 @@ Detalle del criterio 6:
 - **Snapshot:** aditivo (`decisiones.md`, contrato del bloque E).
 - **Migración v2 → v3:** testeada (`forma-store/tests/migration.rs`), con respaldo.
 - **Cobertura de líneas** (`cargo llvm-cov --release`, 2026-10-18): `forma-engine` 93,5 %, `forma-synth` 91,6 %, `forma-trace` 91,0 %.
-- **CI en los 3 SO:** pendiente del push, que decide el responsable.
+- **CI:** macOS primero desde el 2026-11-02 (ADR 0011). En los 3 SO, la última corrida (`d400aaa`) pasó en macOS y Windows; en Ubuntu se agotaron los 90 minutos con la cobertura en debug. El PR #3 cierra con la CI de macOS.
 - **Puerta de calidad:** `ci.yml` (`cargo test --workspace`) y `nightly.yml` (`bench-m`).
 - **Umbrales:** `calibracion.md`.
 
